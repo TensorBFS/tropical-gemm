@@ -114,4 +114,4 @@ LD_LIBRARY_PATH=/usr/local/cuda-12.6/targets/x86_64-linux/lib:$LD_LIBRARY_PATH \
 
 ## License
 
-MIT OR Apache-2.0
+MIT
