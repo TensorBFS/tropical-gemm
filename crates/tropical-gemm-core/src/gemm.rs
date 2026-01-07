@@ -358,4 +358,130 @@ mod tests {
         assert_eq!(result.get(1, 1).0, 12.0);
         assert_eq!(result.get_argmax(1, 1), 2);
     }
+
+    #[test]
+    fn test_gemm_with_argmax_all_positions() {
+        // Test that argmax correctly tracks the optimal k for all positions
+        let m = 2;
+        let n = 2;
+        let k = 3;
+
+        // Design A and B so each C[i,j] has a different optimal k
+        // A: 2x3, B: 3x2
+        // C[i,j] = max_k(A[i,k] + B[k,j])
+        let a: [f64; 6] = [
+            10.0, 1.0, 1.0, // row 0: k=0 dominates for C[0,*]
+            1.0, 1.0, 10.0, // row 1: k=2 dominates for C[1,*]
+        ];
+        let b: [f64; 6] = [
+            10.0, 1.0, // row 0: col 0 prefers k=0
+            1.0, 10.0, // row 1: col 1 prefers k=1
+            1.0, 1.0,  // row 2
+        ];
+
+        let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(m, n);
+
+        unsafe {
+            tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
+                m, n, k,
+                a.as_ptr(), 3, Transpose::NoTrans,
+                b.as_ptr(), 2, Transpose::NoTrans,
+                &mut result,
+            );
+        }
+
+        // C[0,0] = max(10+10, 1+1, 1+1) = 20 at k=0
+        assert_eq!(result.get(0, 0).0, 20.0);
+        assert_eq!(result.get_argmax(0, 0), 0);
+
+        // C[0,1] = max(10+1, 1+10, 1+1) = 11 at k=0 or k=1 (both give 11)
+        assert_eq!(result.get(0, 1).0, 11.0);
+        // k=0 gives 11, k=1 gives 11 - first wins (>=)
+        assert_eq!(result.get_argmax(0, 1), 0);
+
+        // C[1,0] = max(1+10, 1+1, 10+1) = 11 at k=0 or k=2
+        assert_eq!(result.get(1, 0).0, 11.0);
+        assert_eq!(result.get_argmax(1, 0), 0); // k=0 wins first
+
+        // C[1,1] = max(1+1, 1+10, 10+1) = 11 at k=1 or k=2
+        assert_eq!(result.get(1, 1).0, 11.0);
+        assert_eq!(result.get_argmax(1, 1), 1); // k=1 wins first with 11
+    }
+
+    #[test]
+    fn test_gemm_minplus_with_argmax() {
+        use tropical_types::TropicalMinPlus;
+
+        let m = 2;
+        let n = 2;
+        let k = 3;
+
+        // For MinPlus, argmax tracks argmin
+        let a: [f64; 6] = [
+            1.0, 5.0, 3.0,  // row 0
+            2.0, 4.0, 6.0,  // row 1
+        ];
+        let b: [f64; 6] = [
+            1.0, 2.0,  // row 0
+            3.0, 4.0,  // row 1
+            5.0, 6.0,  // row 2
+        ];
+
+        let mut result: GemmWithArgmax<TropicalMinPlus<f64>> = GemmWithArgmax::new(m, n);
+
+        unsafe {
+            tropical_gemm_with_argmax_portable::<TropicalMinPlus<f64>>(
+                m, n, k,
+                a.as_ptr(), 3, Transpose::NoTrans,
+                b.as_ptr(), 2, Transpose::NoTrans,
+                &mut result,
+            );
+        }
+
+        // C[0,0] = min(1+1, 5+3, 3+5) = min(2, 8, 8) = 2 at k=0
+        assert_eq!(result.get(0, 0).0, 2.0);
+        assert_eq!(result.get_argmax(0, 0), 0);
+
+        // C[0,1] = min(1+2, 5+4, 3+6) = min(3, 9, 9) = 3 at k=0
+        assert_eq!(result.get(0, 1).0, 3.0);
+        assert_eq!(result.get_argmax(0, 1), 0);
+
+        // C[1,0] = min(2+1, 4+3, 6+5) = min(3, 7, 11) = 3 at k=0
+        assert_eq!(result.get(1, 0).0, 3.0);
+        assert_eq!(result.get_argmax(1, 0), 0);
+
+        // C[1,1] = min(2+2, 4+4, 6+6) = min(4, 8, 12) = 4 at k=0
+        assert_eq!(result.get(1, 1).0, 4.0);
+        assert_eq!(result.get_argmax(1, 1), 0);
+    }
+
+    #[test]
+    fn test_gemm_larger_with_argmax() {
+        // Test with larger matrix to exercise blocking code paths
+        let m = 8;
+        let n = 8;
+        let k = 8;
+
+        let a: Vec<f64> = (0..m * k).map(|i| i as f64).collect();
+        let b: Vec<f64> = (0..k * n).map(|i| (k * n - 1 - i) as f64).collect();
+
+        let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(m, n);
+
+        unsafe {
+            tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
+                m, n, k,
+                a.as_ptr(), k, Transpose::NoTrans,
+                b.as_ptr(), n, Transpose::NoTrans,
+                &mut result,
+            );
+        }
+
+        // Verify all results are finite and argmax indices are valid
+        for i in 0..m {
+            for j in 0..n {
+                assert!(result.get(i, j).0.is_finite());
+                assert!(result.get_argmax(i, j) < k as u32);
+            }
+        }
+    }
 }

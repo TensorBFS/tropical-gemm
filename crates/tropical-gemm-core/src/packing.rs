@@ -271,4 +271,24 @@ mod tests {
         assert_eq!(packed[4], 3.0); // b[1,0]
         assert_eq!(packed[5], 4.0); // b[1,1]
     }
+
+    #[test]
+    fn test_packed_a_size() {
+        // Exact multiple of mr
+        assert_eq!(packed_a_size(8, 10, 4), 8 * 10);
+        // Needs padding: m=5, mr=4 -> m_padded=8
+        assert_eq!(packed_a_size(5, 10, 4), 8 * 10);
+        // m=1, mr=4 -> m_padded=4
+        assert_eq!(packed_a_size(1, 10, 4), 4 * 10);
+    }
+
+    #[test]
+    fn test_packed_b_size() {
+        // Exact multiple of nr
+        assert_eq!(packed_b_size(10, 8, 4), 10 * 8);
+        // Needs padding: n=5, nr=4 -> n_padded=8
+        assert_eq!(packed_b_size(10, 5, 4), 10 * 8);
+        // n=1, nr=4 -> n_padded=4
+        assert_eq!(packed_b_size(10, 1, 4), 10 * 4);
+    }
 }

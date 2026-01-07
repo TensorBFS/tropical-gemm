@@ -261,4 +261,94 @@ mod tests {
         // C[0,0] = max(1+1, 1+1, 1+1) = 2 (tropical mul is addition, tropical add is max)
         assert_eq!(c[0].0, 2.0);
     }
+
+    #[test]
+    fn test_tropical_matmul_min_plus() {
+        use tropical_types::TropicalMinPlus;
+
+        let a = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        let c = tropical_matmul::<TropicalMinPlus<f64>>(&a, 2, 3, &b, 2);
+
+        // C[0,0] = min(1+1, 2+3, 3+5) = 2
+        assert_eq!(c[0].0, 2.0);
+        // C[0,1] = min(1+2, 2+4, 3+6) = 3
+        assert_eq!(c[1].0, 3.0);
+        // C[1,0] = min(4+1, 5+3, 6+5) = 5
+        assert_eq!(c[2].0, 5.0);
+        // C[1,1] = min(4+2, 5+4, 6+6) = 6
+        assert_eq!(c[3].0, 6.0);
+    }
+
+    #[test]
+    fn test_tropical_matmul_max_mul() {
+        use tropical_types::TropicalMaxMul;
+
+        let a = vec![2.0f64, 3.0, 4.0, 5.0];
+        let b = vec![1.0f64, 2.0, 3.0, 4.0];
+
+        let c = tropical_matmul::<TropicalMaxMul<f64>>(&a, 2, 2, &b, 2);
+
+        // C[0,0] = max(2*1, 3*3) = max(2, 9) = 9
+        assert_eq!(c[0].0, 9.0);
+        // C[0,1] = max(2*2, 3*4) = max(4, 12) = 12
+        assert_eq!(c[1].0, 12.0);
+        // C[1,0] = max(4*1, 5*3) = max(4, 15) = 15
+        assert_eq!(c[2].0, 15.0);
+        // C[1,1] = max(4*2, 5*4) = max(8, 20) = 20
+        assert_eq!(c[3].0, 20.0);
+    }
+
+    #[test]
+    fn test_tropical_matmul_f32() {
+        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        let c = tropical_matmul::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2);
+
+        assert!((c[0].0 - 8.0).abs() < 1e-6);
+        assert!((c[1].0 - 9.0).abs() < 1e-6);
+        assert!((c[2].0 - 11.0).abs() < 1e-6);
+        assert!((c[3].0 - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_non_square_matrices() {
+        // 3x2 * 2x4 = 3x4
+        let a = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+        let c = tropical_matmul::<TropicalMaxPlus<f64>>(&a, 3, 2, &b, 4);
+
+        assert_eq!(c.len(), 12);
+        // C[0,0] = max(1+1, 2+5) = 7
+        assert_eq!(c[0].0, 7.0);
+    }
+
+    #[test]
+    fn test_single_element() {
+        let a = vec![5.0f64];
+        let b = vec![3.0f64];
+
+        let c = tropical_matmul::<TropicalMaxPlus<f64>>(&a, 1, 1, &b, 1);
+
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].0, 8.0); // 5 + 3 = 8
+    }
+
+    #[test]
+    fn test_larger_matrix() {
+        let n = 16;
+        let a: Vec<f64> = (0..n * n).map(|i| i as f64).collect();
+        let b: Vec<f64> = (0..n * n).map(|i| (n * n - 1 - i) as f64).collect();
+
+        let c = tropical_matmul::<TropicalMaxPlus<f64>>(&a, n, n, &b, n);
+
+        assert_eq!(c.len(), n * n);
+        // Just verify it doesn't panic and produces reasonable results
+        for val in &c {
+            assert!(val.0.is_finite());
+        }
+    }
 }

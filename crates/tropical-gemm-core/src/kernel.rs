@@ -211,4 +211,161 @@ mod tests {
         // C[1,1] = max(4+2, 5+4, 6+6) = max(6, 9, 12) = 12
         assert_eq!(c[3].0, 12.0);
     }
+
+    #[test]
+    fn test_portable_kernel_minplus() {
+        use tropical_types::TropicalMinPlus;
+
+        let kernel = PortableMicrokernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 3;
+
+        let a: [f64; 12] = [1.0, 4.0, 0.0, 0.0, 2.0, 5.0, 0.0, 0.0, 3.0, 6.0, 0.0, 0.0];
+        let b: [f64; 12] = [1.0, 2.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 5.0, 6.0, 0.0, 0.0];
+
+        let mut c = [TropicalMinPlus::tropical_zero(); 4];
+        let ldc = 2;
+
+        unsafe {
+            kernel.execute(mr, nr, k, a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), ldc);
+        }
+
+        // C[0,0] = min(1+1, 2+3, 3+5) = min(2, 5, 8) = 2
+        assert_eq!(c[0].0, 2.0);
+        // C[0,1] = min(1+2, 2+4, 3+6) = min(3, 6, 9) = 3
+        assert_eq!(c[1].0, 3.0);
+        // C[1,0] = min(4+1, 5+3, 6+5) = min(5, 8, 11) = 5
+        assert_eq!(c[2].0, 5.0);
+        // C[1,1] = min(4+2, 5+4, 6+6) = min(6, 9, 12) = 6
+        assert_eq!(c[3].0, 6.0);
+    }
+
+    #[test]
+    fn test_portable_kernel_maxmul() {
+        use tropical_types::TropicalMaxMul;
+
+        let kernel = PortableMicrokernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 2;
+
+        // A: [[2, 4], [3, 5]]
+        let a: [f64; 8] = [2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 0.0, 0.0];
+        // B: [[1, 2], [3, 4]]
+        let b: [f64; 8] = [1.0, 2.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0];
+
+        let mut c = [TropicalMaxMul::tropical_zero(); 4];
+        let ldc = 2;
+
+        unsafe {
+            kernel.execute(mr, nr, k, a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), ldc);
+        }
+
+        // C[0,0] = max(2*1, 4*3) = max(2, 12) = 12
+        assert_eq!(c[0].0, 12.0);
+        // C[0,1] = max(2*2, 4*4) = max(4, 16) = 16
+        assert_eq!(c[1].0, 16.0);
+        // C[1,0] = max(3*1, 5*3) = max(3, 15) = 15
+        assert_eq!(c[2].0, 15.0);
+        // C[1,1] = max(3*2, 5*4) = max(6, 20) = 20
+        assert_eq!(c[3].0, 20.0);
+    }
+
+    #[test]
+    fn test_portable_kernel_with_argmax() {
+        let kernel = PortableMicrokernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 3;
+
+        let a: [f64; 12] = [1.0, 4.0, 0.0, 0.0, 2.0, 5.0, 0.0, 0.0, 3.0, 6.0, 0.0, 0.0];
+        let b: [f64; 12] = [1.0, 2.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 5.0, 6.0, 0.0, 0.0];
+
+        let mut c = [TropicalMaxPlus::tropical_zero(); 4];
+        let mut argmax = [0u32; 4];
+        let ldc = 2;
+        let k_offset = 0;
+
+        unsafe {
+            kernel.execute_with_argmax(
+                mr, nr, k, k_offset,
+                a.as_ptr(), b.as_ptr(),
+                c.as_mut_ptr(), argmax.as_mut_ptr(), ldc
+            );
+        }
+
+        // C[0,0] = max(1+1, 2+3, 3+5) = 8 at k=2
+        assert_eq!(c[0].0, 8.0);
+        assert_eq!(argmax[0], 2);
+
+        // C[0,1] = max(1+2, 2+4, 3+6) = 9 at k=2
+        assert_eq!(c[1].0, 9.0);
+        assert_eq!(argmax[1], 2);
+
+        // C[1,0] = max(4+1, 5+3, 6+5) = 11 at k=2
+        assert_eq!(c[2].0, 11.0);
+        assert_eq!(argmax[2], 2);
+
+        // C[1,1] = max(4+2, 5+4, 6+6) = 12 at k=2
+        assert_eq!(c[3].0, 12.0);
+        assert_eq!(argmax[3], 2);
+    }
+
+    #[test]
+    fn test_portable_kernel_with_argmax_offset() {
+        // Test that k_offset is correctly applied
+        let kernel = PortableMicrokernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 2;
+
+        let a: [f64; 8] = [1.0, 2.0, 0.0, 0.0, 10.0, 20.0, 0.0, 0.0];
+        let b: [f64; 8] = [1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0];
+
+        let mut c = [TropicalMaxPlus::tropical_zero(); 4];
+        let mut argmax = [0u32; 4];
+        let ldc = 2;
+        let k_offset = 5; // Start from global k=5
+
+        unsafe {
+            kernel.execute_with_argmax(
+                mr, nr, k, k_offset,
+                a.as_ptr(), b.as_ptr(),
+                c.as_mut_ptr(), argmax.as_mut_ptr(), ldc
+            );
+        }
+
+        // A[:,1] has larger values, so k=1 (global k=6) should win
+        // C[0,0] = max(1+1, 10+1) = 11 at local k=1, global k=6
+        assert_eq!(c[0].0, 11.0);
+        assert_eq!(argmax[0], 6); // k_offset + 1
+
+        // C[1,0] = max(2+1, 20+1) = 21 at local k=1, global k=6
+        assert_eq!(c[2].0, 21.0);
+        assert_eq!(argmax[2], 6);
+    }
+
+    #[test]
+    fn test_portable_kernel_f32() {
+        let kernel = PortableMicrokernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 2;
+
+        let a: [f32; 8] = [1.0, 2.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0];
+        let b: [f32; 8] = [1.0, 2.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0];
+
+        let mut c = [TropicalMaxPlus::tropical_zero(); 4];
+        let ldc = 2;
+
+        unsafe {
+            kernel.execute(mr, nr, k, a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), ldc);
+        }
+
+        // C[0,0] = max(1+1, 3+3) = 6
+        assert!((c[0].0 - 6.0).abs() < 1e-6);
+        // C[0,1] = max(1+2, 3+4) = 7
+        assert!((c[1].0 - 7.0).abs() < 1e-6);
+    }
 }

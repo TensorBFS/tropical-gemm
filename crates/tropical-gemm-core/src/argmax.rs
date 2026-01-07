@@ -103,4 +103,67 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_gemm_with_argmax_with_ld() {
+        let result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::with_ld(3, 4, 8);
+
+        assert_eq!(result.m, 3);
+        assert_eq!(result.n, 4);
+        assert_eq!(result.ld, 8);
+        // Size is m * ld = 3 * 8 = 24
+        assert_eq!(result.values.len(), 24);
+        assert_eq!(result.argmax.len(), 24);
+    }
+
+    #[test]
+    #[should_panic(expected = "Leading dimension must be >= n")]
+    fn test_gemm_with_argmax_with_ld_invalid() {
+        let _: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::with_ld(3, 4, 2);
+    }
+
+    #[test]
+    fn test_gemm_with_argmax_get_mut() {
+        let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(2, 2);
+
+        // Modify value using get_mut
+        *result.get_mut(0, 1) = TropicalMaxPlus(5.0);
+        *result.get_mut(1, 0) = TropicalMaxPlus(3.0);
+
+        assert_eq!(result.get(0, 1).0, 5.0);
+        assert_eq!(result.get(1, 0).0, 3.0);
+        assert_eq!(result.get(0, 0).0, f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_gemm_with_argmax_get_argmax_mut() {
+        let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(2, 2);
+
+        // Modify argmax using get_argmax_mut
+        *result.get_argmax_mut(0, 1) = 42;
+        *result.get_argmax_mut(1, 0) = 7;
+
+        assert_eq!(result.get_argmax(0, 1), 42);
+        assert_eq!(result.get_argmax(1, 0), 7);
+        assert_eq!(result.get_argmax(0, 0), 0);
+    }
+
+    #[test]
+    fn test_gemm_with_argmax_as_mut_ptrs() {
+        let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(2, 3);
+        let (values_ptr, argmax_ptr) = result.as_mut_ptrs();
+
+        // Write through raw pointers
+        unsafe {
+            *values_ptr.add(0) = TropicalMaxPlus(1.0);
+            *values_ptr.add(5) = TropicalMaxPlus(6.0);
+            *argmax_ptr.add(0) = 10;
+            *argmax_ptr.add(5) = 20;
+        }
+
+        assert_eq!(result.get(0, 0).0, 1.0);
+        assert_eq!(result.get(1, 2).0, 6.0);
+        assert_eq!(result.get_argmax(0, 0), 10);
+        assert_eq!(result.get_argmax(1, 2), 20);
+    }
 }

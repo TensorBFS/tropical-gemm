@@ -307,4 +307,132 @@ mod tests {
         // C[1,1] = max(4+2, 5+4, 6+6) = 12
         assert!((c[3].0 - 12.0).abs() < 1e-6);
     }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_avx2_min_plus_f32() {
+        if !is_x86_feature_detected!("avx2") {
+            println!("AVX2 not available, skipping test");
+            return;
+        }
+
+        let kernel = Avx2MinPlusF32Kernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 3;
+
+        // A: 2x3 packed
+        let a: [f32; 24] = [
+            1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            2.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            3.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+
+        // B: 3x2 packed
+        let b: [f32; 24] = [
+            1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            5.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+
+        let mut c = vec![TropicalMinPlus::tropical_zero(); 4];
+        let ldc = 2;
+
+        unsafe {
+            kernel.execute(mr, nr, k, a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), ldc);
+        }
+
+        // C[0,0] = min(1+1, 2+3, 3+5) = 2
+        assert!((c[0].0 - 2.0).abs() < 1e-6);
+        // C[0,1] = min(1+2, 2+4, 3+6) = 3
+        assert!((c[1].0 - 3.0).abs() < 1e-6);
+        // C[1,0] = min(4+1, 5+3, 6+5) = 5
+        assert!((c[2].0 - 5.0).abs() < 1e-6);
+        // C[1,1] = min(4+2, 5+4, 6+6) = 6
+        assert!((c[3].0 - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_avx2_max_mul_f32() {
+        if !is_x86_feature_detected!("avx2") {
+            println!("AVX2 not available, skipping test");
+            return;
+        }
+
+        let kernel = Avx2MaxMulF32Kernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 2;
+
+        // A: 2x2 packed
+        let a: [f32; 16] = [
+            2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            4.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+
+        // B: 2x2 packed
+        let b: [f32; 16] = [
+            1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+
+        let mut c = vec![TropicalMaxMul::tropical_zero(); 4];
+        let ldc = 2;
+
+        unsafe {
+            kernel.execute(mr, nr, k, a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), ldc);
+        }
+
+        // C[0,0] = max(2*1, 4*3) = max(2, 12) = 12
+        assert!((c[0].0 - 12.0).abs() < 1e-6);
+        // C[0,1] = max(2*2, 4*4) = max(4, 16) = 16
+        assert!((c[1].0 - 16.0).abs() < 1e-6);
+        // C[1,0] = max(3*1, 5*3) = max(3, 15) = 15
+        assert!((c[2].0 - 15.0).abs() < 1e-6);
+        // C[1,1] = max(3*2, 5*4) = max(6, 20) = 20
+        assert!((c[3].0 - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_avx2_max_plus_f64() {
+        if !is_x86_feature_detected!("avx2") {
+            println!("AVX2 not available, skipping test");
+            return;
+        }
+
+        let kernel = Avx2MaxPlusF64Kernel;
+        let mr = 2;
+        let nr = 2;
+        let k = 2;
+
+        // A: 2x2 packed (4 f64 per column for mr=4 padding)
+        let a: [f64; 8] = [
+            1.0, 2.0, 0.0, 0.0, // col 0
+            3.0, 4.0, 0.0, 0.0, // col 1
+        ];
+
+        // B: 2x2 packed (4 f64 per row for nr=4 padding)
+        let b: [f64; 8] = [
+            1.0, 2.0, 0.0, 0.0, // row 0
+            3.0, 4.0, 0.0, 0.0, // row 1
+        ];
+
+        let mut c = vec![TropicalMaxPlus::tropical_zero(); 4];
+        let ldc = 2;
+
+        unsafe {
+            kernel.execute(mr, nr, k, a.as_ptr(), b.as_ptr(), c.as_mut_ptr(), ldc);
+        }
+
+        // C[0,0] = max(1+1, 3+3) = 6
+        assert!((c[0].0 - 6.0).abs() < 1e-10);
+        // C[0,1] = max(1+2, 3+4) = 7
+        assert!((c[1].0 - 7.0).abs() < 1e-10);
+        // C[1,0] = max(2+1, 4+3) = 7
+        assert!((c[2].0 - 7.0).abs() < 1e-10);
+        // C[1,1] = max(2+2, 4+4) = 8
+        assert!((c[3].0 - 8.0).abs() < 1e-10);
+    }
 }

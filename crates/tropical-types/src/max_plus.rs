@@ -158,4 +158,62 @@ mod tests {
         assert_eq!(result.0, 5.0);
         assert_eq!(idx, 1);
     }
+
+    #[test]
+    fn test_argmax_left_wins() {
+        let a = TropicalMaxPlus::new(7.0f64);
+        let b = TropicalMaxPlus::new(3.0f64);
+
+        let (result, idx) = a.tropical_add_argmax(10, b, 20);
+        assert_eq!(result.0, 7.0);
+        assert_eq!(idx, 10); // Left wins, keep left index
+    }
+
+    #[test]
+    fn test_argmax_equal_values() {
+        // When values are equal, left (self) wins (>= comparison)
+        let a = TropicalMaxPlus::new(5.0f64);
+        let b = TropicalMaxPlus::new(5.0f64);
+
+        let (result, idx) = a.tropical_add_argmax(1, b, 2);
+        assert_eq!(result.0, 5.0);
+        assert_eq!(idx, 1); // Equal, so left (self) wins
+    }
+
+    #[test]
+    fn test_argmax_chain() {
+        // Simulate accumulating through k iterations
+        let mut acc = TropicalMaxPlus::tropical_zero();
+        let mut idx = 0u32;
+
+        let values = [3.0, 7.0, 2.0, 5.0]; // Max is at index 1
+        for (k, &val) in values.iter().enumerate() {
+            let candidate = TropicalMaxPlus::new(val);
+            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as u32);
+        }
+
+        assert_eq!(acc.0, 7.0);
+        assert_eq!(idx, 1); // Index where max occurred
+    }
+
+    #[test]
+    fn test_argmax_neg_infinity() {
+        let a = TropicalMaxPlus::tropical_zero(); // -inf
+        let b = TropicalMaxPlus::new(-100.0f64);
+
+        let (result, idx) = a.tropical_add_argmax(0, b, 1);
+        assert_eq!(result.0, -100.0);
+        assert_eq!(idx, 1); // -100 > -inf
+    }
+
+    #[test]
+    fn test_absorbing_zero() {
+        let a = TropicalMaxPlus::new(5.0f64);
+        let zero = TropicalMaxPlus::tropical_zero();
+
+        // a ⊗ 0 = a + (-inf) = -inf
+        // In tropical max-plus, multiplying by zero (adding -inf) gives -inf
+        let result = a.tropical_mul(zero);
+        assert!(result.0.is_infinite() && result.0 < 0.0);
+    }
 }

@@ -161,4 +161,72 @@ mod tests {
         let edge = TropicalMinPlus::new(3.0f64);
         assert_eq!(path.tropical_mul(edge).0, 8.0);
     }
+
+    #[test]
+    fn test_argmin_right_wins() {
+        // For MinPlus, argmax actually tracks argmin
+        let a = TropicalMinPlus::new(5.0f64);
+        let b = TropicalMinPlus::new(3.0f64);
+
+        let (result, idx) = a.tropical_add_argmax(0, b, 1);
+        assert_eq!(result.0, 3.0);
+        assert_eq!(idx, 1); // Right has smaller value
+    }
+
+    #[test]
+    fn test_argmin_left_wins() {
+        let a = TropicalMinPlus::new(2.0f64);
+        let b = TropicalMinPlus::new(7.0f64);
+
+        let (result, idx) = a.tropical_add_argmax(10, b, 20);
+        assert_eq!(result.0, 2.0);
+        assert_eq!(idx, 10); // Left has smaller value
+    }
+
+    #[test]
+    fn test_argmin_equal_values() {
+        // When values are equal, left (self) wins (<= comparison)
+        let a = TropicalMinPlus::new(5.0f64);
+        let b = TropicalMinPlus::new(5.0f64);
+
+        let (result, idx) = a.tropical_add_argmax(1, b, 2);
+        assert_eq!(result.0, 5.0);
+        assert_eq!(idx, 1); // Equal, so left (self) wins
+    }
+
+    #[test]
+    fn test_argmin_chain() {
+        // Simulate accumulating through k iterations - find minimum
+        let mut acc = TropicalMinPlus::tropical_zero(); // +inf
+        let mut idx = 0u32;
+
+        let values = [8.0, 3.0, 9.0, 5.0]; // Min is at index 1
+        for (k, &val) in values.iter().enumerate() {
+            let candidate = TropicalMinPlus::new(val);
+            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as u32);
+        }
+
+        assert_eq!(acc.0, 3.0);
+        assert_eq!(idx, 1); // Index where min occurred
+    }
+
+    #[test]
+    fn test_argmin_pos_infinity() {
+        let a = TropicalMinPlus::tropical_zero(); // +inf
+        let b = TropicalMinPlus::new(100.0f64);
+
+        let (result, idx) = a.tropical_add_argmax(0, b, 1);
+        assert_eq!(result.0, 100.0);
+        assert_eq!(idx, 1); // 100 < +inf
+    }
+
+    #[test]
+    fn test_absorbing_zero() {
+        let a = TropicalMinPlus::new(5.0f64);
+        let zero = TropicalMinPlus::tropical_zero();
+
+        // a ⊗ 0 = a + (+inf) = +inf
+        let result = a.tropical_mul(zero);
+        assert!(result.0.is_infinite() && result.0 > 0.0);
+    }
 }
