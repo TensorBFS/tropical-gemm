@@ -1,0 +1,17 @@
+[package]
+name = "tropical-gemm-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Python bindings for tropical matrix multiplication"
+
+[lib]
+name = "tropical_gemm"
+crate-type = ["cdylib"]
+
+[dependencies]
+tropical-gemm.workspace = true
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
