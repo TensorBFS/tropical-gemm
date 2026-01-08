@@ -17,3 +17,4 @@ Thumbs.db
 
 # Benchmarks
 /benchmarks/bench_c_cuda
+tarpaulin-report.html
