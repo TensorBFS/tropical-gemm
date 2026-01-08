@@ -492,6 +492,198 @@ where
     Ok(c)
 }
 
+// ============================================================================
+// Backward Pass API
+// ============================================================================
+
+/// Compute gradient with respect to matrix A from GPU argmax indices.
+///
+/// This function takes the argmax indices (typically downloaded from GPU after
+/// a forward pass with `tropical_matmul_gpu_with_argmax`) and computes the gradient
+/// for backpropagation.
+///
+/// # Arguments
+///
+/// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
+/// * `argmax` - Argmax indices from forward pass (k-index that produced each C[i,j])
+/// * `m` - Number of rows in A and C
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in B and C
+///
+/// # Returns
+///
+/// Gradient of the loss with respect to A, dimensions m×k
+///
+/// # Example
+///
+/// ```ignore
+/// use tropical_gemm_cuda::{tropical_matmul_gpu_with_argmax, tropical_backward_a_gpu};
+/// use tropical_gemm::TropicalMaxPlus;
+///
+/// // Forward pass
+/// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
+///
+/// // Backward pass (given grad_c from upstream)
+/// let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
+/// ```
+pub fn tropical_backward_a_gpu<T>(
+    grad_c: &[T],
+    argmax: &[ArgmaxIndex],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<T>
+where
+    T: Copy + Default + std::ops::AddAssign,
+{
+    assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
+    assert_eq!(argmax.len(), m * n, "argmax size mismatch");
+
+    let mut grad_a = vec![T::default(); m * k];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = argmax[i * n + j] as usize;
+            if idx < k {
+                grad_a[i * k + idx] += grad_c[i * n + j];
+            }
+        }
+    }
+
+    grad_a
+}
+
+/// Compute gradient with respect to matrix B from GPU argmax indices.
+///
+/// # Arguments
+///
+/// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
+/// * `argmax` - Argmax indices from forward pass (k-index that produced each C[i,j])
+/// * `m` - Number of rows in A and C
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in B and C
+///
+/// # Returns
+///
+/// Gradient of the loss with respect to B, dimensions k×n
+///
+/// # Example
+///
+/// ```ignore
+/// use tropical_gemm_cuda::{tropical_matmul_gpu_with_argmax, tropical_backward_b_gpu};
+/// use tropical_gemm::TropicalMaxPlus;
+///
+/// // Forward pass
+/// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
+///
+/// // Backward pass (given grad_c from upstream)
+/// let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
+/// ```
+pub fn tropical_backward_b_gpu<T>(
+    grad_c: &[T],
+    argmax: &[ArgmaxIndex],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<T>
+where
+    T: Copy + Default + std::ops::AddAssign,
+{
+    assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
+    assert_eq!(argmax.len(), m * n, "argmax size mismatch");
+
+    let mut grad_b = vec![T::default(); k * n];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = argmax[i * n + j] as usize;
+            if idx < k {
+                grad_b[idx * n + j] += grad_c[i * n + j];
+            }
+        }
+    }
+
+    grad_b
+}
+
+/// Batched backward pass for gradient with respect to A on GPU.
+///
+/// Computes gradients for a batch of matrices. Each batch element is processed
+/// independently.
+///
+/// # Arguments
+///
+/// * `grad_c_batch` - Batch of gradients w.r.t. C, each of dimensions m×n
+/// * `argmax_batch` - Batch of argmax indices from forward pass
+/// * `m` - Number of rows in each A and C
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in B and C
+///
+/// # Returns
+///
+/// Batch of gradients w.r.t. A, each of dimensions m×k
+pub fn tropical_backward_a_gpu_batched<T>(
+    grad_c_batch: &[Vec<T>],
+    argmax_batch: &[Vec<ArgmaxIndex>],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<Vec<T>>
+where
+    T: Copy + Default + std::ops::AddAssign + Send + Sync,
+{
+    assert_eq!(
+        grad_c_batch.len(),
+        argmax_batch.len(),
+        "batch sizes must match"
+    );
+
+    grad_c_batch
+        .iter()
+        .zip(argmax_batch.iter())
+        .map(|(grad_c, argmax)| tropical_backward_a_gpu(grad_c, argmax, m, k, n))
+        .collect()
+}
+
+/// Batched backward pass for gradient with respect to B on GPU.
+///
+/// Computes gradients for a batch of matrices. Each batch element is processed
+/// independently.
+///
+/// # Arguments
+///
+/// * `grad_c_batch` - Batch of gradients w.r.t. C, each of dimensions m×n
+/// * `argmax_batch` - Batch of argmax indices from forward pass
+/// * `m` - Number of rows in each A and C
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in B and C
+///
+/// # Returns
+///
+/// Batch of gradients w.r.t. B, each of dimensions k×n
+pub fn tropical_backward_b_gpu_batched<T>(
+    grad_c_batch: &[Vec<T>],
+    argmax_batch: &[Vec<ArgmaxIndex>],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<Vec<T>>
+where
+    T: Copy + Default + std::ops::AddAssign + Send + Sync,
+{
+    assert_eq!(
+        grad_c_batch.len(),
+        argmax_batch.len(),
+        "batch sizes must match"
+    );
+
+    grad_c_batch
+        .iter()
+        .zip(argmax_batch.iter())
+        .map(|(grad_c, argmax)| tropical_backward_b_gpu(grad_c, argmax, m, k, n))
+        .collect()
+}
+
 /// Batched tropical matrix multiplication with argmax tracking on GPU.
 ///
 /// Computes C[i] = A[i] ⊗ B[i] for i = 0..batch_size, with argmax indices.
@@ -1112,5 +1304,166 @@ mod tests {
         assert!((c_batch[0][1] - 3.0).abs() < 1e-5);
         assert!((c_batch[0][2] - 4.0).abs() < 1e-5);
         assert!((c_batch[0][3] - 5.0).abs() < 1e-5);
+    }
+
+    // ========================================================================
+    // Backward Pass tests
+    // ========================================================================
+
+    #[test]
+    fn test_tropical_backward_a_gpu() {
+        // Test backward pass for A
+        // C[i,j] = A[i,argmax[i,j]] + B[argmax[i,j],j]
+        // dL/dA[i,k] = sum_j { dL/dC[i,j] if argmax[i,j] == k }
+
+        let m = 2;
+        let k = 3;
+        let n = 2;
+
+        // Gradient from upstream (all ones for simplicity)
+        let grad_c = vec![1.0f32; m * n];
+
+        // Argmax: row-major, for each C[i,j] which k produced it
+        // Let's say argmax = [[0, 2], [1, 2]]
+        let argmax: Vec<ArgmaxIndex> = vec![0, 2, 1, 2];
+
+        let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
+
+        // Expected grad_a (2x3):
+        // grad_a[0,0] = grad_c[0,0] because argmax[0,0]=0 -> 1.0
+        // grad_a[0,1] = 0 (no argmax points here)
+        // grad_a[0,2] = grad_c[0,1] because argmax[0,1]=2 -> 1.0
+        // grad_a[1,0] = 0
+        // grad_a[1,1] = grad_c[1,0] because argmax[1,0]=1 -> 1.0
+        // grad_a[1,2] = grad_c[1,1] because argmax[1,1]=2 -> 1.0
+        assert_eq!(grad_a.len(), m * k);
+        assert!((grad_a[0] - 1.0).abs() < 1e-5); // [0,0]
+        assert!((grad_a[1] - 0.0).abs() < 1e-5); // [0,1]
+        assert!((grad_a[2] - 1.0).abs() < 1e-5); // [0,2]
+        assert!((grad_a[3] - 0.0).abs() < 1e-5); // [1,0]
+        assert!((grad_a[4] - 1.0).abs() < 1e-5); // [1,1]
+        assert!((grad_a[5] - 1.0).abs() < 1e-5); // [1,2]
+    }
+
+    #[test]
+    fn test_tropical_backward_b_gpu() {
+        // Test backward pass for B
+        // dL/dB[k,j] = sum_i { dL/dC[i,j] if argmax[i,j] == k }
+
+        let m = 2;
+        let k = 3;
+        let n = 2;
+
+        // Gradient from upstream (all ones)
+        let grad_c = vec![1.0f32; m * n];
+
+        // Argmax: [[0, 2], [1, 2]]
+        let argmax: Vec<ArgmaxIndex> = vec![0, 2, 1, 2];
+
+        let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
+
+        // Expected grad_b (3x2):
+        // grad_b[0,0] = grad_c[0,0] because argmax[0,0]=0 -> 1.0
+        // grad_b[0,1] = 0
+        // grad_b[1,0] = grad_c[1,0] because argmax[1,0]=1 -> 1.0
+        // grad_b[1,1] = 0
+        // grad_b[2,0] = 0
+        // grad_b[2,1] = grad_c[0,1] + grad_c[1,1] because argmax[0,1]=2 and argmax[1,1]=2 -> 2.0
+        assert_eq!(grad_b.len(), k * n);
+        assert!((grad_b[0] - 1.0).abs() < 1e-5); // [0,0]
+        assert!((grad_b[1] - 0.0).abs() < 1e-5); // [0,1]
+        assert!((grad_b[2] - 1.0).abs() < 1e-5); // [1,0]
+        assert!((grad_b[3] - 0.0).abs() < 1e-5); // [1,1]
+        assert!((grad_b[4] - 0.0).abs() < 1e-5); // [2,0]
+        assert!((grad_b[5] - 2.0).abs() < 1e-5); // [2,1]
+    }
+
+    #[test]
+    fn test_tropical_backward_gpu_integration() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Full integration test: forward pass on GPU, backward pass
+        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
+        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
+
+        let m = 2;
+        let k = 3;
+        let n = 2;
+
+        // Forward pass on GPU
+        let (c, argmax) =
+            tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n).unwrap();
+
+        // Verify forward pass
+        assert!((c[0] - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5)
+
+        // Backward pass with unit gradients
+        let grad_c = vec![1.0f32; m * n];
+        let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
+        let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
+
+        // For this specific case, argmax should be all 2 (k=2 wins for all)
+        // So grad_a[i,2] should be n (sum over j) and others 0
+        // grad_a[0,2] = 2 (from C[0,0] and C[0,1])
+        // grad_a[1,2] = 2 (from C[1,0] and C[1,1])
+        assert_eq!(grad_a.len(), m * k);
+        assert!((grad_a[2] - 2.0).abs() < 1e-5); // A[0,2]
+        assert!((grad_a[5] - 2.0).abs() < 1e-5); // A[1,2]
+
+        // grad_b[2,j] = m (sum over i) for each j
+        assert_eq!(grad_b.len(), k * n);
+        assert!((grad_b[4] - 2.0).abs() < 1e-5); // B[2,0]
+        assert!((grad_b[5] - 2.0).abs() < 1e-5); // B[2,1]
+    }
+
+    #[test]
+    fn test_tropical_backward_gpu_batched() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        let m = 2;
+        let k = 3;
+        let n = 2;
+
+        // Batch of 2 forward passes
+        let a_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // A[0]
+            vec![6.0f32, 5.0, 4.0, 3.0, 2.0, 1.0], // A[1] (reversed)
+        ];
+        let b_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[0]
+            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[1]
+        ];
+
+        // Forward pass
+        let results = tropical_matmul_gpu_batched_with_argmax::<TropicalMaxPlus<f32>>(
+            &a_batch, &b_batch, m, k, n,
+        )
+        .unwrap();
+
+        // Extract argmax for backward
+        let argmax_batch: Vec<Vec<ArgmaxIndex>> =
+            results.iter().map(|(_, argmax)| argmax.clone()).collect();
+
+        // Backward pass
+        let grad_c_batch = vec![vec![1.0f32; m * n]; 2];
+        let grad_a_batch =
+            tropical_backward_a_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
+        let grad_b_batch =
+            tropical_backward_b_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
+
+        assert_eq!(grad_a_batch.len(), 2);
+        assert_eq!(grad_b_batch.len(), 2);
+
+        // Each gradient should have correct dimensions
+        for grad_a in &grad_a_batch {
+            assert_eq!(grad_a.len(), m * k);
+        }
+        for grad_b in &grad_b_batch {
+            assert_eq!(grad_b.len(), k * n);
+        }
     }
 }

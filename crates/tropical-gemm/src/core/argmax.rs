@@ -78,6 +78,20 @@ impl<T: TropicalWithArgmax<Index = u32>> GemmWithArgmax<T> {
     pub fn as_mut_ptrs(&mut self) -> (*mut T, *mut u32) {
         (self.values.as_mut_ptr(), self.argmax.as_mut_ptr())
     }
+
+    /// Get the argmax array as a slice.
+    ///
+    /// This is useful for backward pass computation.
+    #[inline]
+    pub fn argmax_slice(&self) -> &[u32] {
+        &self.argmax
+    }
+
+    /// Get the values array as a slice.
+    #[inline]
+    pub fn values_slice(&self) -> &[T] {
+        &self.values
+    }
 }
 
 #[cfg(test)]
@@ -165,5 +179,28 @@ mod tests {
         assert_eq!(result.get(1, 2).0, 6.0);
         assert_eq!(result.get_argmax(0, 0), 10);
         assert_eq!(result.get_argmax(1, 2), 20);
+    }
+
+    #[test]
+    fn test_gemm_with_argmax_slices() {
+        let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(2, 3);
+
+        // Modify some values
+        *result.get_mut(0, 0) = TropicalMaxPlus(1.0);
+        *result.get_mut(1, 2) = TropicalMaxPlus(6.0);
+        *result.get_argmax_mut(0, 0) = 10;
+        *result.get_argmax_mut(1, 2) = 20;
+
+        // Test values_slice
+        let values = result.values_slice();
+        assert_eq!(values.len(), 6); // 2 * 3
+        assert_eq!(values[0].0, 1.0);
+        assert_eq!(values[5].0, 6.0);
+
+        // Test argmax_slice
+        let argmax = result.argmax_slice();
+        assert_eq!(argmax.len(), 6);
+        assert_eq!(argmax[0], 10);
+        assert_eq!(argmax[5], 20);
     }
 }

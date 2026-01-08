@@ -416,6 +416,130 @@ where
     pub fn to_argmax(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
         self.inner.argmax_to_host_row_major(ctx)
     }
+
+    /// Compute gradient with respect to matrix A.
+    ///
+    /// Given the upstream gradient dL/dC, computes dL/dA using the argmax
+    /// indices from the forward pass.
+    ///
+    /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
+    /// dL/dA[i,k] = Σ_j { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - CUDA context
+    /// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
+    /// * `k` - Number of columns in A (the inner dimension)
+    ///
+    /// # Returns
+    ///
+    /// Gradient of the loss with respect to A, dimensions m×k
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use tropical_gemm::{Mat, MaxPlus};
+    /// use tropical_gemm_cuda::{CudaContext, GpuMat};
+    ///
+    /// let ctx = CudaContext::new()?;
+    ///
+    /// // Forward pass with argmax
+    /// let a_gpu = GpuMat::from_matref(&ctx, &a)?;
+    /// let b_gpu = GpuMat::from_matref(&ctx, &b)?;
+    /// let result = a_gpu.matmul_argmax(&ctx, &b_gpu)?;
+    ///
+    /// // Backward pass
+    /// let grad_c = Mat::<MaxPlus<f32>>::from_fn(m, n, |_, _| MaxPlus(1.0));
+    /// let grad_a = result.backward_a(&ctx, &grad_c, k)?;
+    /// ```
+    pub fn backward_a<G>(&self, ctx: &CudaContext, grad_c: &Mat<G>, k: usize) -> Result<Mat<G>>
+    where
+        G: TropicalSemiring,
+        G::Scalar: Copy + Default + std::ops::AddAssign,
+    {
+        let m = self.nrows();
+        let n = self.ncols();
+        assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
+        assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
+
+        // Download argmax to host
+        let argmax = self.inner.argmax_to_host_row_major(ctx)?;
+
+        let mut grad_a_data = vec![G::Scalar::default(); m * k];
+
+        for i in 0..m {
+            for j in 0..n {
+                let idx = argmax[i * n + j] as usize;
+                if idx < k {
+                    grad_a_data[i * k + idx] += grad_c[(i, j)].value();
+                }
+            }
+        }
+
+        Ok(Mat::from_row_major(&grad_a_data, m, k))
+    }
+
+    /// Compute gradient with respect to matrix B.
+    ///
+    /// Given the upstream gradient dL/dC, computes dL/dB using the argmax
+    /// indices from the forward pass.
+    ///
+    /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
+    /// dL/dB[k,j] = Σ_i { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - CUDA context
+    /// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
+    /// * `k` - Number of rows in B (the inner dimension)
+    ///
+    /// # Returns
+    ///
+    /// Gradient of the loss with respect to B, dimensions k×n
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use tropical_gemm::{Mat, MaxPlus};
+    /// use tropical_gemm_cuda::{CudaContext, GpuMat};
+    ///
+    /// let ctx = CudaContext::new()?;
+    ///
+    /// // Forward pass with argmax
+    /// let a_gpu = GpuMat::from_matref(&ctx, &a)?;
+    /// let b_gpu = GpuMat::from_matref(&ctx, &b)?;
+    /// let result = a_gpu.matmul_argmax(&ctx, &b_gpu)?;
+    ///
+    /// // Backward pass
+    /// let grad_c = Mat::<MaxPlus<f32>>::from_fn(m, n, |_, _| MaxPlus(1.0));
+    /// let grad_b = result.backward_b(&ctx, &grad_c, k)?;
+    /// ```
+    pub fn backward_b<G>(&self, ctx: &CudaContext, grad_c: &Mat<G>, k: usize) -> Result<Mat<G>>
+    where
+        G: TropicalSemiring,
+        G::Scalar: Copy + Default + std::ops::AddAssign,
+    {
+        let m = self.nrows();
+        let n = self.ncols();
+        assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
+        assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
+
+        // Download argmax to host
+        let argmax = self.inner.argmax_to_host_row_major(ctx)?;
+
+        let mut grad_b_data = vec![G::Scalar::default(); k * n];
+
+        for i in 0..m {
+            for j in 0..n {
+                let idx = argmax[i * n + j] as usize;
+                if idx < k {
+                    grad_b_data[idx * n + j] += grad_c[(i, j)].value();
+                }
+            }
+        }
+
+        Ok(Mat::from_row_major(&grad_b_data, k, n))
+    }
 }
 
 #[cfg(test)]
@@ -611,5 +735,81 @@ mod tests {
 
         let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(&ctx, &a_gpu, &b_gpu).unwrap();
         assert!(c_gpu.is_empty());
+    }
+
+    #[test]
+    fn test_gpu_mat_backward_a() {
+        use tropical_gemm::TropicalMaxPlus;
+
+        let ctx = match CudaContext::new() {
+            Ok(c) => c,
+            Err(_) => {
+                println!("CUDA not available, skipping test");
+                return;
+            }
+        };
+
+        let a_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        let a = MatRef::<MaxPlus<f32>>::from_slice(&a_data, 2, 3);
+        let b = MatRef::<MaxPlus<f32>>::from_slice(&b_data, 3, 2);
+
+        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
+        let b_gpu = GpuMat::from_matref(&ctx, &b).unwrap();
+
+        // Forward pass
+        let result = a_gpu.matmul_argmax(&ctx, &b_gpu).unwrap();
+
+        // Backward pass with unit gradients
+        let grad_c = Mat::<MaxPlus<f32>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+        let grad_a = result.backward_a(&ctx, &grad_c, 3).unwrap();
+
+        // All argmax should be 2 (k=2 wins for all)
+        // So only column 2 should have gradients
+        assert_eq!(grad_a.nrows(), 2);
+        assert_eq!(grad_a.ncols(), 3);
+        assert!((grad_a[(0, 0)].value() - 0.0).abs() < 1e-5);
+        assert!((grad_a[(0, 1)].value() - 0.0).abs() < 1e-5);
+        assert!((grad_a[(0, 2)].value() - 2.0).abs() < 1e-5); // 2 outputs use k=2
+        assert!((grad_a[(1, 2)].value() - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_gpu_mat_backward_b() {
+        use tropical_gemm::TropicalMaxPlus;
+
+        let ctx = match CudaContext::new() {
+            Ok(c) => c,
+            Err(_) => {
+                println!("CUDA not available, skipping test");
+                return;
+            }
+        };
+
+        let a_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        let a = MatRef::<MaxPlus<f32>>::from_slice(&a_data, 2, 3);
+        let b = MatRef::<MaxPlus<f32>>::from_slice(&b_data, 3, 2);
+
+        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
+        let b_gpu = GpuMat::from_matref(&ctx, &b).unwrap();
+
+        // Forward pass
+        let result = a_gpu.matmul_argmax(&ctx, &b_gpu).unwrap();
+
+        // Backward pass with unit gradients
+        let grad_c = Mat::<MaxPlus<f32>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+        let grad_b = result.backward_b(&ctx, &grad_c, 3).unwrap();
+
+        // All argmax should be 2 (k=2 wins for all)
+        // So only row 2 should have gradients
+        assert_eq!(grad_b.nrows(), 3);
+        assert_eq!(grad_b.ncols(), 2);
+        assert!((grad_b[(0, 0)].value() - 0.0).abs() < 1e-5);
+        assert!((grad_b[(1, 0)].value() - 0.0).abs() < 1e-5);
+        assert!((grad_b[(2, 0)].value() - 2.0).abs() < 1e-5); // 2 outputs use k=2
+        assert!((grad_b[(2, 1)].value() - 2.0).abs() < 1e-5);
     }
 }
