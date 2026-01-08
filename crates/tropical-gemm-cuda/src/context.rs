@@ -30,6 +30,11 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_minplus_f32_nn_with_argmax",
     "tropical_maxplus_f64_nn_with_argmax",
     "tropical_minplus_f64_nn_with_argmax",
+    // Backward pass kernels (gradient computation)
+    "tropical_backward_a_f32",
+    "tropical_backward_b_f32",
+    "tropical_backward_a_f64",
+    "tropical_backward_b_f64",
 ];
 
 /// CUDA context for tropical GEMM operations.

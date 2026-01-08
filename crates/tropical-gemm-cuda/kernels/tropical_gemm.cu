@@ -5,6 +5,25 @@
 #define INFINITY __int_as_float(0x7f800000)
 #define INFINITY_F64 __longlong_as_double(0x7ff0000000000000LL)
 
+// atomicAdd for double is not supported on all architectures
+// Implement using atomicCAS for portability
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 600
+__device__ double atomicAddDouble(double* address, double val) {
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
+#else
+__device__ double atomicAddDouble(double* address, double val) {
+    return atomicAdd(address, val);
+}
+#endif
+
 //
 // Blocking parameters:
 // - BLOCK_SIZE_M = 64: rows of C per thread block
@@ -971,6 +990,120 @@ extern "C" __global__ void tropical_minplus_f64_nn_with_argmax(
                 C[out_idx] = accum[local_idx];
                 argmax[out_idx] = accum_idx[local_idx];
             }
+        }
+    }
+}
+
+// ============================================================================
+// BACKWARD PASS KERNELS (GRADIENT COMPUTATION)
+// ============================================================================
+// These kernels compute gradients for tropical GEMM using the argmax indices
+// from the forward pass. Uses atomicAdd for thread-safe accumulation.
+//
+// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
+//   grad_A[i,k] = Σ_j { grad_C[i,j] if argmax[i,j] == k }
+//   grad_B[k,j] = Σ_i { grad_C[i,j] if argmax[i,j] == k }
+
+// ============================================================================
+// Backward pass for grad_A (f32): grad_A[i,k] += grad_C[i,j] if argmax[i,j]==k
+// ============================================================================
+
+extern "C" __global__ void tropical_backward_a_f32(
+    const float* __restrict__ grad_c,    // Input: gradient w.r.t. C (M x N, col-major)
+    const int* __restrict__ argmax,      // Input: argmax indices from forward (M x N, col-major)
+    float* __restrict__ grad_a,          // Output: gradient w.r.t. A (M x K, col-major)
+    int M, int N, int K
+) {
+    // Each thread handles one element of C
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = M * N;
+
+    if (idx < total) {
+        // Convert linear index to row in column-major order
+        int i = idx % M;  // row
+
+        int k = argmax[idx];  // Which k produced C[i,j]
+
+        if (k >= 0 && k < K) {
+            // grad_A[i, k] += grad_C[i, j]
+            // In column-major: grad_A[i + k*M]
+            atomicAdd(&grad_a[i + k * M], grad_c[idx]);
+        }
+    }
+}
+
+// ============================================================================
+// Backward pass for grad_B (f32): grad_B[k,j] += grad_C[i,j] if argmax[i,j]==k
+// ============================================================================
+
+extern "C" __global__ void tropical_backward_b_f32(
+    const float* __restrict__ grad_c,    // Input: gradient w.r.t. C (M x N, col-major)
+    const int* __restrict__ argmax,      // Input: argmax indices from forward (M x N, col-major)
+    float* __restrict__ grad_b,          // Output: gradient w.r.t. B (K x N, col-major)
+    int M, int N, int K
+) {
+    // Each thread handles one element of C
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = M * N;
+
+    if (idx < total) {
+        // Convert linear index to column in column-major order
+        int j = idx / M;  // col
+
+        int k = argmax[idx];  // Which k produced C[i,j]
+
+        if (k >= 0 && k < K) {
+            // grad_B[k, j] += grad_C[i, j]
+            // In column-major: grad_B[k + j*K]
+            atomicAdd(&grad_b[k + j * K], grad_c[idx]);
+        }
+    }
+}
+
+// ============================================================================
+// Backward pass for grad_A (f64): grad_A[i,k] += grad_C[i,j] if argmax[i,j]==k
+// ============================================================================
+
+extern "C" __global__ void tropical_backward_a_f64(
+    const double* __restrict__ grad_c,
+    const int* __restrict__ argmax,
+    double* __restrict__ grad_a,
+    int M, int N, int K
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = M * N;
+
+    if (idx < total) {
+        int i = idx % M;
+
+        int k = argmax[idx];
+
+        if (k >= 0 && k < K) {
+            atomicAddDouble(&grad_a[i + k * M], grad_c[idx]);
+        }
+    }
+}
+
+// ============================================================================
+// Backward pass for grad_B (f64): grad_B[k,j] += grad_C[i,j] if argmax[i,j]==k
+// ============================================================================
+
+extern "C" __global__ void tropical_backward_b_f64(
+    const double* __restrict__ grad_c,
+    const int* __restrict__ argmax,
+    double* __restrict__ grad_b,
+    int M, int N, int K
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = M * N;
+
+    if (idx < total) {
+        int j = idx / M;
+
+        int k = argmax[idx];
+
+        if (k >= 0 && k < K) {
+            atomicAddDouble(&grad_b[k + j * K], grad_c[idx]);
         }
     }
 }

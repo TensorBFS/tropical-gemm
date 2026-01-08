@@ -684,6 +684,202 @@ where
         .collect()
 }
 
+// ============================================================================
+// True GPU Backward Pass (using CUDA kernels with atomicAdd)
+// ============================================================================
+
+/// Compute gradient with respect to matrix A on GPU using CUDA kernel.
+///
+/// This is a true GPU implementation using atomicAdd for parallel scatter.
+/// Much faster than CPU for large matrices.
+///
+/// # Arguments
+///
+/// * `ctx` - CUDA context with compiled kernels
+/// * `grad_c` - Gradient w.r.t. C on GPU (M x N)
+/// * `argmax` - Argmax indices on GPU (M x N)
+/// * `m` - Number of rows in A and C
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in B and C
+///
+/// # Returns
+///
+/// Gradient w.r.t. A on GPU (M x K), initialized to zero and accumulated
+pub fn tropical_backward_a_gpu_kernel(
+    ctx: &CudaContext,
+    grad_c: &GpuMatrix<f32>,
+    argmax: &cudarc::driver::CudaSlice<i32>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<GpuMatrix<f32>> {
+    use cudarc::driver::LaunchAsync;
+
+    // Allocate output gradient (initialized to zero)
+    let mut grad_a = GpuMatrix::alloc(ctx, m, k)?;
+
+    let kernel = ctx.get_kernel("tropical_backward_a_f32")?;
+
+    let total = m * n;
+    let block_size = 256u32;
+    let grid_size = ((total as u32) + block_size - 1) / block_size;
+
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (grid_size, 1, 1),
+        block_dim: (block_size, 1, 1),
+        shared_mem_bytes: 0,
+    };
+
+    unsafe {
+        kernel.launch(
+            cfg,
+            (
+                grad_c.as_slice(),
+                argmax,
+                grad_a.as_slice_mut(),
+                m as i32,
+                n as i32,
+                k as i32,
+            ),
+        )?;
+    }
+
+    ctx.device().synchronize()?;
+    Ok(grad_a)
+}
+
+/// Compute gradient with respect to matrix B on GPU using CUDA kernel.
+///
+/// This is a true GPU implementation using atomicAdd for parallel scatter.
+/// Much faster than CPU for large matrices.
+///
+/// # Arguments
+///
+/// * `ctx` - CUDA context with compiled kernels
+/// * `grad_c` - Gradient w.r.t. C on GPU (M x N)
+/// * `argmax` - Argmax indices on GPU (M x N)
+/// * `m` - Number of rows in A and C
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in B and C
+///
+/// # Returns
+///
+/// Gradient w.r.t. B on GPU (K x N), initialized to zero and accumulated
+pub fn tropical_backward_b_gpu_kernel(
+    ctx: &CudaContext,
+    grad_c: &GpuMatrix<f32>,
+    argmax: &cudarc::driver::CudaSlice<i32>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<GpuMatrix<f32>> {
+    use cudarc::driver::LaunchAsync;
+
+    // Allocate output gradient (initialized to zero)
+    let mut grad_b = GpuMatrix::alloc(ctx, k, n)?;
+
+    let kernel = ctx.get_kernel("tropical_backward_b_f32")?;
+
+    let total = m * n;
+    let block_size = 256u32;
+    let grid_size = ((total as u32) + block_size - 1) / block_size;
+
+    let cfg = cudarc::driver::LaunchConfig {
+        grid_dim: (grid_size, 1, 1),
+        block_dim: (block_size, 1, 1),
+        shared_mem_bytes: 0,
+    };
+
+    unsafe {
+        kernel.launch(
+            cfg,
+            (
+                grad_c.as_slice(),
+                argmax,
+                grad_b.as_slice_mut(),
+                m as i32,
+                n as i32,
+                k as i32,
+            ),
+        )?;
+    }
+
+    ctx.device().synchronize()?;
+    Ok(grad_b)
+}
+
+/// High-level GPU backward pass for gradient w.r.t. A.
+///
+/// Uploads grad_c and argmax to GPU, computes gradient, downloads result.
+/// For best performance, use `tropical_backward_a_gpu_kernel` with data already on GPU.
+pub fn tropical_backward_a_gpu_cuda(
+    ctx: &CudaContext,
+    grad_c: &[f32],
+    argmax: &[ArgmaxIndex],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<Vec<f32>> {
+    assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
+    assert_eq!(argmax.len(), m * n, "argmax size mismatch");
+
+    // Upload to GPU (column-major conversion)
+    let grad_c_gpu = GpuMatrix::from_host_row_major(ctx, grad_c, m, n)?;
+
+    // Convert argmax to i32 and upload
+    let argmax_i32: Vec<i32> = argmax.iter().map(|&x| x as i32).collect();
+    // Convert to column-major for GPU
+    let mut argmax_col_major = vec![0i32; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            argmax_col_major[i + j * m] = argmax_i32[i * n + j];
+        }
+    }
+    let argmax_gpu = ctx.device().htod_sync_copy(&argmax_col_major)?;
+
+    // Run kernel
+    let grad_a_gpu = tropical_backward_a_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
+
+    // Download result
+    grad_a_gpu.to_host_row_major(ctx)
+}
+
+/// High-level GPU backward pass for gradient w.r.t. B.
+///
+/// Uploads grad_c and argmax to GPU, computes gradient, downloads result.
+/// For best performance, use `tropical_backward_b_gpu_kernel` with data already on GPU.
+pub fn tropical_backward_b_gpu_cuda(
+    ctx: &CudaContext,
+    grad_c: &[f32],
+    argmax: &[ArgmaxIndex],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<Vec<f32>> {
+    assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
+    assert_eq!(argmax.len(), m * n, "argmax size mismatch");
+
+    // Upload to GPU (column-major conversion)
+    let grad_c_gpu = GpuMatrix::from_host_row_major(ctx, grad_c, m, n)?;
+
+    // Convert argmax to i32 and upload
+    let argmax_i32: Vec<i32> = argmax.iter().map(|&x| x as i32).collect();
+    // Convert to column-major for GPU
+    let mut argmax_col_major = vec![0i32; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            argmax_col_major[i + j * m] = argmax_i32[i * n + j];
+        }
+    }
+    let argmax_gpu = ctx.device().htod_sync_copy(&argmax_col_major)?;
+
+    // Run kernel
+    let grad_b_gpu = tropical_backward_b_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
+
+    // Download result
+    grad_b_gpu.to_host_row_major(ctx)
+}
+
 /// Batched tropical matrix multiplication with argmax tracking on GPU.
 ///
 /// Computes C[i] = A[i] ⊗ B[i] for i = 0..batch_size, with argmax indices.
