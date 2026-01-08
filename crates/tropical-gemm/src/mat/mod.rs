@@ -440,4 +440,91 @@ mod tests {
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
         let _ = a.matmul_ref(&b); // Should panic
     }
+
+    // ========================================================================
+    // Batched operation tests
+    // ========================================================================
+
+    #[test]
+    fn test_mat_matmul_batched() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+
+        let results = Mat::matmul_batched(&[a1, a2], &[b1, b2]);
+        assert_eq!(results.len(), 2);
+
+        // C[0] = A[0] * B[0] (MaxPlus)
+        // C[0,0] = max(1+1, 2+0) = 2
+        assert!((results[0][(0, 0)].0 - 2.0).abs() < 1e-5);
+
+        // C[1] = A[1] * B[1] (MaxPlus)
+        // C[0,0] = max(5+1, 6+3) = 9
+        assert!((results[1][(0, 0)].0 - 9.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_mat_matmul_batched_empty() {
+        let a_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+        let b_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+
+        let results = Mat::matmul_batched(&a_batch, &b_batch);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "batch sizes must match")]
+    fn test_mat_matmul_batched_size_mismatch() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+
+        let _ = Mat::matmul_batched(&[a1], &[b1, b2]); // Should panic
+    }
+
+    #[test]
+    #[should_panic(expected = "has dimensions")]
+    fn test_mat_matmul_batched_dimension_mismatch() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], 2, 3); // Different size
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+
+        let _ = Mat::matmul_batched(&[a1, a2], &[b1, b2]); // Should panic
+    }
+
+    #[test]
+    fn test_mat_matmul_batched_with_argmax() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[6.0, 5.0, 4.0, 3.0, 2.0, 1.0], 2, 3);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        let results = Mat::matmul_batched_with_argmax(&[a1, a2], &[b1, b2]);
+        assert_eq!(results.len(), 2);
+
+        // C[0,0] = max(1+1, 2+3, 3+5) = 8, argmax=2
+        assert!((results[0].get(0, 0).0 - 8.0).abs() < 1e-5);
+        assert_eq!(results[0].get_argmax(0, 0), 2);
+    }
+
+    #[test]
+    fn test_mat_matmul_batched_with_argmax_empty() {
+        let a_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+        let b_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+
+        let results = Mat::matmul_batched_with_argmax(&a_batch, &b_batch);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "batch sizes must match")]
+    fn test_mat_matmul_batched_with_argmax_size_mismatch() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        let _ = Mat::matmul_batched_with_argmax(&[a1], &[b1, b2]); // Should panic
+    }
 }
