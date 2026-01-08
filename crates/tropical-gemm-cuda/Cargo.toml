@@ -9,3 +9,10 @@ description = "CUDA backend for tropical matrix multiplication"
 tropical-gemm = { workspace = true }
 cudarc = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "tropical_ad_bench"
+harness = false

@@ -678,6 +678,7 @@ dependencies = [
 name = "tropical-gemm-cuda"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "cudarc",
  "thiserror",
  "tropical-gemm",
