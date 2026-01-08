@@ -166,6 +166,202 @@ where
             _phantom: PhantomData,
         })
     }
+
+    /// Batched tropical matrix multiplication with argmax tracking.
+    ///
+    /// Computes C[i] = A[i] ⊗ B[i] for each pair of GPU matrices,
+    /// tracking which k-index produced each optimal value.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - CUDA context
+    /// * `a_batch` - Slice of GPU matrices A[i]
+    /// * `b_batch` - Slice of GPU matrices B[i]
+    ///
+    /// # Returns
+    ///
+    /// Vector of GpuMatWithArgmax results, one for each matrix pair.
+    pub fn matmul_batched_with_argmax(
+        ctx: &CudaContext,
+        a_batch: &[GpuMat<S>],
+        b_batch: &[GpuMat<S>],
+    ) -> Result<Vec<GpuMatWithArgmax<S>>> {
+        if a_batch.len() != b_batch.len() {
+            return Err(crate::CudaError::DimensionMismatch(format!(
+                "Batch sizes must match: {} != {}",
+                a_batch.len(),
+                b_batch.len()
+            )));
+        }
+
+        if a_batch.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate dimensions
+        let (m, k) = (a_batch[0].nrows(), a_batch[0].ncols());
+        let n = b_batch[0].ncols();
+
+        for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+            if a.nrows() != m || a.ncols() != k {
+                return Err(crate::CudaError::DimensionMismatch(format!(
+                    "A[{}] has dimensions {}x{}, expected {}x{}",
+                    i,
+                    a.nrows(),
+                    a.ncols(),
+                    m,
+                    k
+                )));
+            }
+            if b.nrows() != k || b.ncols() != n {
+                return Err(crate::CudaError::DimensionMismatch(format!(
+                    "B[{}] has dimensions {}x{}, expected {}x{}",
+                    i,
+                    b.nrows(),
+                    b.ncols(),
+                    k,
+                    n
+                )));
+            }
+        }
+
+        a_batch
+            .iter()
+            .zip(b_batch.iter())
+            .map(|(a, b)| a.matmul_argmax(ctx, b))
+            .collect()
+    }
+}
+
+// Batched operations
+impl<S> GpuMat<S>
+where
+    S: CudaKernel,
+    S::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
+{
+    /// Upload a batch of CPU matrices to GPU.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use tropical_gemm::{Mat, MaxPlus};
+    /// use tropical_gemm_cuda::{CudaContext, GpuMat};
+    ///
+    /// let ctx = CudaContext::new()?;
+    /// let mats = vec![
+    ///     Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2),
+    ///     Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2),
+    /// ];
+    /// let gpu_mats = GpuMat::from_mats(&ctx, &mats)?;
+    /// ```
+    pub fn from_mats(ctx: &CudaContext, mats: &[Mat<S>]) -> Result<Vec<GpuMat<S>>>
+    where
+        S::Scalar: Copy,
+    {
+        mats.iter()
+            .map(|m| {
+                let mat_ref = m.as_ref();
+                GpuMat::from_matref(ctx, &mat_ref)
+            })
+            .collect()
+    }
+
+    /// Download a batch of GPU matrices to CPU.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let cpu_mats = GpuMat::to_mats(&ctx, &gpu_mats)?;
+    /// ```
+    pub fn to_mats(ctx: &CudaContext, gpu_mats: &[GpuMat<S>]) -> Result<Vec<Mat<S>>>
+    where
+        S::Scalar: Copy,
+    {
+        gpu_mats.iter().map(|m| m.to_mat(ctx)).collect()
+    }
+
+    /// Batched tropical matrix multiplication on GPU.
+    ///
+    /// Computes C[i] = A[i] ⊗ B[i] for each pair of GPU matrices.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - CUDA context
+    /// * `a_batch` - Slice of GPU matrices A[i]
+    /// * `b_batch` - Slice of GPU matrices B[i]
+    ///
+    /// # Returns
+    ///
+    /// Vector of GPU result matrices C[i].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use tropical_gemm::{Mat, MaxPlus};
+    /// use tropical_gemm_cuda::{CudaContext, GpuMat};
+    ///
+    /// let ctx = CudaContext::new()?;
+    ///
+    /// // Upload matrices to GPU
+    /// let a_gpu = GpuMat::from_mats(&ctx, &a_mats)?;
+    /// let b_gpu = GpuMat::from_mats(&ctx, &b_mats)?;
+    ///
+    /// // Batched multiply on GPU
+    /// let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(&ctx, &a_gpu, &b_gpu)?;
+    ///
+    /// // Download results
+    /// let c_mats = GpuMat::to_mats(&ctx, &c_gpu)?;
+    /// ```
+    pub fn matmul_batched(
+        ctx: &CudaContext,
+        a_batch: &[GpuMat<S>],
+        b_batch: &[GpuMat<S>],
+    ) -> Result<Vec<GpuMat<S>>> {
+        if a_batch.len() != b_batch.len() {
+            return Err(crate::CudaError::DimensionMismatch(format!(
+                "Batch sizes must match: {} != {}",
+                a_batch.len(),
+                b_batch.len()
+            )));
+        }
+
+        if a_batch.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate dimensions
+        let (m, k) = (a_batch[0].nrows(), a_batch[0].ncols());
+        let n = b_batch[0].ncols();
+
+        for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+            if a.nrows() != m || a.ncols() != k {
+                return Err(crate::CudaError::DimensionMismatch(format!(
+                    "A[{}] has dimensions {}x{}, expected {}x{}",
+                    i,
+                    a.nrows(),
+                    a.ncols(),
+                    m,
+                    k
+                )));
+            }
+            if b.nrows() != k || b.ncols() != n {
+                return Err(crate::CudaError::DimensionMismatch(format!(
+                    "B[{}] has dimensions {}x{}, expected {}x{}",
+                    i,
+                    b.nrows(),
+                    b.ncols(),
+                    k,
+                    n
+                )));
+            }
+        }
+
+        a_batch
+            .iter()
+            .zip(b_batch.iter())
+            .map(|(a, b)| a.matmul(ctx, b))
+            .collect()
+    }
 }
 
 /// A GPU matrix with argmax tracking for backward propagation.
@@ -225,7 +421,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_gemm::{MaxPlus, MinPlus, TropicalSemiring};
+    use tropical_gemm::{Mat, MaxPlus, MinPlus, TropicalSemiring};
 
     #[test]
     fn test_gpu_mat_basic() {
@@ -331,5 +527,89 @@ mod tests {
         assert!((c[(0, 0)].value() - 2.0).abs() < 1e-5);
         // C[1,1] = min(4+2, 5+4, 6+6) = 6
         assert!((c[(1, 1)].value() - 6.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_gpu_mat_batched() {
+        let ctx = match CudaContext::new() {
+            Ok(c) => c,
+            Err(_) => {
+                println!("CUDA not available, skipping test");
+                return;
+            }
+        };
+
+        // Create batch of CPU matrices
+        let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
+        let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+
+        // Upload batch to GPU
+        let a_gpu = GpuMat::from_mats(&ctx, &[a1, a2]).unwrap();
+        let b_gpu = GpuMat::from_mats(&ctx, &[b1, b2]).unwrap();
+
+        // Batched matmul
+        let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(&ctx, &a_gpu, &b_gpu).unwrap();
+        assert_eq!(c_gpu.len(), 2);
+
+        // Download results
+        let c_mats = GpuMat::to_mats(&ctx, &c_gpu).unwrap();
+        assert_eq!(c_mats.len(), 2);
+
+        // C[0] = A[0] * B[0] (MaxPlus)
+        // C[0,0] = max(1+1, 2+0) = 2
+        assert!((c_mats[0][(0, 0)].value() - 2.0).abs() < 1e-5);
+
+        // C[1] = A[1] * B[1] (MaxPlus)
+        // C[0,0] = max(5+1, 6+3) = 9
+        assert!((c_mats[1][(0, 0)].value() - 9.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_gpu_mat_batched_with_argmax() {
+        let ctx = match CudaContext::new() {
+            Ok(c) => c,
+            Err(_) => {
+                println!("CUDA not available, skipping test");
+                return;
+            }
+        };
+
+        let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[6.0, 5.0, 4.0, 3.0, 2.0, 1.0], 2, 3);
+        let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        // Upload to GPU
+        let a_gpu = GpuMat::from_mats(&ctx, &[a1, a2]).unwrap();
+        let b_gpu = GpuMat::from_mats(&ctx, &[b1, b2]).unwrap();
+
+        // Batched matmul with argmax
+        let results =
+            GpuMat::<MaxPlus<f32>>::matmul_batched_with_argmax(&ctx, &a_gpu, &b_gpu).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Download and verify
+        let r0 = results[0].to_mat_with_argmax(&ctx).unwrap();
+        assert!((r0.get(0, 0).value() - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5) = 8
+        assert_eq!(r0.get_argmax(0, 0), 2);
+    }
+
+    #[test]
+    fn test_gpu_mat_batched_empty() {
+        let ctx = match CudaContext::new() {
+            Ok(c) => c,
+            Err(_) => {
+                println!("CUDA not available, skipping test");
+                return;
+            }
+        };
+
+        let a_gpu: Vec<GpuMat<MaxPlus<f32>>> = vec![];
+        let b_gpu: Vec<GpuMat<MaxPlus<f32>>> = vec![];
+
+        let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(&ctx, &a_gpu, &b_gpu).unwrap();
+        assert!(c_gpu.is_empty());
     }
 }

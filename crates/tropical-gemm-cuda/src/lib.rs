@@ -321,6 +321,242 @@ where
     Ok(c)
 }
 
+// ============================================================================
+// Batched GEMM API
+// ============================================================================
+
+/// Batched tropical matrix multiplication on GPU.
+///
+/// Computes C[i] = A[i] ⊗ B[i] for i = 0..batch_size.
+/// All matrices in the batch must have the same dimensions.
+///
+/// # Arguments
+///
+/// * `a_batch` - Slice of batch_size matrices A[i], each of size m×k
+/// * `b_batch` - Slice of batch_size matrices B[i], each of size k×n
+/// * `m` - Number of rows in each A matrix
+/// * `k` - Number of columns in A / rows in B
+/// * `n` - Number of columns in each B matrix
+///
+/// # Returns
+///
+/// Vector of batch_size result matrices C[i], each of size m×n
+///
+/// # Example
+///
+/// ```ignore
+/// use tropical_gemm_cuda::tropical_matmul_gpu_batched;
+/// use tropical_gemm::TropicalMaxPlus;
+///
+/// let a_batch = vec![
+///     vec![1.0f32, 2.0, 3.0, 4.0],  // A[0]: 2x2
+///     vec![5.0f32, 6.0, 7.0, 8.0],  // A[1]: 2x2
+/// ];
+/// let b_batch = vec![
+///     vec![1.0f32, 2.0, 3.0, 4.0],  // B[0]: 2x2
+///     vec![1.0f32, 2.0, 3.0, 4.0],  // B[1]: 2x2
+/// ];
+///
+/// let c_batch = tropical_matmul_gpu_batched::<TropicalMaxPlus<f32>>(&a_batch, &b_batch, 2, 2, 2)?;
+/// assert_eq!(c_batch.len(), 2);
+/// ```
+pub fn tropical_matmul_gpu_batched<T>(
+    a_batch: &[Vec<T::Scalar>],
+    b_batch: &[Vec<T::Scalar>],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<Vec<Vec<T::Scalar>>>
+where
+    T: CudaKernel,
+    T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
+{
+    if a_batch.len() != b_batch.len() {
+        return Err(CudaError::DimensionMismatch(format!(
+            "Batch sizes must match: A has {} matrices, B has {}",
+            a_batch.len(),
+            b_batch.len()
+        )));
+    }
+
+    let batch_size = a_batch.len();
+    if batch_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Validate dimensions
+    for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+        if a.len() != m * k {
+            return Err(CudaError::DimensionMismatch(format!(
+                "A[{}] dimensions mismatch: expected {}, got {}",
+                i,
+                m * k,
+                a.len()
+            )));
+        }
+        if b.len() != k * n {
+            return Err(CudaError::DimensionMismatch(format!(
+                "B[{}] dimensions mismatch: expected {}, got {}",
+                i,
+                k * n,
+                b.len()
+            )));
+        }
+    }
+
+    let ctx = CudaContext::new()?;
+    let mut results = Vec::with_capacity(batch_size);
+
+    for (a, b) in a_batch.iter().zip(b_batch.iter()) {
+        let a_gpu = GpuMatrix::from_host_row_major(&ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host_row_major(&ctx, b, k, n)?;
+        let mut c_gpu = GpuMatrix::alloc(&ctx, m, n)?;
+
+        T::launch_gemm(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+
+        results.push(c_gpu.to_host_row_major(&ctx)?);
+    }
+
+    Ok(results)
+}
+
+/// Strided batched tropical matrix multiplication on GPU.
+///
+/// Computes C[i] = A[i] ⊗ B[i] from contiguous memory.
+/// More efficient than `tropical_matmul_gpu_batched` when matrices are stored contiguously.
+///
+/// # Arguments
+///
+/// * `a` - Contiguous array of all A matrices (batch_size × m × k elements)
+/// * `b` - Contiguous array of all B matrices (batch_size × k × n elements)
+/// * `batch_size` - Number of matrix pairs
+/// * `m` - Rows in each A
+/// * `k` - Columns in A / rows in B
+/// * `n` - Columns in each B
+///
+/// # Returns
+///
+/// Contiguous array of all C matrices (batch_size × m × n elements)
+pub fn tropical_matmul_gpu_strided_batched<T>(
+    a: &[T::Scalar],
+    b: &[T::Scalar],
+    batch_size: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<Vec<T::Scalar>>
+where
+    T: CudaKernel,
+    T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
+{
+    let a_stride = m * k;
+    let b_stride = k * n;
+    let c_stride = m * n;
+
+    if a.len() != batch_size * a_stride {
+        return Err(CudaError::DimensionMismatch(format!(
+            "A size mismatch: expected {}, got {}",
+            batch_size * a_stride,
+            a.len()
+        )));
+    }
+    if b.len() != batch_size * b_stride {
+        return Err(CudaError::DimensionMismatch(format!(
+            "B size mismatch: expected {}, got {}",
+            batch_size * b_stride,
+            b.len()
+        )));
+    }
+
+    if batch_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let ctx = CudaContext::new()?;
+    let mut c = vec![T::Scalar::default(); batch_size * c_stride];
+
+    for i in 0..batch_size {
+        let a_slice = &a[i * a_stride..(i + 1) * a_stride];
+        let b_slice = &b[i * b_stride..(i + 1) * b_stride];
+
+        let a_gpu = GpuMatrix::from_host_row_major(&ctx, a_slice, m, k)?;
+        let b_gpu = GpuMatrix::from_host_row_major(&ctx, b_slice, k, n)?;
+        let mut c_gpu = GpuMatrix::alloc(&ctx, m, n)?;
+
+        T::launch_gemm(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+
+        let c_result = c_gpu.to_host_row_major(&ctx)?;
+        c[i * c_stride..(i + 1) * c_stride].copy_from_slice(&c_result);
+    }
+
+    Ok(c)
+}
+
+/// Batched tropical matrix multiplication with argmax tracking on GPU.
+///
+/// Computes C[i] = A[i] ⊗ B[i] for i = 0..batch_size, with argmax indices.
+pub fn tropical_matmul_gpu_batched_with_argmax<T>(
+    a_batch: &[Vec<T::Scalar>],
+    b_batch: &[Vec<T::Scalar>],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<Vec<(Vec<T::Scalar>, Vec<ArgmaxIndex>)>>
+where
+    T: CudaKernelWithArgmax,
+    T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
+{
+    if a_batch.len() != b_batch.len() {
+        return Err(CudaError::DimensionMismatch(format!(
+            "Batch sizes must match: A has {} matrices, B has {}",
+            a_batch.len(),
+            b_batch.len()
+        )));
+    }
+
+    let batch_size = a_batch.len();
+    if batch_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Validate dimensions
+    for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+        if a.len() != m * k {
+            return Err(CudaError::DimensionMismatch(format!(
+                "A[{}] dimensions mismatch: expected {}, got {}",
+                i,
+                m * k,
+                a.len()
+            )));
+        }
+        if b.len() != k * n {
+            return Err(CudaError::DimensionMismatch(format!(
+                "B[{}] dimensions mismatch: expected {}, got {}",
+                i,
+                k * n,
+                b.len()
+            )));
+        }
+    }
+
+    let ctx = CudaContext::new()?;
+    let mut results = Vec::with_capacity(batch_size);
+
+    for (a, b) in a_batch.iter().zip(b_batch.iter()) {
+        let a_gpu = GpuMatrix::from_host_row_major(&ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host_row_major(&ctx, b, k, n)?;
+        let mut c_gpu = GpuMatrixWithArgmax::alloc(&ctx, m, n)?;
+
+        T::launch_gemm_with_argmax(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+
+        let c_values = c_gpu.matrix_to_host_row_major(&ctx)?;
+        let c_argmax = c_gpu.argmax_to_host_row_major(&ctx)?;
+        results.push((c_values, c_argmax));
+    }
+
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,5 +917,200 @@ mod tests {
             "MaxPlus B-matrix finite difference test passed for {}x{}x{} matrices",
             m, k, n
         );
+    }
+
+    // ========================================================================
+    // Batched GEMM tests
+    // ========================================================================
+
+    #[test]
+    fn test_tropical_matmul_gpu_batched_basic() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Batch of 2 matrices, each 2x2
+        let a_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0], // A[0]: [[1,2],[3,4]]
+            vec![5.0f32, 6.0, 7.0, 8.0], // A[1]: [[5,6],[7,8]]
+        ];
+        let b_batch = vec![
+            vec![1.0f32, 0.0, 0.0, 1.0], // B[0]: [[1,0],[0,1]] (identity-ish)
+            vec![1.0f32, 2.0, 3.0, 4.0], // B[1]: [[1,2],[3,4]]
+        ];
+
+        let c_batch =
+            tropical_matmul_gpu_batched::<TropicalMaxPlus<f32>>(&a_batch, &b_batch, 2, 2, 2)
+                .unwrap();
+
+        assert_eq!(c_batch.len(), 2);
+
+        // C[0] = A[0] * B[0] (MaxPlus)
+        // C[0,0] = max(1+1, 2+0) = 2
+        // C[0,1] = max(1+0, 2+1) = 3
+        // C[1,0] = max(3+1, 4+0) = 4
+        // C[1,1] = max(3+0, 4+1) = 5
+        assert!((c_batch[0][0] - 2.0).abs() < 1e-5);
+        assert!((c_batch[0][1] - 3.0).abs() < 1e-5);
+        assert!((c_batch[0][2] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][3] - 5.0).abs() < 1e-5);
+
+        // C[1] = A[1] * B[1] (MaxPlus)
+        // C[0,0] = max(5+1, 6+3) = 9
+        // C[0,1] = max(5+2, 6+4) = 10
+        // C[1,0] = max(7+1, 8+3) = 11
+        // C[1,1] = max(7+2, 8+4) = 12
+        assert!((c_batch[1][0] - 9.0).abs() < 1e-5);
+        assert!((c_batch[1][1] - 10.0).abs() < 1e-5);
+        assert!((c_batch[1][2] - 11.0).abs() < 1e-5);
+        assert!((c_batch[1][3] - 12.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_batched_empty() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        let a_batch: Vec<Vec<f32>> = vec![];
+        let b_batch: Vec<Vec<f32>> = vec![];
+
+        let c_batch =
+            tropical_matmul_gpu_batched::<TropicalMaxPlus<f32>>(&a_batch, &b_batch, 2, 2, 2)
+                .unwrap();
+
+        assert!(c_batch.is_empty());
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_batched_dimension_mismatch() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        let a_batch = vec![vec![1.0f32, 2.0, 3.0, 4.0]];
+        let b_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0],
+            vec![5.0f32, 6.0, 7.0, 8.0], // Extra matrix
+        ];
+
+        let result =
+            tropical_matmul_gpu_batched::<TropicalMaxPlus<f32>>(&a_batch, &b_batch, 2, 2, 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_strided_batched_basic() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // 2 batches of 2x2 matrices, stored contiguously
+        let a = vec![
+            // Batch 0: [[1,2],[3,4]]
+            1.0f32, 2.0, 3.0, 4.0, // Batch 1: [[5,6],[7,8]]
+            5.0, 6.0, 7.0, 8.0,
+        ];
+        let b = vec![
+            // Batch 0: [[1,0],[0,1]]
+            1.0f32, 0.0, 0.0, 1.0, // Batch 1: [[1,2],[3,4]]
+            1.0, 2.0, 3.0, 4.0,
+        ];
+
+        let c = tropical_matmul_gpu_strided_batched::<TropicalMaxPlus<f32>>(&a, &b, 2, 2, 2, 2)
+            .unwrap();
+
+        // Should have 2 * 2 * 2 = 8 elements
+        assert_eq!(c.len(), 8);
+
+        // Batch 0 results (same as above test)
+        assert!((c[0] - 2.0).abs() < 1e-5);
+        assert!((c[1] - 3.0).abs() < 1e-5);
+        assert!((c[2] - 4.0).abs() < 1e-5);
+        assert!((c[3] - 5.0).abs() < 1e-5);
+
+        // Batch 1 results
+        assert!((c[4] - 9.0).abs() < 1e-5);
+        assert!((c[5] - 10.0).abs() < 1e-5);
+        assert!((c[6] - 11.0).abs() < 1e-5);
+        assert!((c[7] - 12.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_strided_batched_empty() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+
+        let c = tropical_matmul_gpu_strided_batched::<TropicalMaxPlus<f32>>(&a, &b, 0, 2, 2, 2)
+            .unwrap();
+
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_batched_with_argmax_basic() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Batch of 2 matrices
+        let a_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // A[0]: 2x3
+            vec![6.0f32, 5.0, 4.0, 3.0, 2.0, 1.0], // A[1]: 2x3 (reversed)
+        ];
+        let b_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[0]: 3x2
+            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[1]: 3x2
+        ];
+
+        let results = tropical_matmul_gpu_batched_with_argmax::<TropicalMaxPlus<f32>>(
+            &a_batch, &b_batch, 2, 3, 2,
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 2);
+
+        // Batch 0: same as single matrix test
+        let (c0, argmax0) = &results[0];
+        assert!((c0[0] - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5) = 8
+        assert_eq!(argmax0[0], 2);
+
+        // Batch 1: A[1] has reversed values
+        // C[0,0] = max(6+1, 5+3, 4+5) = max(7, 8, 9) = 9, argmax=2
+        let (c1, argmax1) = &results[1];
+        assert!((c1[0] - 9.0).abs() < 1e-5);
+        assert_eq!(argmax1[0], 2);
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_batched_minplus() {
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        let a_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0], // 2x2
+        ];
+        let b_batch = vec![
+            vec![1.0f32, 2.0, 3.0, 4.0], // 2x2
+        ];
+
+        let c_batch =
+            tropical_matmul_gpu_batched::<TropicalMinPlus<f32>>(&a_batch, &b_batch, 2, 2, 2)
+                .unwrap();
+
+        // MinPlus: C[i,j] = min_k(A[i,k] + B[k,j])
+        // C[0,0] = min(1+1, 2+3) = min(2, 5) = 2
+        // C[0,1] = min(1+2, 2+4) = min(3, 6) = 3
+        // C[1,0] = min(3+1, 4+3) = min(4, 7) = 4
+        // C[1,1] = min(3+2, 4+4) = min(5, 8) = 5
+        assert!((c_batch[0][0] - 2.0).abs() < 1e-5);
+        assert!((c_batch[0][1] - 3.0).abs() < 1e-5);
+        assert!((c_batch[0][2] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][3] - 5.0).abs() < 1e-5);
     }
 }

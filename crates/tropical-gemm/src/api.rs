@@ -2,6 +2,9 @@ use crate::core::{GemmWithArgmax, Transpose};
 use crate::simd::{tropical_gemm_dispatch, KernelDispatch};
 use crate::types::{TropicalSemiring, TropicalWithArgmax};
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 /// Simple tropical matrix multiplication: C = A ⊗ B
 ///
 /// Computes C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j])
@@ -212,6 +215,305 @@ pub unsafe fn tropical_gemm<T: TropicalSemiring + KernelDispatch>(
     ldc: usize,
 ) {
     tropical_gemm_dispatch::<T>(m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc);
+}
+
+/// Batched tropical matrix multiplication: C[i] = A[i] ⊗ B[i] for i = 0..batch_size
+///
+/// All matrices in the batch must have the same dimensions:
+/// - Each A[i] is m × k
+/// - Each B[i] is k × n
+/// - Each C[i] is m × n
+///
+/// # Arguments
+/// - `a_batch`: Slice of batch_size matrices, each of size m×k in row-major order
+/// - `b_batch`: Slice of batch_size matrices, each of size k×n in row-major order
+/// - `m`: Number of rows in each A matrix
+/// - `k`: Number of columns in A / rows in B
+/// - `n`: Number of columns in each B matrix
+///
+/// # Returns
+/// Vector of batch_size result matrices, each of size m×n
+///
+/// # Example
+///
+/// ```
+/// use tropical_gemm::{tropical_matmul_batched, TropicalMaxPlus};
+///
+/// // Two 2x2 matrix multiplications
+/// let a_batch = vec![
+///     vec![1.0f32, 2.0, 3.0, 4.0],  // A[0]: 2x2
+///     vec![5.0f32, 6.0, 7.0, 8.0],  // A[1]: 2x2
+/// ];
+/// let b_batch = vec![
+///     vec![1.0f32, 2.0, 3.0, 4.0],  // B[0]: 2x2
+///     vec![1.0f32, 2.0, 3.0, 4.0],  // B[1]: 2x2
+/// ];
+///
+/// let c_batch = tropical_matmul_batched::<TropicalMaxPlus<f32>>(&a_batch, &b_batch, 2, 2, 2);
+/// assert_eq!(c_batch.len(), 2);
+/// ```
+pub fn tropical_matmul_batched<T: TropicalSemiring + KernelDispatch>(
+    a_batch: &[Vec<T::Scalar>],
+    b_batch: &[Vec<T::Scalar>],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<Vec<T>>
+where
+    T::Scalar: Send + Sync,
+    T: Send + Sync,
+{
+    assert_eq!(
+        a_batch.len(),
+        b_batch.len(),
+        "Batch sizes must match: A has {} matrices, B has {}",
+        a_batch.len(),
+        b_batch.len()
+    );
+
+    let batch_size = a_batch.len();
+    if batch_size == 0 {
+        return Vec::new();
+    }
+
+    // Validate dimensions
+    for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+        assert_eq!(
+            a.len(),
+            m * k,
+            "A[{}] dimensions mismatch: expected {}, got {}",
+            i,
+            m * k,
+            a.len()
+        );
+        assert_eq!(
+            b.len(),
+            k * n,
+            "B[{}] dimensions mismatch: expected {}, got {}",
+            i,
+            k * n,
+            b.len()
+        );
+    }
+
+    #[cfg(feature = "parallel")]
+    {
+        a_batch
+            .par_iter()
+            .zip(b_batch.par_iter())
+            .map(|(a, b)| tropical_matmul::<T>(a, m, k, b, n))
+            .collect()
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        a_batch
+            .iter()
+            .zip(b_batch.iter())
+            .map(|(a, b)| tropical_matmul::<T>(a, m, k, b, n))
+            .collect()
+    }
+}
+
+/// Batched tropical matrix multiplication with argmax tracking.
+///
+/// C[i] = A[i] ⊗ B[i] for i = 0..batch_size, with argmax indices.
+///
+/// # Arguments
+/// - `a_batch`: Slice of batch_size matrices, each of size m×k
+/// - `b_batch`: Slice of batch_size matrices, each of size k×n
+/// - `m`: Number of rows in each A matrix
+/// - `k`: Number of columns in A / rows in B
+/// - `n`: Number of columns in each B matrix
+///
+/// # Returns
+/// Vector of batch_size GemmWithArgmax results
+pub fn tropical_matmul_batched_with_argmax<T: TropicalWithArgmax<Index = u32> + KernelDispatch>(
+    a_batch: &[Vec<T::Scalar>],
+    b_batch: &[Vec<T::Scalar>],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<GemmWithArgmax<T>>
+where
+    T::Scalar: Send + Sync,
+    T: Send + Sync,
+{
+    assert_eq!(
+        a_batch.len(),
+        b_batch.len(),
+        "Batch sizes must match: A has {} matrices, B has {}",
+        a_batch.len(),
+        b_batch.len()
+    );
+
+    let batch_size = a_batch.len();
+    if batch_size == 0 {
+        return Vec::new();
+    }
+
+    // Validate dimensions
+    for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+        assert_eq!(
+            a.len(),
+            m * k,
+            "A[{}] dimensions mismatch: expected {}, got {}",
+            i,
+            m * k,
+            a.len()
+        );
+        assert_eq!(
+            b.len(),
+            k * n,
+            "B[{}] dimensions mismatch: expected {}, got {}",
+            i,
+            k * n,
+            b.len()
+        );
+    }
+
+    #[cfg(feature = "parallel")]
+    {
+        a_batch
+            .par_iter()
+            .zip(b_batch.par_iter())
+            .map(|(a, b)| tropical_matmul_with_argmax::<T>(a, m, k, b, n))
+            .collect()
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        a_batch
+            .iter()
+            .zip(b_batch.iter())
+            .map(|(a, b)| tropical_matmul_with_argmax::<T>(a, m, k, b, n))
+            .collect()
+    }
+}
+
+/// Strided batched GEMM: computes C[i] = A[i] ⊗ B[i] from contiguous memory.
+///
+/// This is more efficient than `tropical_matmul_batched` when all matrices
+/// are stored contiguously in memory with fixed strides.
+///
+/// # Arguments
+/// - `a`: Contiguous array of all A matrices (batch_size × m × k elements)
+/// - `b`: Contiguous array of all B matrices (batch_size × k × n elements)
+/// - `batch_size`: Number of matrix pairs
+/// - `m`: Rows in each A
+/// - `k`: Columns in A / rows in B
+/// - `n`: Columns in each B
+///
+/// # Returns
+/// Contiguous array of all C matrices (batch_size × m × n elements)
+///
+/// # Example
+///
+/// ```
+/// use tropical_gemm::{tropical_matmul_strided_batched, TropicalMaxPlus};
+///
+/// // Two 2x2 matrix pairs stored contiguously
+/// let a = vec![
+///     1.0f32, 2.0, 3.0, 4.0,  // A[0]
+///     5.0, 6.0, 7.0, 8.0,      // A[1]
+/// ];
+/// let b = vec![
+///     1.0f32, 2.0, 3.0, 4.0,  // B[0]
+///     1.0, 2.0, 3.0, 4.0,      // B[1]
+/// ];
+///
+/// let c = tropical_matmul_strided_batched::<TropicalMaxPlus<f32>>(&a, &b, 2, 2, 2, 2);
+/// assert_eq!(c.len(), 8); // 2 batches × 2×2 results
+/// ```
+pub fn tropical_matmul_strided_batched<T: TropicalSemiring + KernelDispatch>(
+    a: &[T::Scalar],
+    b: &[T::Scalar],
+    batch_size: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<T>
+where
+    T::Scalar: Send + Sync + Copy,
+    T: Send + Sync,
+{
+    let a_stride = m * k;
+    let b_stride = k * n;
+    let c_stride = m * n;
+
+    assert_eq!(
+        a.len(),
+        batch_size * a_stride,
+        "A size mismatch: expected {}, got {}",
+        batch_size * a_stride,
+        a.len()
+    );
+    assert_eq!(
+        b.len(),
+        batch_size * b_stride,
+        "B size mismatch: expected {}, got {}",
+        batch_size * b_stride,
+        b.len()
+    );
+
+    if batch_size == 0 {
+        return Vec::new();
+    }
+
+    let mut c = vec![T::tropical_zero(); batch_size * c_stride];
+
+    #[cfg(feature = "parallel")]
+    {
+        c.par_chunks_mut(c_stride)
+            .enumerate()
+            .for_each(|(i, c_chunk)| {
+                let a_slice = &a[i * a_stride..(i + 1) * a_stride];
+                let b_slice = &b[i * b_stride..(i + 1) * b_stride];
+
+                unsafe {
+                    tropical_gemm_dispatch::<T>(
+                        m,
+                        n,
+                        k,
+                        a_slice.as_ptr(),
+                        k,
+                        Transpose::NoTrans,
+                        b_slice.as_ptr(),
+                        n,
+                        Transpose::NoTrans,
+                        c_chunk.as_mut_ptr(),
+                        n,
+                    );
+                }
+            });
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        for i in 0..batch_size {
+            let a_slice = &a[i * a_stride..(i + 1) * a_stride];
+            let b_slice = &b[i * b_stride..(i + 1) * b_stride];
+            let c_slice = &mut c[i * c_stride..(i + 1) * c_stride];
+
+            unsafe {
+                tropical_gemm_dispatch::<T>(
+                    m,
+                    n,
+                    k,
+                    a_slice.as_ptr(),
+                    k,
+                    Transpose::NoTrans,
+                    b_slice.as_ptr(),
+                    n,
+                    Transpose::NoTrans,
+                    c_slice.as_mut_ptr(),
+                    n,
+                );
+            }
+        }
+    }
+
+    c
 }
 
 #[cfg(test)]
@@ -514,5 +816,165 @@ mod tests {
         assert_eq!(c[1].0, 2.0);
         assert_eq!(c[2].0, 3.0);
         assert_eq!(c[3].0, 4.0);
+    }
+
+    #[test]
+    fn test_tropical_matmul_batched() {
+        let a_batch = vec![
+            vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0], // 2x3
+            vec![2.0f64, 3.0, 4.0, 5.0, 6.0, 7.0], // 2x3
+        ];
+        let b_batch = vec![
+            vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0], // 3x2
+            vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0], // 3x2
+        ];
+
+        let c_batch = tropical_matmul_batched::<TropicalMaxPlus<f64>>(&a_batch, &b_batch, 2, 3, 2);
+
+        assert_eq!(c_batch.len(), 2);
+
+        // C[0][0,0] = max(1+1, 2+3, 3+5) = 8
+        assert_eq!(c_batch[0][0].0, 8.0);
+        // C[0][1,1] = max(4+2, 5+4, 6+6) = 12
+        assert_eq!(c_batch[0][3].0, 12.0);
+
+        // C[1][0,0] = max(2+1, 3+3, 4+5) = 9
+        assert_eq!(c_batch[1][0].0, 9.0);
+        // C[1][1,1] = max(5+2, 6+4, 7+6) = 13
+        assert_eq!(c_batch[1][3].0, 13.0);
+    }
+
+    #[test]
+    fn test_tropical_matmul_batched_empty() {
+        let a_batch: Vec<Vec<f64>> = vec![];
+        let b_batch: Vec<Vec<f64>> = vec![];
+
+        let c_batch = tropical_matmul_batched::<TropicalMaxPlus<f64>>(&a_batch, &b_batch, 2, 2, 2);
+
+        assert!(c_batch.is_empty());
+    }
+
+    #[test]
+    fn test_tropical_matmul_batched_with_argmax() {
+        let a_batch = vec![
+            vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0], // 2x3
+            vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0], // 2x3
+        ];
+        let b_batch = vec![
+            vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],  // 3x2
+            vec![10.0f64, 2.0, 3.0, 4.0, 5.0, 6.0], // 3x2 (different first element)
+        ];
+
+        let results = tropical_matmul_batched_with_argmax::<TropicalMaxPlus<f64>>(
+            &a_batch, &b_batch, 2, 3, 2,
+        );
+
+        assert_eq!(results.len(), 2);
+
+        // First batch: C[0,0] = max(1+1, 2+3, 3+5) = 8 at k=2
+        assert_eq!(results[0].get(0, 0).0, 8.0);
+        assert_eq!(results[0].get_argmax(0, 0), 2);
+
+        // Second batch: C[0,0] = max(1+10, 2+3, 3+5) = 11 at k=0
+        assert_eq!(results[1].get(0, 0).0, 11.0);
+        assert_eq!(results[1].get_argmax(0, 0), 0);
+    }
+
+    #[test]
+    fn test_tropical_matmul_batched_with_argmax_empty() {
+        let a_batch: Vec<Vec<f64>> = vec![];
+        let b_batch: Vec<Vec<f64>> = vec![];
+
+        let results = tropical_matmul_batched_with_argmax::<TropicalMaxPlus<f64>>(
+            &a_batch, &b_batch, 2, 2, 2,
+        );
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_tropical_matmul_strided_batched() {
+        // Two 2x2 matrices stored contiguously
+        let a = vec![
+            1.0f64, 2.0, 3.0, 4.0, // A[0]
+            5.0, 6.0, 7.0, 8.0, // A[1]
+        ];
+        let b = vec![
+            1.0f64, 2.0, 3.0, 4.0, // B[0]
+            1.0, 2.0, 3.0, 4.0, // B[1]
+        ];
+
+        let c = tropical_matmul_strided_batched::<TropicalMaxPlus<f64>>(&a, &b, 2, 2, 2, 2);
+
+        assert_eq!(c.len(), 8);
+
+        // C[0][0,0] = max(1+1, 2+3) = 5
+        assert_eq!(c[0].0, 5.0);
+        // C[0][1,1] = max(3+2, 4+4) = 8
+        assert_eq!(c[3].0, 8.0);
+
+        // C[1][0,0] = max(5+1, 6+3) = 9
+        assert_eq!(c[4].0, 9.0);
+        // C[1][1,1] = max(7+2, 8+4) = 12
+        assert_eq!(c[7].0, 12.0);
+    }
+
+    #[test]
+    fn test_tropical_matmul_strided_batched_empty() {
+        let a: Vec<f64> = vec![];
+        let b: Vec<f64> = vec![];
+
+        let c = tropical_matmul_strided_batched::<TropicalMaxPlus<f64>>(&a, &b, 0, 2, 2, 2);
+
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn test_tropical_matmul_strided_batched_minplus() {
+        use crate::types::TropicalMinPlus;
+
+        let a = vec![
+            1.0f64, 2.0, 3.0, 4.0, // A[0]
+            5.0, 6.0, 7.0, 8.0, // A[1]
+        ];
+        let b = vec![
+            1.0f64, 2.0, 3.0, 4.0, // B[0]
+            1.0, 2.0, 3.0, 4.0, // B[1]
+        ];
+
+        let c = tropical_matmul_strided_batched::<TropicalMinPlus<f64>>(&a, &b, 2, 2, 2, 2);
+
+        assert_eq!(c.len(), 8);
+
+        // C[0][0,0] = min(1+1, 2+3) = 2
+        assert_eq!(c[0].0, 2.0);
+        // C[0][1,1] = min(3+2, 4+4) = 5
+        assert_eq!(c[3].0, 5.0);
+    }
+
+    #[test]
+    fn test_tropical_matmul_batched_larger() {
+        let batch_size = 10;
+        let m = 8;
+        let k = 6;
+        let n = 4;
+
+        let a_batch: Vec<Vec<f64>> = (0..batch_size)
+            .map(|i| (0..m * k).map(|j| (i * m * k + j) as f64).collect())
+            .collect();
+        let b_batch: Vec<Vec<f64>> = (0..batch_size)
+            .map(|_| (0..k * n).map(|j| j as f64).collect())
+            .collect();
+
+        let c_batch = tropical_matmul_batched::<TropicalMaxPlus<f64>>(&a_batch, &b_batch, m, k, n);
+
+        assert_eq!(c_batch.len(), batch_size);
+        for c in &c_batch {
+            assert_eq!(c.len(), m * n);
+            // Just verify all values are finite
+            for val in c {
+                assert!(val.0.is_finite());
+            }
+        }
     }
 }
