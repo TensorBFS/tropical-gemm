@@ -13,3 +13,12 @@ workspace = true
 
 # Exclude CUDA crate from testing (requires GPU)
 exclude = ["tropical-gemm-cuda"]
+
+# Exclude architecture-specific code (cannot be tested on single machine)
+# and CUDA crate (requires GPU hardware)
+exclude-files = [
+    "*/simd/detect.rs",         # CPU feature detection
+    "*/simd/dispatch.rs",       # Architecture-specific kernel dispatch
+    "*/backend.rs",             # SIMD level reporting
+    "*/tropical-gemm-cuda/*",   # CUDA crate (requires GPU)
+]
