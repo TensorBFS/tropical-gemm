@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --exclude tropical-gemm-cuda
+      - run: cargo test --workspace --exclude tropical-gemm-cuda --exclude tropical-gemm-metal
 
   clippy:
     name: Clippy
@@ -33,5 +33,5 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --exclude tropical-gemm-cuda --all-targets -- -W clippy::all
+      - run: cargo clippy --workspace --exclude tropical-gemm-cuda --exclude tropical-gemm-metal --all-targets -- -W clippy::all
 

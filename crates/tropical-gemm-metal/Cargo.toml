@@ -1,0 +1,20 @@
+[package]
+name = "tropical-gemm-metal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Metal backend for tropical matrix multiplication on Apple GPUs"
+keywords = ["tropical", "matrix", "gpu", "metal", "apple"]
+categories = ["science", "mathematics"]
+
+[dependencies]
+tropical-types = { workspace = true }
+thiserror = { workspace = true }
+metal = "0.29"
+objc = "0.2"
+block = "0.1"
+
+[dev-dependencies]
+proptest = { workspace = true }

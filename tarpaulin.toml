@@ -11,8 +11,8 @@ engine = "Llvm"
 # Run for whole workspace
 workspace = true
 
-# Exclude CUDA crate from testing (requires GPU)
-exclude = ["tropical-gemm-cuda"]
+# Exclude GPU crates from testing (requires specific hardware)
+exclude = ["tropical-gemm-cuda", "tropical-gemm-metal"]
 
 # Note: exclude_files doesn't work reliably with LLVM engine in config file.
 # Use CLI flag --exclude-files "crates/tropical-gemm-cuda/*" for accurate totals.
