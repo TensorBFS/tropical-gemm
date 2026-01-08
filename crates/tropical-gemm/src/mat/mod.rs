@@ -72,6 +72,132 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
     pub fn ncols(&self) -> usize {
         self.values.ncols()
     }
+
+    /// Get the argmax indices as a slice.
+    ///
+    /// This is useful for backward pass computation.
+    #[inline]
+    pub fn argmax_slice(&self) -> &[u32] {
+        &self.argmax
+    }
+
+    /// Compute gradient with respect to matrix A.
+    ///
+    /// Given the upstream gradient dL/dC, computes dL/dA using the argmax
+    /// indices from the forward pass.
+    ///
+    /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
+    /// dL/dA[i,k] = Σ_j { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// # Arguments
+    ///
+    /// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
+    /// * `k` - Number of columns in A (the inner dimension)
+    ///
+    /// # Returns
+    ///
+    /// Gradient of the loss with respect to A, dimensions m×k
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tropical_gemm::{Mat, MaxPlus, TropicalMaxPlus};
+    ///
+    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    ///
+    /// // Forward pass with argmax
+    /// let result = a.matmul_argmax(&b);
+    ///
+    /// // Backward pass: grad_c is upstream gradient (e.g., all ones)
+    /// let grad_c = Mat::<MaxPlus<f64>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+    /// let grad_a = result.backward_a(&grad_c, 3); // k=3 (columns in A)
+    ///
+    /// assert_eq!(grad_a.nrows(), 2);
+    /// assert_eq!(grad_a.ncols(), 3);
+    /// ```
+    pub fn backward_a<G>(&self, grad_c: &Mat<G>, k: usize) -> Mat<G>
+    where
+        G: crate::TropicalSemiring,
+        G::Scalar: Copy + Default + std::ops::AddAssign,
+    {
+        let m = self.nrows();
+        let n = self.ncols();
+        assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
+        assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
+
+        let mut grad_a_data = vec![G::Scalar::default(); m * k];
+
+        for i in 0..m {
+            for j in 0..n {
+                let idx = self.argmax[i * n + j] as usize;
+                if idx < k {
+                    grad_a_data[i * k + idx] += grad_c[(i, j)].value();
+                }
+            }
+        }
+
+        Mat::from_row_major(&grad_a_data, m, k)
+    }
+
+    /// Compute gradient with respect to matrix B.
+    ///
+    /// Given the upstream gradient dL/dC, computes dL/dB using the argmax
+    /// indices from the forward pass.
+    ///
+    /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
+    /// dL/dB[k,j] = Σ_i { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// # Arguments
+    ///
+    /// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
+    /// * `k` - Number of rows in B (the inner dimension)
+    ///
+    /// # Returns
+    ///
+    /// Gradient of the loss with respect to B, dimensions k×n
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tropical_gemm::{Mat, MaxPlus, TropicalMaxPlus};
+    ///
+    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    ///
+    /// // Forward pass with argmax
+    /// let result = a.matmul_argmax(&b);
+    ///
+    /// // Backward pass: grad_c is upstream gradient
+    /// let grad_c = Mat::<MaxPlus<f64>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+    /// let grad_b = result.backward_b(&grad_c, 3); // k=3 (rows in B)
+    ///
+    /// assert_eq!(grad_b.nrows(), 3);
+    /// assert_eq!(grad_b.ncols(), 2);
+    /// ```
+    pub fn backward_b<G>(&self, grad_c: &Mat<G>, k: usize) -> Mat<G>
+    where
+        G: crate::TropicalSemiring,
+        G::Scalar: Copy + Default + std::ops::AddAssign,
+    {
+        let m = self.nrows();
+        let n = self.ncols();
+        assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
+        assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
+
+        let mut grad_b_data = vec![G::Scalar::default(); k * n];
+
+        for i in 0..m {
+            for j in 0..n {
+                let idx = self.argmax[i * n + j] as usize;
+                if idx < k {
+                    grad_b_data[idx * n + j] += grad_c[(i, j)].value();
+                }
+            }
+        }
+
+        Mat::from_row_major(&grad_b_data, k, n)
+    }
 }
 
 #[cfg(test)]
@@ -439,5 +565,186 @@ mod tests {
         let b_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
         let _ = a.matmul_ref(&b); // Should panic
+    }
+
+    // ========================================================================
+    // Batched operation tests
+    // ========================================================================
+
+    #[test]
+    fn test_mat_matmul_batched() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+
+        let results = Mat::matmul_batched(&[a1, a2], &[b1, b2]);
+        assert_eq!(results.len(), 2);
+
+        // C[0] = A[0] * B[0] (MaxPlus)
+        // C[0,0] = max(1+1, 2+0) = 2
+        assert!((results[0][(0, 0)].0 - 2.0).abs() < 1e-5);
+
+        // C[1] = A[1] * B[1] (MaxPlus)
+        // C[0,0] = max(5+1, 6+3) = 9
+        assert!((results[1][(0, 0)].0 - 9.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_mat_matmul_batched_empty() {
+        let a_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+        let b_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+
+        let results = Mat::matmul_batched(&a_batch, &b_batch);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "batch sizes must match")]
+    fn test_mat_matmul_batched_size_mismatch() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+
+        let _ = Mat::matmul_batched(&[a1], &[b1, b2]); // Should panic
+    }
+
+    #[test]
+    #[should_panic(expected = "has dimensions")]
+    fn test_mat_matmul_batched_dimension_mismatch() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], 2, 3); // Different size
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+
+        let _ = Mat::matmul_batched(&[a1, a2], &[b1, b2]); // Should panic
+    }
+
+    #[test]
+    fn test_mat_matmul_batched_with_argmax() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[6.0, 5.0, 4.0, 3.0, 2.0, 1.0], 2, 3);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        let results = Mat::matmul_batched_with_argmax(&[a1, a2], &[b1, b2]);
+        assert_eq!(results.len(), 2);
+
+        // C[0,0] = max(1+1, 2+3, 3+5) = 8, argmax=2
+        assert!((results[0].get(0, 0).0 - 8.0).abs() < 1e-5);
+        assert_eq!(results[0].get_argmax(0, 0), 2);
+    }
+
+    #[test]
+    fn test_mat_matmul_batched_with_argmax_empty() {
+        let a_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+        let b_batch: Vec<Mat<TropicalMaxPlus<f32>>> = vec![];
+
+        let results = Mat::matmul_batched_with_argmax(&a_batch, &b_batch);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "batch sizes must match")]
+    fn test_mat_matmul_batched_with_argmax_size_mismatch() {
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        let _ = Mat::matmul_batched_with_argmax(&[a1], &[b1, b2]); // Should panic
+    }
+
+    // ========================================================================
+    // Backward pass tests
+    // ========================================================================
+
+    #[test]
+    fn test_matwithargmax_backward_a() {
+        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        // Forward pass
+        let result = a.matmul_argmax(&b);
+
+        // All argmax should be 2 (k=2 wins for all)
+        assert_eq!(result.get_argmax(0, 0), 2);
+        assert_eq!(result.get_argmax(0, 1), 2);
+        assert_eq!(result.get_argmax(1, 0), 2);
+        assert_eq!(result.get_argmax(1, 1), 2);
+
+        // Backward pass with unit gradients
+        let grad_c = Mat::<TropicalMaxPlus<f64>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+        let grad_a = result.backward_a(&grad_c, 3);
+
+        // Only column 2 should have gradients
+        assert_eq!(grad_a.nrows(), 2);
+        assert_eq!(grad_a.ncols(), 3);
+        assert_eq!(grad_a[(0, 0)].0, 0.0); // Not selected
+        assert_eq!(grad_a[(0, 1)].0, 0.0); // Not selected
+        assert_eq!(grad_a[(0, 2)].0, 2.0); // Selected for C[0,0] and C[0,1]
+        assert_eq!(grad_a[(1, 0)].0, 0.0); // Not selected
+        assert_eq!(grad_a[(1, 1)].0, 0.0); // Not selected
+        assert_eq!(grad_a[(1, 2)].0, 2.0); // Selected for C[1,0] and C[1,1]
+    }
+
+    #[test]
+    fn test_matwithargmax_backward_b() {
+        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        // Forward pass
+        let result = a.matmul_argmax(&b);
+
+        // Backward pass with unit gradients
+        let grad_c = Mat::<TropicalMaxPlus<f64>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+        let grad_b = result.backward_b(&grad_c, 3);
+
+        // Only row 2 should have gradients
+        assert_eq!(grad_b.nrows(), 3);
+        assert_eq!(grad_b.ncols(), 2);
+        assert_eq!(grad_b[(0, 0)].0, 0.0); // Not selected
+        assert_eq!(grad_b[(0, 1)].0, 0.0); // Not selected
+        assert_eq!(grad_b[(1, 0)].0, 0.0); // Not selected
+        assert_eq!(grad_b[(1, 1)].0, 0.0); // Not selected
+        assert_eq!(grad_b[(2, 0)].0, 2.0); // Selected for C[0,0] and C[1,0]
+        assert_eq!(grad_b[(2, 1)].0, 2.0); // Selected for C[0,1] and C[1,1]
+    }
+
+    #[test]
+    fn test_matwithargmax_backward_varied_argmax() {
+        // Design matrices where different k-indices win
+        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[10.0, 1.0, 1.0, 1.0, 10.0, 1.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 1.0, 1.0, 1.0, 10.0, 10.0], 3, 2);
+
+        let result = a.matmul_argmax(&b);
+
+        // Check argmax patterns
+        // C[0,0] = max(10+1=11, 1+1=2, 1+10=11), first wins -> k=0
+        // C[1,0] = max(1+1=2, 10+1=11, 1+10=11), second wins -> k=1
+        assert_eq!(result.get_argmax(0, 0), 0);
+        assert_eq!(result.get_argmax(1, 0), 1);
+
+        let grad_c = Mat::<TropicalMaxPlus<f64>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+        let grad_a = result.backward_a(&grad_c, 3);
+
+        // grad_a[0,0] should get contributions from C[0,*] where argmax == 0
+        // grad_a[1,1] should get contributions from C[1,*] where argmax == 1
+        assert!(grad_a[(0, 0)].0 > 0.0); // k=0 selected for C[0,0] and C[0,1]
+        assert!(grad_a[(1, 1)].0 > 0.0); // k=1 selected for C[1,0] and C[1,1]
+    }
+
+    #[test]
+    fn test_matwithargmax_argmax_slice() {
+        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+        let result = a.matmul_argmax(&b);
+        let argmax_slice = result.argmax_slice();
+
+        assert_eq!(argmax_slice.len(), 4); // 2x2 output
+        assert_eq!(argmax_slice[0], result.get_argmax(0, 0));
+        assert_eq!(argmax_slice[1], result.get_argmax(0, 1));
+        assert_eq!(argmax_slice[2], result.get_argmax(1, 0));
+        assert_eq!(argmax_slice[3], result.get_argmax(1, 1));
     }
 }

@@ -155,6 +155,129 @@ assert_eq!(result.get(0, 0).value(), 8.0);
 assert_eq!(result.get_argmax(0, 0), 2);  // k=2 produced the max
 ```
 
+## Gradient Computation (Backward Pass)
+
+Once we have the argmax indices from the forward pass, we can compute gradients for backpropagation.
+
+### Mathematical Formulation
+
+For tropical GEMM `C = A ⊗ B` where `C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j])`:
+
+The gradient routing rules are:
+
+```
+dL/dA[i,k] = Σ_j { dL/dC[i,j]  if argmax[i,j] == k else 0 }
+dL/dB[k,j] = Σ_i { dL/dC[i,j]  if argmax[i,j] == k else 0 }
+```
+
+This is because in tropical GEMM, only the "winning" path (the one that achieved the max/min) receives the gradient. All other paths have zero gradient.
+
+### CPU API (Function-based)
+
+```rust
+use tropical_gemm::prelude::*;
+
+// Forward pass with argmax
+let result = tropical_matmul_with_argmax::<TropicalMaxPlus<f64>>(&a, m, k, &b, n);
+
+// Given upstream gradient dL/dC
+let grad_c: Vec<f64> = vec![1.0; m * n]; // from upstream
+
+// Compute gradients using function API
+let grad_a = tropical_backward_a(&grad_c, result.argmax_slice(), m, k, n);
+let grad_b = tropical_backward_b(&grad_c, result.argmax_slice(), m, k, n);
+```
+
+### CPU API (Mat-based)
+
+```rust
+use tropical_gemm::{Mat, MaxPlus, TropicalMaxPlus};
+
+let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+
+// Forward pass with argmax
+let result = a.matmul_argmax(&b);
+
+// Backward pass: call methods directly on the result
+let grad_c = Mat::<MaxPlus<f64>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
+let grad_a = result.backward_a(&grad_c, 3);  // k=3 (columns in A)
+let grad_b = result.backward_b(&grad_c, 3);  // k=3 (rows in B)
+```
+
+### Batched CPU API
+
+```rust
+use tropical_gemm::prelude::*;
+
+// Forward pass (batched)
+let results = tropical_matmul_batched_with_argmax::<TropicalMaxPlus<f64>>(&a_batch, &b_batch);
+
+// Extract argmax for backward
+let argmax_batch: Vec<Vec<u32>> = results.iter()
+    .map(|r| r.argmax_slice().to_vec())
+    .collect();
+
+// Compute batched gradients
+let grad_a_batch = tropical_backward_a_batched(&grad_c_batch, &argmax_batch, m, k, n);
+let grad_b_batch = tropical_backward_b_batched(&grad_c_batch, &argmax_batch, m, k, n);
+```
+
+### GPU API (Function-based)
+
+```rust
+use tropical_gemm_cuda::*;
+use tropical_gemm::TropicalMaxPlus;
+
+// Forward pass on GPU
+let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
+
+// Backward pass (uses downloaded argmax)
+let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
+let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
+```
+
+### GPU API (GpuMat-based)
+
+```rust
+use tropical_gemm::{Mat, MatRef, MaxPlus, TropicalMaxPlus};
+use tropical_gemm_cuda::{CudaContext, GpuMat};
+
+let ctx = CudaContext::new()?;
+
+// Upload matrices to GPU
+let a_gpu = GpuMat::from_matref(&ctx, &a)?;
+let b_gpu = GpuMat::from_matref(&ctx, &b)?;
+
+// Forward pass with argmax on GPU
+let result = a_gpu.matmul_argmax(&ctx, &b_gpu)?;
+
+// Backward pass: call methods directly on the result
+let grad_c = Mat::<MaxPlus<f32>>::from_fn(m, n, |_, _| TropicalMaxPlus(1.0));
+let grad_a = result.backward_a(&ctx, &grad_c, k)?;  // Downloads argmax internally
+let grad_b = result.backward_b(&ctx, &grad_c, k)?;
+```
+
+### Batched GPU API
+
+```rust
+use tropical_gemm_cuda::*;
+
+// Forward pass (batched)
+let results = tropical_matmul_gpu_batched_with_argmax::<TropicalMaxPlus<f32>>(
+    &a_batch, &b_batch, m, k, n
+)?;
+
+// Extract argmax for backward
+let argmax_batch: Vec<Vec<ArgmaxIndex>> = results.iter()
+    .map(|(_, argmax)| argmax.clone())
+    .collect();
+
+// Compute batched gradients
+let grad_a_batch = tropical_backward_a_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
+let grad_b_batch = tropical_backward_b_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
+```
+
 ## Applications
 
 ### 1. Viterbi Algorithm (MaxPlus)
@@ -176,7 +299,8 @@ The backward rules are tested in:
 - `crates/tropical-types/src/min_plus.rs` - argmin unit tests
 - `crates/tropical-gemm-core/src/kernel.rs` - microkernel argmax tests
 - `crates/tropical-gemm-core/src/gemm.rs` - full GEMM argmax tests
-- `crates/tropical-gemm/src/api.rs` - API-level argmax tests
+- `crates/tropical-gemm/src/api.rs` - API-level argmax and backward pass tests
+- `crates/tropical-gemm-cuda/src/lib.rs` - GPU backward pass tests
 
 Key test scenarios:
 - Basic argmax/argmin selection
@@ -184,3 +308,6 @@ Key test scenarios:
 - Chain accumulation (simulating k-loop)
 - Global k_offset handling in blocked GEMM
 - Different semirings (MaxPlus, MinPlus)
+- Backward pass gradient computation (single and batched)
+- GPU forward + backward integration
+- Finite difference gradient verification

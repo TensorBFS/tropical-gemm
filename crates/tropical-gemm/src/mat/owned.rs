@@ -359,4 +359,164 @@ where
             argmax: result.argmax,
         }
     }
+
+    /// Batched tropical matrix multiplication with argmax tracking.
+    ///
+    /// Computes C[i] = A[i] ⊗ B[i] for each pair of matrices in the batch,
+    /// tracking which k-index produced each optimal value.
+    ///
+    /// All matrices in `a_batch` must have the same dimensions, and all
+    /// matrices in `b_batch` must have the same dimensions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - `a_batch` and `b_batch` have different lengths
+    /// - Matrices in `a_batch` have different dimensions
+    /// - Matrices in `b_batch` have different dimensions
+    /// - Inner dimensions don't match (A.ncols != B.nrows)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tropical_gemm::{Mat, MaxPlus};
+    ///
+    /// let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
+    /// let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+    /// let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    ///
+    /// let results = Mat::matmul_batched_with_argmax(&[a1, a2], &[b1, b2]);
+    /// assert_eq!(results.len(), 2);
+    /// ```
+    pub fn matmul_batched_with_argmax(
+        a_batch: &[Mat<S>],
+        b_batch: &[Mat<S>],
+    ) -> Vec<MatWithArgmax<S>> {
+        assert_eq!(
+            a_batch.len(),
+            b_batch.len(),
+            "batch sizes must match: {} != {}",
+            a_batch.len(),
+            b_batch.len()
+        );
+
+        if a_batch.is_empty() {
+            return Vec::new();
+        }
+
+        // Validate dimensions
+        let (m, k) = (a_batch[0].nrows, a_batch[0].ncols);
+        let n = b_batch[0].ncols;
+
+        for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+            assert_eq!(
+                (a.nrows, a.ncols),
+                (m, k),
+                "A[{}] has dimensions {}x{}, expected {}x{}",
+                i,
+                a.nrows,
+                a.ncols,
+                m,
+                k
+            );
+            assert_eq!(
+                (b.nrows, b.ncols),
+                (k, n),
+                "B[{}] has dimensions {}x{}, expected {}x{}",
+                i,
+                b.nrows,
+                b.ncols,
+                k,
+                n
+            );
+        }
+
+        a_batch
+            .iter()
+            .zip(b_batch.iter())
+            .map(|(a, b)| a.matmul_argmax(b))
+            .collect()
+    }
+}
+
+// Batched operations on Mat
+impl<S> Mat<S>
+where
+    S: TropicalSemiring + KernelDispatch,
+    S::Scalar: Copy,
+{
+    /// Batched tropical matrix multiplication.
+    ///
+    /// Computes C[i] = A[i] ⊗ B[i] for each pair of matrices in the batch.
+    /// All matrices in `a_batch` must have the same dimensions, and all
+    /// matrices in `b_batch` must have the same dimensions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - `a_batch` and `b_batch` have different lengths
+    /// - Matrices in `a_batch` have different dimensions
+    /// - Matrices in `b_batch` have different dimensions
+    /// - Inner dimensions don't match (A.ncols != B.nrows)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tropical_gemm::{Mat, MaxPlus};
+    ///
+    /// let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
+    /// let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+    /// let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    ///
+    /// let results = Mat::matmul_batched(&[a1, a2], &[b1, b2]);
+    /// assert_eq!(results.len(), 2);
+    /// ```
+    pub fn matmul_batched(a_batch: &[Mat<S>], b_batch: &[Mat<S>]) -> Vec<Mat<S>> {
+        assert_eq!(
+            a_batch.len(),
+            b_batch.len(),
+            "batch sizes must match: {} != {}",
+            a_batch.len(),
+            b_batch.len()
+        );
+
+        if a_batch.is_empty() {
+            return Vec::new();
+        }
+
+        // Validate dimensions
+        let (m, k) = (a_batch[0].nrows, a_batch[0].ncols);
+        let n = b_batch[0].ncols;
+
+        for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
+            assert_eq!(
+                (a.nrows, a.ncols),
+                (m, k),
+                "A[{}] has dimensions {}x{}, expected {}x{}",
+                i,
+                a.nrows,
+                a.ncols,
+                m,
+                k
+            );
+            assert_eq!(
+                (b.nrows, b.ncols),
+                (k, n),
+                "B[{}] has dimensions {}x{}, expected {}x{}",
+                i,
+                b.nrows,
+                b.ncols,
+                k,
+                n
+            );
+        }
+
+        a_batch
+            .iter()
+            .zip(b_batch.iter())
+            .map(|(a, b)| a.matmul(b))
+            .collect()
+    }
 }
