@@ -1,4 +1,4 @@
-use crate::traits::{SimdTropical, TropicalSemiring, TropicalWithArgmax};
+use super::traits::{SimdTropical, TropicalSemiring, TropicalWithArgmax};
 use std::fmt;
 use std::ops::{Add, Mul};
 

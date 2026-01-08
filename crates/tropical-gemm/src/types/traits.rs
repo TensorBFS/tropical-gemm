@@ -1,4 +1,4 @@
-use crate::scalar::TropicalScalar;
+use super::scalar::TropicalScalar;
 use std::fmt::Debug;
 
 /// Core trait for tropical semiring operations.

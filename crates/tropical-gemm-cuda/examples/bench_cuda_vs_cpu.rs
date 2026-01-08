@@ -3,9 +3,8 @@
 //! Run with: cargo run --release --example bench_cuda_vs_cpu -p tropical-gemm-cuda
 
 use std::time::Instant;
-use tropical_gemm::tropical_matmul;
+use tropical_gemm::{tropical_matmul, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus};
 use tropical_gemm_cuda::{tropical_matmul_gpu, CudaContext, CudaError, GpuMatrix};
-use tropical_types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus};
 
 const SIZES: &[usize] = &[256, 512, 1024, 2048];
 const WARMUP_ITERS: usize = 1;

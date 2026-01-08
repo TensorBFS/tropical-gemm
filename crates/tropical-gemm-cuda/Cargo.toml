@@ -6,10 +6,6 @@ license.workspace = true
 description = "CUDA backend for tropical matrix multiplication"
 
 [dependencies]
-tropical-types = { workspace = true }
+tropical-gemm = { workspace = true }
 cudarc = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-tropical-gemm-core = { workspace = true }
-tropical-gemm = { workspace = true }

@@ -4,7 +4,7 @@ use crate::context::CudaContext;
 use crate::error::Result;
 use crate::memory::{GpuMatrix, GpuMatrixWithArgmax};
 use cudarc::driver::{DeviceRepr, LaunchAsync, LaunchConfig, ValidAsZeroBits};
-use tropical_types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
+use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
 
 /// Trait for types that can be computed on GPU.
 pub trait CudaKernel: TropicalSemiring

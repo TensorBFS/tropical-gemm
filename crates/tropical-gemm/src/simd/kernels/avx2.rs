@@ -1,5 +1,5 @@
-use tropical_gemm_core::Microkernel;
-use tropical_types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus};
+use crate::core::Microkernel;
+use crate::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus};
 use wide::{f32x8, f64x4};
 
 /// AVX2 microkernel for TropicalMaxPlus<f32>.
@@ -262,7 +262,7 @@ impl Microkernel<TropicalMaxMul<f32>> for Avx2MaxMulF32Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_types::TropicalSemiring;
+    use crate::types::TropicalSemiring;
 
     #[test]
     #[cfg(target_arch = "x86_64")]
@@ -323,16 +323,14 @@ mod tests {
 
         // A: 2x3 packed
         let a: [f32; 24] = [
-            1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            2.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            3.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            1.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0,
+            6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
 
         // B: 3x2 packed
         let b: [f32; 24] = [
-            1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            5.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0,
+            6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
 
         let mut c = vec![TropicalMinPlus::tropical_zero(); 4];
@@ -367,14 +365,12 @@ mod tests {
 
         // A: 2x2 packed
         let a: [f32; 16] = [
-            2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            4.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
 
         // B: 2x2 packed
         let b: [f32; 16] = [
-            1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
 
         let mut c = vec![TropicalMaxMul::tropical_zero(); 4];

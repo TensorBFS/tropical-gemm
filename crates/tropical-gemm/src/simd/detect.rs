@@ -117,16 +117,16 @@ mod tests {
     fn test_all_widths() {
         // f32 widths
         assert_eq!(SimdLevel::Scalar.f32_width(), 0); // 1/4 = 0
-        assert_eq!(SimdLevel::Sse2.f32_width(), 4);   // 16/4
-        assert_eq!(SimdLevel::Neon.f32_width(), 4);   // 16/4
-        assert_eq!(SimdLevel::Avx.f32_width(), 8);    // 32/4
+        assert_eq!(SimdLevel::Sse2.f32_width(), 4); // 16/4
+        assert_eq!(SimdLevel::Neon.f32_width(), 4); // 16/4
+        assert_eq!(SimdLevel::Avx.f32_width(), 8); // 32/4
         assert_eq!(SimdLevel::Avx512.f32_width(), 16); // 64/4
 
         // f64 widths
         assert_eq!(SimdLevel::Scalar.f64_width(), 0); // 1/8 = 0
-        assert_eq!(SimdLevel::Sse2.f64_width(), 2);   // 16/8
-        assert_eq!(SimdLevel::Neon.f64_width(), 2);   // 16/8
-        assert_eq!(SimdLevel::Avx.f64_width(), 4);    // 32/8
+        assert_eq!(SimdLevel::Sse2.f64_width(), 2); // 16/8
+        assert_eq!(SimdLevel::Neon.f64_width(), 2); // 16/8
+        assert_eq!(SimdLevel::Avx.f64_width(), 4); // 32/8
         assert_eq!(SimdLevel::Avx512.f64_width(), 8); // 64/8
     }
 

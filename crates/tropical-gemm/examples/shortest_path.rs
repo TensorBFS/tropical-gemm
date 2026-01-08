@@ -48,14 +48,8 @@ fn main() {
 
     // Verify some paths
     println!("\nShortest path distances:");
-    println!(
-        "  0 -> 4: {} (path: 0->3->4 = 7+2 = 9)",
-        d4_values[4]
-    );
-    println!(
-        "  0 -> 2: {} (path: 0->1->2 = 3+2 = 5)",
-        d4_values[2]
-    );
+    println!("  0 -> 4: {} (path: 0->3->4 = 7+2 = 9)", d4_values[4]);
+    println!("  0 -> 2: {} (path: 0->1->2 = 3+2 = 5)", d4_values[2]);
     println!(
         "  1 -> 4: {} (path: 1->2->3->4 = 2+1+2 = 5)",
         d4_values[n + 4]

@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tropical-types",
-    "crates/tropical-gemm-core",
-    "crates/tropical-gemm-simd",
     "crates/tropical-gemm-cuda",
     "crates/tropical-gemm",
 ]
@@ -17,9 +14,6 @@ repository = "https://github.com/TensorBFS/tropical-gemm"
 
 [workspace.dependencies]
 # Internal crates
-tropical-types = { path = "crates/tropical-types" }
-tropical-gemm-core = { path = "crates/tropical-gemm-core" }
-tropical-gemm-simd = { path = "crates/tropical-gemm-simd" }
 tropical-gemm-cuda = { path = "crates/tropical-gemm-cuda" }
 tropical-gemm = { path = "crates/tropical-gemm" }
 

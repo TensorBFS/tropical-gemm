@@ -1,8 +1,8 @@
-use crate::argmax::GemmWithArgmax;
-use crate::kernel::{Microkernel, MicrokernelWithArgmax, PortableMicrokernel};
-use crate::packing::{pack_a, pack_b, packed_a_size, packed_b_size, Layout, Transpose};
-use crate::tiling::{BlockIterator, TilingParams};
-use tropical_types::{TropicalSemiring, TropicalWithArgmax};
+use super::argmax::GemmWithArgmax;
+use super::kernel::{Microkernel, MicrokernelWithArgmax, PortableMicrokernel};
+use super::packing::{pack_a, pack_b, packed_a_size, packed_b_size, Layout, Transpose};
+use super::tiling::{BlockIterator, TilingParams};
+use crate::types::{TropicalSemiring, TropicalWithArgmax};
 
 /// Tropical GEMM: C = A ⊗ B
 ///
@@ -270,12 +270,12 @@ unsafe fn b_panel_ptr<T>(
     }
 }
 
-use tropical_types::TropicalScalar;
+use crate::types::TropicalScalar;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_types::TropicalMaxPlus;
+    use crate::types::TropicalMaxPlus;
 
     #[test]
     fn test_simple_gemm() {
@@ -376,16 +376,22 @@ mod tests {
         let b: [f64; 6] = [
             10.0, 1.0, // row 0: col 0 prefers k=0
             1.0, 10.0, // row 1: col 1 prefers k=1
-            1.0, 1.0,  // row 2
+            1.0, 1.0, // row 2
         ];
 
         let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(m, n);
 
         unsafe {
             tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 3, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
                 &mut result,
             );
         }
@@ -410,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_gemm_minplus_with_argmax() {
-        use tropical_types::TropicalMinPlus;
+        use crate::types::TropicalMinPlus;
 
         let m = 2;
         let n = 2;
@@ -418,22 +424,28 @@ mod tests {
 
         // For MinPlus, argmax tracks argmin
         let a: [f64; 6] = [
-            1.0, 5.0, 3.0,  // row 0
-            2.0, 4.0, 6.0,  // row 1
+            1.0, 5.0, 3.0, // row 0
+            2.0, 4.0, 6.0, // row 1
         ];
         let b: [f64; 6] = [
-            1.0, 2.0,  // row 0
-            3.0, 4.0,  // row 1
-            5.0, 6.0,  // row 2
+            1.0, 2.0, // row 0
+            3.0, 4.0, // row 1
+            5.0, 6.0, // row 2
         ];
 
         let mut result: GemmWithArgmax<TropicalMinPlus<f64>> = GemmWithArgmax::new(m, n);
 
         unsafe {
             tropical_gemm_with_argmax_portable::<TropicalMinPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 3, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
                 &mut result,
             );
         }
@@ -469,9 +481,15 @@ mod tests {
 
         unsafe {
             tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), k, Transpose::NoTrans,
-                b.as_ptr(), n, Transpose::NoTrans,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                k,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                n,
+                Transpose::NoTrans,
                 &mut result,
             );
         }
@@ -510,10 +528,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 2, Transpose::Trans, // lda=2 for column-major 3x2
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), n,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                2,
+                Transpose::Trans, // lda=2 for column-major 3x2
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                n,
             );
         }
 
@@ -552,10 +577,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 3, Transpose::NoTrans,
-                b.as_ptr(), 3, Transpose::Trans, // ldb=3 for column-major 2x3
-                c.as_mut_ptr(), n,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                3,
+                Transpose::Trans, // ldb=3 for column-major 2x3
+                c.as_mut_ptr(),
+                n,
             );
         }
 
@@ -584,10 +616,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 2, Transpose::Trans,
-                b.as_ptr(), 3, Transpose::Trans,
-                c.as_mut_ptr(), n,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                2,
+                Transpose::Trans,
+                b.as_ptr(),
+                3,
+                Transpose::Trans,
+                c.as_mut_ptr(),
+                n,
             );
         }
 
@@ -609,10 +648,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 3, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), n,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                n,
             );
         }
 
@@ -632,10 +678,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 3, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), n,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                n,
             );
         }
 
@@ -654,10 +707,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 0, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), n,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                0,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                n,
             );
         }
 
@@ -679,9 +739,15 @@ mod tests {
 
         unsafe {
             tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 0, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                0,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
                 &mut result,
             );
         }
@@ -704,9 +770,15 @@ mod tests {
 
         unsafe {
             tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 2, Transpose::Trans,
-                b.as_ptr(), 2, Transpose::NoTrans,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                2,
+                Transpose::Trans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
                 &mut result,
             );
         }
@@ -728,9 +800,15 @@ mod tests {
 
         unsafe {
             tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
-                m, n, k,
-                a.as_ptr(), 3, Transpose::NoTrans,
-                b.as_ptr(), 3, Transpose::Trans,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                3,
+                Transpose::Trans,
                 &mut result,
             );
         }

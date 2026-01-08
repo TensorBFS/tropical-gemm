@@ -5,17 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "High-performance tropical matrix multiplication with BLAS-level performance"
 
-[features]
-default = []
-cuda = ["dep:tropical-gemm-cuda"]
-
 [dependencies]
-tropical-types = { workspace = true }
-tropical-gemm-core = { workspace = true }
-tropical-gemm-simd = { workspace = true }
-tropical-gemm-cuda = { workspace = true, optional = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
+wide = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

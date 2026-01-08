@@ -1,5 +1,5 @@
-use crate::scalar::TropicalScalar;
-use crate::traits::{SimdTropical, TropicalSemiring, TropicalWithArgmax};
+use super::scalar::TropicalScalar;
+use super::traits::{SimdTropical, TropicalSemiring, TropicalWithArgmax};
 use std::fmt;
 use std::ops::{Add, Mul};
 

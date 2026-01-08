@@ -5,18 +5,19 @@
 //!
 //! # GPU Acceleration
 //!
-//! Enable the `cuda` feature for GPU-accelerated operations:
+//! For GPU-accelerated operations, add the `tropical-gemm-cuda` crate:
 //!
 //! ```toml
 //! [dependencies]
-//! tropical-gemm = { version = "0.1", features = ["cuda"] }
+//! tropical-gemm = "0.1"
+//! tropical-gemm-cuda = "0.1"
 //! ```
 //!
 //! Then use the GPU API:
 //!
 //! ```ignore
-//! use tropical_gemm::cuda::{tropical_matmul_gpu, CudaContext};
 //! use tropical_gemm::TropicalMaxPlus;
+//! use tropical_gemm_cuda::{tropical_matmul_gpu, CudaContext};
 //!
 //! let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
 //! ```
@@ -97,17 +98,24 @@
 //!     .execute(&a, 64, &b, 64, &mut c, 64);
 //! ```
 
+// Internal modules
+pub mod core;
+pub mod simd;
+pub mod types;
+
 mod api;
 mod backend;
 
+// Public API
 pub use api::{tropical_gemm, tropical_matmul, tropical_matmul_with_argmax, TropicalGemm};
 pub use backend::{version_info, Backend};
 
-// Re-export types for convenience
-pub use tropical_gemm_core::{GemmWithArgmax, Layout, Transpose};
-pub use tropical_types::{
-    CountingTropical, TropicalAndOr, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
-    TropicalScalar, TropicalSemiring, TropicalWithArgmax,
+// Re-export commonly used types at crate root
+pub use core::{GemmWithArgmax, Layout, Transpose};
+pub use simd::{simd_level, KernelDispatch, SimdLevel};
+pub use types::{
+    CountingTropical, SimdTropical, TropicalAndOr, TropicalMaxMul, TropicalMaxPlus,
+    TropicalMinPlus, TropicalScalar, TropicalSemiring, TropicalWithArgmax,
 };
 
 /// Prelude module for convenient imports.
@@ -116,16 +124,5 @@ pub mod prelude {
         tropical_matmul, tropical_matmul_with_argmax, Backend, CountingTropical, GemmWithArgmax,
         Transpose, TropicalAndOr, TropicalGemm, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
         TropicalSemiring, TropicalWithArgmax,
-    };
-}
-
-/// CUDA backend for GPU-accelerated tropical GEMM.
-///
-/// This module is only available when the `cuda` feature is enabled.
-#[cfg(feature = "cuda")]
-pub mod cuda {
-    pub use tropical_gemm_cuda::{
-        tropical_gemm_gpu, tropical_matmul_gpu, tropical_matmul_gpu_with_ctx, CudaContext,
-        CudaError, CudaKernel, GpuMatrix, Result,
     };
 }

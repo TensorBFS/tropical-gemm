@@ -1,7 +1,7 @@
-use crate::detect::{simd_level, SimdLevel};
-use crate::kernels::*;
-use tropical_gemm_core::{tropical_gemm_inner, TilingParams, Transpose};
-use tropical_types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
+use super::detect::{simd_level, SimdLevel};
+use super::kernels::*;
+use crate::core::{tropical_gemm_inner, TilingParams, Transpose};
+use crate::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
 
 /// Runtime-dispatched GEMM that selects the best kernel for the current CPU.
 ///
@@ -254,10 +254,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxPlus<f32>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -273,10 +280,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxPlus<f64>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -291,10 +305,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMinPlus<f32>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -310,10 +331,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMinPlus<f64>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -328,10 +356,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxMul<f32>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -347,10 +382,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxMul<f64>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -365,10 +407,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxPlus<i32>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -383,10 +432,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxPlus<i64>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -401,10 +457,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMinPlus<i32>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -419,10 +482,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMinPlus<i64>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -437,10 +507,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxMul<i32>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -455,10 +532,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxMul<i64>>(
-                2, 2, 2,
-                a.as_ptr(), 2, Transpose::NoTrans,
-                b.as_ptr(), 2, Transpose::NoTrans,
-                c.as_mut_ptr(), 2,
+                2,
+                2,
+                2,
+                a.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                2,
             );
         }
 
@@ -478,10 +562,17 @@ mod tests {
 
         unsafe {
             tropical_gemm_dispatch::<TropicalMaxPlus<f32>>(
-                m, n, k,
-                a.as_ptr(), k, Transpose::NoTrans,
-                b.as_ptr(), n, Transpose::NoTrans,
-                c.as_mut_ptr(), n,
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                k,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                n,
+                Transpose::NoTrans,
+                c.as_mut_ptr(),
+                n,
             );
         }
 

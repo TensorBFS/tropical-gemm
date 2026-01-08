@@ -1,4 +1,4 @@
-use tropical_types::TropicalScalar;
+use crate::types::TropicalScalar;
 
 /// Matrix layout enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,8 +346,8 @@ mod tests {
             3.0, 4.0, // row 1
             5.0, 6.0, // row 2
         ];
-        let m = 2;  // After transpose: original 2 columns become 2 rows
-        let k = 3;  // After transpose: original 3 rows become 3 cols
+        let m = 2; // After transpose: original 2 columns become 2 rows
+        let k = 3; // After transpose: original 3 rows become 3 cols
         let mr = 4;
         let lda = 2;
 
@@ -380,8 +380,8 @@ mod tests {
             1.0, 2.0, 3.0, // row 0
             4.0, 5.0, 6.0, // row 1
         ];
-        let k = 3;  // After transpose: original 3 cols become 3 rows
-        let n = 2;  // After transpose: original 2 rows become 2 cols
+        let k = 3; // After transpose: original 3 cols become 3 rows
+        let n = 2; // After transpose: original 2 rows become 2 cols
         let nr = 4;
         let ldb = 3;
 

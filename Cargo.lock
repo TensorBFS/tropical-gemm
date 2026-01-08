@@ -671,18 +671,7 @@ dependencies = [
  "num-traits",
  "proptest",
  "rayon",
- "tropical-gemm-core",
- "tropical-gemm-cuda",
- "tropical-gemm-simd",
- "tropical-types",
-]
-
-[[package]]
-name = "tropical-gemm-core"
-version = "0.1.0"
-dependencies = [
- "num-traits",
- "tropical-types",
+ "wide",
 ]
 
 [[package]]
@@ -692,25 +681,6 @@ dependencies = [
  "cudarc",
  "thiserror",
  "tropical-gemm",
- "tropical-gemm-core",
- "tropical-types",
-]
-
-[[package]]
-name = "tropical-gemm-simd"
-version = "0.1.0"
-dependencies = [
- "num-traits",
- "tropical-gemm-core",
- "tropical-types",
- "wide",
-]
-
-[[package]]
-name = "tropical-types"
-version = "0.1.0"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
-use tropical_gemm_core::{Microkernel, MicrokernelWithArgmax};
-use tropical_types::{TropicalSemiring, TropicalWithArgmax};
+use crate::core::{Microkernel, MicrokernelWithArgmax};
+use crate::types::{TropicalSemiring, TropicalWithArgmax};
 
 /// Portable (non-SIMD) microkernel using the `wide` crate.
 ///
@@ -23,7 +23,7 @@ impl<T: TropicalSemiring> Microkernel<T> for PortableKernel {
         ldc: usize,
     ) {
         // Delegate to the core portable implementation
-        let core_kernel = tropical_gemm_core::PortableMicrokernel;
+        let core_kernel = crate::core::PortableMicrokernel;
         core_kernel.execute(mr, nr, k, a, b, c, ldc);
     }
 }
@@ -41,7 +41,7 @@ impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableKe
         argmax: *mut u32,
         ldc: usize,
     ) {
-        let core_kernel = tropical_gemm_core::PortableMicrokernel;
+        let core_kernel = crate::core::PortableMicrokernel;
         core_kernel.execute_with_argmax(mr, nr, k, k_offset, a, b, c, argmax, ldc);
     }
 }
@@ -49,7 +49,7 @@ impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableKe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_types::TropicalMaxPlus;
+    use crate::types::TropicalMaxPlus;
 
     #[test]
     fn test_portable_kernel_execute() {
@@ -87,9 +87,15 @@ mod tests {
 
         unsafe {
             kernel.execute_with_argmax(
-                mr, nr, k, k_offset,
-                a.as_ptr(), b.as_ptr(),
-                c.as_mut_ptr(), argmax.as_mut_ptr(), ldc
+                mr,
+                nr,
+                k,
+                k_offset,
+                a.as_ptr(),
+                b.as_ptr(),
+                c.as_mut_ptr(),
+                argmax.as_mut_ptr(),
+                ldc,
             );
         }
 

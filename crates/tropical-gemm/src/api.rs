@@ -1,6 +1,6 @@
-use tropical_gemm_core::{GemmWithArgmax, Transpose};
-use tropical_gemm_simd::{tropical_gemm_dispatch, KernelDispatch};
-use tropical_types::{TropicalSemiring, TropicalWithArgmax};
+use crate::core::{GemmWithArgmax, Transpose};
+use crate::simd::{tropical_gemm_dispatch, KernelDispatch};
+use crate::types::{TropicalSemiring, TropicalWithArgmax};
 
 /// Simple tropical matrix multiplication: C = A ⊗ B
 ///
@@ -88,7 +88,7 @@ pub fn tropical_matmul_with_argmax<T: TropicalWithArgmax<Index = u32> + KernelDi
     let mut result = GemmWithArgmax::new(m, n);
 
     unsafe {
-        tropical_gemm_core::tropical_gemm_with_argmax_portable::<T>(
+        crate::core::tropical_gemm_with_argmax_portable::<T>(
             m,
             n,
             k,
@@ -217,7 +217,7 @@ pub unsafe fn tropical_gemm<T: TropicalSemiring + KernelDispatch>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_types::TropicalMaxPlus;
+    use crate::types::TropicalMaxPlus;
 
     #[test]
     fn test_tropical_matmul() {
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_tropical_matmul_min_plus() {
-        use tropical_types::TropicalMinPlus;
+        use crate::types::TropicalMinPlus;
 
         let a = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
         let b = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_tropical_matmul_max_mul() {
-        use tropical_types::TropicalMaxMul;
+        use crate::types::TropicalMaxMul;
 
         let a = vec![2.0f64, 3.0, 4.0, 5.0];
         let b = vec![1.0f64, 2.0, 3.0, 4.0];
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_tropical_matmul_minplus_i32() {
-        use tropical_types::TropicalMinPlus;
+        use crate::types::TropicalMinPlus;
 
         let a = vec![1i32, 2, 3, 4, 5, 6];
         let b = vec![1i32, 2, 3, 4, 5, 6];
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_minplus_with_argmax() {
-        use tropical_types::TropicalMinPlus;
+        use crate::types::TropicalMinPlus;
 
         let a = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
         let b = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_maxmul_with_argmax() {
-        use tropical_types::TropicalMaxMul;
+        use crate::types::TropicalMaxMul;
 
         let a = vec![2.0f64, 3.0, 4.0, 5.0];
         let b = vec![1.0f64, 2.0, 3.0, 4.0];
@@ -504,12 +504,7 @@ mod tests {
     #[test]
     fn test_identity_like_matrix() {
         // Matrix with -inf everywhere except diagonal has 0
-        let a = vec![
-            0.0f64,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-            0.0,
-        ];
+        let a = vec![0.0f64, f64::NEG_INFINITY, f64::NEG_INFINITY, 0.0];
         let b = vec![1.0f64, 2.0, 3.0, 4.0];
 
         let c = tropical_matmul::<TropicalMaxPlus<f64>>(&a, 2, 2, &b, 2);

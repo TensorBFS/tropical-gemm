@@ -1,4 +1,4 @@
-use tropical_types::{TropicalSemiring, TropicalWithArgmax};
+use crate::types::{TropicalSemiring, TropicalWithArgmax};
 
 /// Trait for GEMM microkernels.
 ///
@@ -170,7 +170,7 @@ impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableMi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_types::TropicalMaxPlus;
+    use crate::types::TropicalMaxPlus;
 
     #[test]
     fn test_portable_kernel() {
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_portable_kernel_minplus() {
-        use tropical_types::TropicalMinPlus;
+        use crate::types::TropicalMinPlus;
 
         let kernel = PortableMicrokernel;
         let mr = 2;
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_portable_kernel_maxmul() {
-        use tropical_types::TropicalMaxMul;
+        use crate::types::TropicalMaxMul;
 
         let kernel = PortableMicrokernel;
         let mr = 2;
@@ -289,9 +289,15 @@ mod tests {
 
         unsafe {
             kernel.execute_with_argmax(
-                mr, nr, k, k_offset,
-                a.as_ptr(), b.as_ptr(),
-                c.as_mut_ptr(), argmax.as_mut_ptr(), ldc
+                mr,
+                nr,
+                k,
+                k_offset,
+                a.as_ptr(),
+                b.as_ptr(),
+                c.as_mut_ptr(),
+                argmax.as_mut_ptr(),
+                ldc,
             );
         }
 
@@ -330,9 +336,15 @@ mod tests {
 
         unsafe {
             kernel.execute_with_argmax(
-                mr, nr, k, k_offset,
-                a.as_ptr(), b.as_ptr(),
-                c.as_mut_ptr(), argmax.as_mut_ptr(), ldc
+                mr,
+                nr,
+                k,
+                k_offset,
+                a.as_ptr(),
+                b.as_ptr(),
+                c.as_mut_ptr(),
+                argmax.as_mut_ptr(),
+                ldc,
             );
         }
 

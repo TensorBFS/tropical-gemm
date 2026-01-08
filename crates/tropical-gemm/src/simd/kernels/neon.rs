@@ -1,5 +1,5 @@
-use tropical_gemm_core::Microkernel;
-use tropical_types::{TropicalMaxPlus, TropicalMinPlus};
+use crate::core::Microkernel;
+use crate::types::{TropicalMaxPlus, TropicalMinPlus};
 use wide::{f32x4, f64x2};
 
 /// ARM NEON microkernel for TropicalMaxPlus<f32>.

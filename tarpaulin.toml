@@ -1,11 +1,11 @@
 # Tarpaulin coverage configuration
 #
 # Run with: cargo tarpaulin
-# Or for full 95%+ coverage excluding CUDA:
+# Or for CPU-only coverage excluding CUDA:
 #   cargo tarpaulin --exclude-files "crates/tropical-gemm-cuda/*"
 
 [default]
-# Use LLVM engine for better inline function coverage (95%+ vs 82%)
+# Use LLVM engine for better inline function coverage
 engine = "Llvm"
 
 # Run for whole workspace
@@ -13,6 +13,3 @@ workspace = true
 
 # Exclude CUDA crate from testing (requires GPU)
 exclude = ["tropical-gemm-cuda"]
-
-# Note: exclude_files doesn't work reliably with LLVM engine in config file.
-# Use CLI flag --exclude-files "crates/tropical-gemm-cuda/*" for accurate totals.

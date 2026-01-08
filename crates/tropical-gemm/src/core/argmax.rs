@@ -1,4 +1,4 @@
-use tropical_types::TropicalWithArgmax;
+use crate::types::TropicalWithArgmax;
 
 /// Result of GEMM with argmax tracking.
 ///
@@ -83,7 +83,7 @@ impl<T: TropicalWithArgmax<Index = u32>> GemmWithArgmax<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_types::TropicalMaxPlus;
+    use crate::types::TropicalMaxPlus;
 
     #[test]
     fn test_gemm_with_argmax_new() {

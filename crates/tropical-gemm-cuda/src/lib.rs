@@ -6,7 +6,7 @@
 //!
 //! ```ignore
 //! use tropical_gemm_cuda::{tropical_matmul_gpu, CudaContext};
-//! use tropical_types::TropicalMaxPlus;
+//! use tropical_gemm::types::TropicalMaxPlus;
 //!
 //! // Simple one-shot API
 //! let a = vec![1.0f32; 1024 * 1024];
@@ -20,7 +20,7 @@
 //!
 //! ```ignore
 //! use tropical_gemm_cuda::{CudaContext, GpuMatrix, tropical_gemm_gpu};
-//! use tropical_types::TropicalMaxPlus;
+//! use tropical_gemm::types::TropicalMaxPlus;
 //!
 //! let ctx = CudaContext::new()?;
 //!
@@ -66,7 +66,7 @@ use cudarc::driver::{DeviceRepr, ValidAsZeroBits};
 ///
 /// ```ignore
 /// use tropical_gemm_cuda::tropical_matmul_gpu;
-/// use tropical_types::TropicalMaxPlus;
+/// use tropical_gemm::types::TropicalMaxPlus;
 ///
 /// let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
 /// let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
@@ -205,7 +205,7 @@ where
 ///
 /// ```ignore
 /// use tropical_gemm_cuda::tropical_matmul_gpu_with_argmax;
-/// use tropical_types::TropicalMaxPlus;
+/// use tropical_gemm::types::TropicalMaxPlus;
 ///
 /// let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
 /// let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
@@ -322,7 +322,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_types::{TropicalMaxPlus, TropicalMinPlus};
+    use tropical_gemm::types::{TropicalMaxPlus, TropicalMinPlus};
 
     /// Helper to check if CUDA is available
     fn cuda_context_or_skip() -> Option<CudaContext> {
@@ -536,11 +536,7 @@ mod tests {
                 for j in 0..n {
                     let c_idx = i * n + j;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 {
-                        1.0
-                    } else {
-                        0.0
-                    };
+                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -557,7 +553,10 @@ mod tests {
                 }
             }
         }
-        println!("MaxPlus finite difference test passed for {}x{}x{} matrices", m, k, n);
+        println!(
+            "MaxPlus finite difference test passed for {}x{}x{} matrices",
+            m, k, n
+        );
     }
 
     #[test]
@@ -598,11 +597,7 @@ mod tests {
                 for j in 0..n {
                     let c_idx = i * n + j;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 {
-                        1.0
-                    } else {
-                        0.0
-                    };
+                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -619,7 +614,10 @@ mod tests {
                 }
             }
         }
-        println!("MinPlus finite difference test passed for {}x{}x{} matrices", m, k, n);
+        println!(
+            "MinPlus finite difference test passed for {}x{}x{} matrices",
+            m, k, n
+        );
     }
 
     #[test]
@@ -660,11 +658,7 @@ mod tests {
                 for i in 0..m {
                     let c_idx = i * n + j;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 {
-                        1.0
-                    } else {
-                        0.0
-                    };
+                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
