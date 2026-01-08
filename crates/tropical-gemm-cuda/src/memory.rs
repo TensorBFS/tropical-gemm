@@ -5,6 +5,9 @@ use crate::error::{CudaError, Result};
 use cudarc::driver::{CudaSlice, DeviceRepr, ValidAsZeroBits};
 use std::marker::PhantomData;
 
+/// Type alias for argmax indices (k-index that produced each C[i,j]).
+pub type ArgmaxIndex = i32;
+
 /// A matrix stored in GPU memory.
 ///
 /// Data is stored in column-major order (Fortran order) for compatibility
@@ -133,5 +136,56 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     /// Get a mutable reference to the underlying CUDA slice.
     pub fn as_slice_mut(&mut self) -> &mut CudaSlice<T> {
         &mut self.data
+    }
+}
+
+/// A GPU matrix paired with argmax indices (for backward propagation).
+///
+/// This stores both the result of a tropical GEMM and the k-indices
+/// that produced each optimal value in C[i,j]. Used for gradient computation.
+pub struct GpuMatrixWithArgmax<T: DeviceRepr> {
+    /// The result matrix C.
+    pub matrix: GpuMatrix<T>,
+    /// The argmax indices: argmax[i,j] = k such that C[i,j] = A[i,k] ⊗ B[k,j].
+    pub argmax: GpuMatrix<ArgmaxIndex>,
+}
+
+impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
+    /// Allocate a zeroed GPU matrix with argmax indices.
+    pub fn alloc(ctx: &CudaContext, rows: usize, cols: usize) -> Result<Self> {
+        let matrix = GpuMatrix::alloc(ctx, rows, cols)?;
+        let argmax = GpuMatrix::alloc(ctx, rows, cols)?;
+
+        Ok(Self { matrix, argmax })
+    }
+
+    /// Get the number of rows.
+    pub fn rows(&self) -> usize {
+        self.matrix.rows()
+    }
+
+    /// Get the number of columns.
+    pub fn cols(&self) -> usize {
+        self.matrix.cols()
+    }
+
+    /// Copy the result matrix back to host in row-major order.
+    pub fn matrix_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
+        self.matrix.to_host_row_major(ctx)
+    }
+
+    /// Copy the argmax indices back to host in row-major order.
+    pub fn argmax_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
+        self.argmax.to_host_row_major(ctx)
+    }
+
+    /// Copy the result matrix back to host in column-major order.
+    pub fn matrix_to_host_col_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
+        self.matrix.to_host_col_major(ctx)
+    }
+
+    /// Copy the argmax indices back to host in column-major order.
+    pub fn argmax_to_host_col_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
+        self.argmax.to_host_col_major(ctx)
     }
 }

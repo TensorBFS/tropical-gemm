@@ -20,10 +20,16 @@ pub const BLOCK_SIZE_N_F64: u32 = 32;
 
 /// Kernel function names.
 const KERNEL_NAMES: &[&str] = &[
+    // Standard GEMM kernels
     "tropical_maxplus_f32_nn",
     "tropical_minplus_f32_nn",
     "tropical_maxmul_f32_nn",
     "tropical_maxplus_f64_nn",
+    // GEMM with argmax kernels (for backward propagation)
+    "tropical_maxplus_f32_nn_with_argmax",
+    "tropical_minplus_f32_nn_with_argmax",
+    "tropical_maxplus_f64_nn_with_argmax",
+    "tropical_minplus_f64_nn_with_argmax",
 ];
 
 /// CUDA context for tropical GEMM operations.
