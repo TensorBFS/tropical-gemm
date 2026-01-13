@@ -10,6 +10,7 @@ description = "Python bindings for tropical matrix multiplication"
 [lib]
 name = "tropical_gemm"
 crate-type = ["cdylib"]
+doc = false  # Docs conflict with tropical-gemm crate; use Python docstrings instead
 
 [dependencies]
 tropical-gemm.workspace = true

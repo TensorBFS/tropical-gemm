@@ -1307,7 +1307,10 @@ mod tests {
 
         // Create batch
         let grad_c_batch = vec![vec![1.0f64; 4], vec![2.0f64; 4]];
-        let argmax_batch = vec![result.argmax_slice().to_vec(), result.argmax_slice().to_vec()];
+        let argmax_batch = vec![
+            result.argmax_slice().to_vec(),
+            result.argmax_slice().to_vec(),
+        ];
 
         let grad_a_batch = tropical_backward_a_batched(&grad_c_batch, &argmax_batch, 2, 3, 2);
         let grad_b_batch = tropical_backward_b_batched(&grad_c_batch, &argmax_batch, 2, 3, 2);
