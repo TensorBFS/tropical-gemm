@@ -38,17 +38,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
+      - name: Create virtual environment and install dependencies
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           python -m pip install --upgrade pip
           pip install maturin numpy torch
+        shell: bash
       - name: Build and test Python bindings
         run: |
+          source .venv/bin/activate
           cd crates/tropical-gemm-python
           maturin develop
           python -c "import tropical_gemm; print('Import successful')"
+        shell: bash
       - name: Run PyTorch example
-        run: python crates/tropical-gemm-python/examples/pytorch_tropical.py
+        run: |
+          source .venv/bin/activate
+          python crates/tropical-gemm-python/examples/pytorch_tropical.py
+        shell: bash
 
   clippy:
     name: Clippy
