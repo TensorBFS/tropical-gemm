@@ -63,8 +63,6 @@ jobs:
     needs: publish-pypi
     runs-on: ubuntu-latest
     if: github.event.inputs.dry_run != 'true'
-    permissions:
-      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -72,11 +70,14 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Install twine
+        run: pip install twine
+
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          packages-dir: dist/
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload dist/*
 
   create-release-artifacts:
     name: Create release artifacts
