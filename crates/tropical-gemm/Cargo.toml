@@ -3,7 +3,12 @@ name = "tropical-gemm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "High-performance tropical matrix multiplication with BLAS-level performance"
+authors.workspace = true
+repository.workspace = true
+description = "High-performance tropical matrix multiplication with SIMD and CUDA backends"
+keywords = ["tropical", "semiring", "matrix", "gemm", "simd"]
+categories = ["algorithms", "mathematics", "science"]
+readme = "../../README.md"
 
 [features]
 default = ["parallel"]

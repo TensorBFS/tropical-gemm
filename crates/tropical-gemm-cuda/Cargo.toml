@@ -3,7 +3,12 @@ name = "tropical-gemm-cuda"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 description = "CUDA backend for tropical matrix multiplication"
+keywords = ["tropical", "cuda", "gpu", "matrix", "gemm"]
+categories = ["algorithms", "mathematics", "science"]
+readme = "../../README.md"
 
 [dependencies]
 tropical-gemm = { workspace = true }

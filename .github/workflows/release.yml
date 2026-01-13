@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip actual publishing)'
+        required: false
+        default: 'false'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify build
+        run: cargo build --release --workspace --exclude tropical-gemm-cuda
+
+      - name: Publish tropical-gemm
+        if: github.event.inputs.dry_run != 'true'
+        run: cargo publish -p tropical-gemm --token ${{ secrets.CRATES_IO_TOKEN }}
+
+      # Note: tropical-gemm-cuda requires CUDA and is published separately if needed
+
+  publish-pypi:
+    name: Build and publish Python wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build wheel
+        working-directory: crates/tropical-gemm-python
+        run: maturin build --release --out dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: crates/tropical-gemm-python/dist/*.whl
+
+  publish-pypi-upload:
+    name: Upload to PyPI
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    if: github.event.inputs.dry_run != 'true'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/
+
+  create-release-artifacts:
+    name: Create release artifacts
+    needs: [publish-crates, publish-pypi-upload]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload wheels to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*.whl
