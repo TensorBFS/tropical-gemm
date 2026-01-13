@@ -24,6 +24,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --exclude tropical-gemm-cuda --exclude tropical-gemm-python
 
+  python:
+    name: Python Bindings
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin numpy torch
+      - name: Build and test Python bindings
+        run: |
+          cd crates/tropical-gemm-python
+          maturin develop
+          python -c "import tropical_gemm; print('Import successful')"
+      - name: Run PyTorch example
+        run: python crates/tropical-gemm-python/examples/pytorch_tropical.py
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -34,4 +60,3 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --exclude tropical-gemm-cuda --exclude tropical-gemm-python --all-targets -- -W clippy::all
-
