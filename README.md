@@ -28,11 +28,11 @@ High-performance tropical matrix multiplication in Rust with SIMD and CUDA backe
 | `MaxPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `MaxPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `MinPlus` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `MinPlus` | `f64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| `MinPlus` | `f64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MinPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `MinPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `MaxMul` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| `MaxMul` | `f64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MaxMul` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `MaxMul` | `f64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MaxMul` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `MaxMul` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 

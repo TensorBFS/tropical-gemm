@@ -116,6 +116,8 @@ impl_cuda_kernel_f32! {
 
 impl_cuda_kernel_f64! {
     TropicalMaxPlus<f64> => "tropical_maxplus_f64_nn",
+    TropicalMinPlus<f64> => "tropical_minplus_f64_nn",
+    TropicalMaxMul<f64> => "tropical_maxmul_f64_nn",
 }
 
 // ============================================================================
@@ -232,9 +234,11 @@ macro_rules! impl_cuda_kernel_with_argmax_f64 {
 impl_cuda_kernel_with_argmax_f32! {
     TropicalMaxPlus<f32> => "tropical_maxplus_f32_nn_with_argmax",
     TropicalMinPlus<f32> => "tropical_minplus_f32_nn_with_argmax",
+    TropicalMaxMul<f32> => "tropical_maxmul_f32_nn_with_argmax",
 }
 
 impl_cuda_kernel_with_argmax_f64! {
     TropicalMaxPlus<f64> => "tropical_maxplus_f64_nn_with_argmax",
     TropicalMinPlus<f64> => "tropical_minplus_f64_nn_with_argmax",
+    TropicalMaxMul<f64> => "tropical_maxmul_f64_nn_with_argmax",
 }

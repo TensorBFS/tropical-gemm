@@ -20,16 +20,22 @@ pub const BLOCK_SIZE_N_F64: u32 = 32;
 
 /// Kernel function names.
 const KERNEL_NAMES: &[&str] = &[
-    // Standard GEMM kernels
+    // Standard GEMM kernels (f32)
     "tropical_maxplus_f32_nn",
     "tropical_minplus_f32_nn",
     "tropical_maxmul_f32_nn",
+    // Standard GEMM kernels (f64)
     "tropical_maxplus_f64_nn",
-    // GEMM with argmax kernels (for backward propagation)
+    "tropical_minplus_f64_nn",
+    "tropical_maxmul_f64_nn",
+    // GEMM with argmax kernels (f32)
     "tropical_maxplus_f32_nn_with_argmax",
     "tropical_minplus_f32_nn_with_argmax",
+    "tropical_maxmul_f32_nn_with_argmax",
+    // GEMM with argmax kernels (f64)
     "tropical_maxplus_f64_nn_with_argmax",
     "tropical_minplus_f64_nn_with_argmax",
+    "tropical_maxmul_f64_nn_with_argmax",
     // Backward pass kernels (gradient computation)
     "tropical_backward_a_f32",
     "tropical_backward_b_f32",
