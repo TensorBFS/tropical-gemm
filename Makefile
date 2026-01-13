@@ -6,7 +6,7 @@
 .PHONY: test-rust test-python test-all
 .PHONY: bench-cpu bench-cuda bench-all
 .PHONY: example-rust example-python
-.PHONY: docs-build docs-serve docs-deploy
+.PHONY: docs-build docs-serve docs-deploy docs-book docs-book-serve
 .PHONY: fmt clippy lint coverage
 
 # Default target
@@ -45,8 +45,11 @@ help:
 	@echo "  example-python - Run Python examples"
 	@echo ""
 	@echo "Documentation targets:"
-	@echo "  docs           - Build documentation"
-	@echo "  docs-serve     - Serve documentation locally"
+	@echo "  docs           - Build all documentation (API + user guide)"
+	@echo "  docs-build     - Build Rust API documentation"
+	@echo "  docs-book      - Build mdBook user guide"
+	@echo "  docs-book-serve- Serve mdBook locally (port 3000)"
+	@echo "  docs-serve     - Serve API docs locally (port 8000)"
 	@echo "  docs-deploy    - Deploy documentation to GitHub Pages"
 	@echo ""
 	@echo "Code quality targets:"
@@ -165,18 +168,29 @@ example-python:
 # Documentation
 #==============================================================================
 
-docs: docs-build
+docs: docs-build docs-book
 
 docs-build:
-	@echo "Building documentation..."
+	@echo "Building Rust API documentation..."
 	cargo doc --workspace --no-deps
-	@echo "Documentation built at target/doc/"
+	@echo "API documentation built at target/doc/"
+
+docs-book:
+	@echo "Building mdBook user guide..."
+	@which mdbook > /dev/null 2>&1 || (echo "Install mdbook: cargo install mdbook" && exit 1)
+	mdbook build docs/
+	@echo "User guide built at docs/book/"
+
+docs-book-serve:
+	@echo "Serving mdBook at http://localhost:3000"
+	@which mdbook > /dev/null 2>&1 || (echo "Install mdbook: cargo install mdbook" && exit 1)
+	mdbook serve docs/
 
 docs-serve: docs-build
-	@echo "Serving documentation at http://localhost:8000"
+	@echo "Serving API documentation at http://localhost:8000"
 	@cd target/doc && python -m http.server 8000
 
-docs-deploy: docs-build
+docs-deploy: docs-build docs-book
 	@echo "Deploying documentation to GitHub Pages..."
 	@echo "Note: This requires gh-pages branch setup."
 	@echo "Run: ghp-import -n -p -f target/doc"
@@ -210,6 +224,7 @@ coverage:
 clean:
 	cargo clean
 	rm -rf coverage/
+	rm -rf docs/book/
 	rm -rf crates/tropical-gemm-python/.venv
 	rm -rf crates/tropical-gemm-python/target
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
