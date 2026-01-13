@@ -28,6 +28,12 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_f64_nn",
     "tropical_minplus_f64_nn",
     "tropical_maxmul_f64_nn",
+    // Standard GEMM kernels (i32)
+    "tropical_maxplus_i32_nn",
+    "tropical_minplus_i32_nn",
+    // Standard GEMM kernels (i64)
+    "tropical_maxplus_i64_nn",
+    "tropical_minplus_i64_nn",
     // GEMM with argmax kernels (f32)
     "tropical_maxplus_f32_nn_with_argmax",
     "tropical_minplus_f32_nn_with_argmax",
@@ -36,7 +42,13 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_f64_nn_with_argmax",
     "tropical_minplus_f64_nn_with_argmax",
     "tropical_maxmul_f64_nn_with_argmax",
-    // Backward pass kernels (gradient computation)
+    // GEMM with argmax kernels (i32)
+    "tropical_maxplus_i32_nn_with_argmax",
+    "tropical_minplus_i32_nn_with_argmax",
+    // GEMM with argmax kernels (i64)
+    "tropical_maxplus_i64_nn_with_argmax",
+    "tropical_minplus_i64_nn_with_argmax",
+    // Backward pass kernels (gradient computation, float/double only)
     "tropical_backward_a_f32",
     "tropical_backward_b_f32",
     "tropical_backward_a_f64",

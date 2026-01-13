@@ -25,12 +25,12 @@ High-performance tropical matrix multiplication in Rust with SIMD and CUDA backe
 |----------|--------|----------|-------------|------------|--------------|----------|-------------|------------|--------------|
 | `MaxPlus` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MaxPlus` | `f64` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `MaxPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `MaxPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MaxPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
+| `MaxPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
 | `MinPlus` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MinPlus` | `f64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `MinPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `MinPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MinPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
+| `MinPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
 | `MaxMul` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MaxMul` | `f64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MaxMul` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -39,6 +39,7 @@ High-performance tropical matrix multiplication in Rust with SIMD and CUDA backe
 **Legend:**
 - ✅ SIMD: Optimized with AVX2/AVX-512/NEON vectorization
 - ✅: Supported with portable implementation
+- N/A: Not applicable (integers don't have gradients)
 - ❌: Not yet implemented
 
 ### Semiring Definitions

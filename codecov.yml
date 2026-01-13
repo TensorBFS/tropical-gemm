@@ -12,5 +12,3 @@ coverage:
 ignore:
   # Exclude CUDA crate - requires GPU to test
   - "crates/tropical-gemm-cuda/**"
-  # Exclude Python crate - PyO3 FFI glue, tested via Python CI job
-  - "crates/tropical-gemm-python/**"
