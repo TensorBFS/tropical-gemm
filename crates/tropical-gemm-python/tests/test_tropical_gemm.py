@@ -16,10 +16,19 @@ from tropical_gemm import (
     maxmul_matmul_with_argmax,
     backward_a,
     backward_b,
+    maxmul_backward_a,
+    maxmul_backward_b,
     # f64 operations
     maxplus_matmul_f64,
     minplus_matmul_f64,
     maxmul_matmul_f64,
+    maxplus_matmul_with_argmax_f64,
+    minplus_matmul_with_argmax_f64,
+    maxmul_matmul_with_argmax_f64,
+    backward_a_f64,
+    backward_b_f64,
+    maxmul_backward_a_f64,
+    maxmul_backward_b_f64,
     # i32 operations
     maxplus_matmul_i32,
     minplus_matmul_i32,
@@ -178,6 +187,151 @@ def test_maxmul_matmul_f64():
 
     expected = np.array([[15.0, 18.0], [30.0, 36.0]], dtype=np.float64)
     np.testing.assert_array_almost_equal(c, expected)
+
+
+def test_maxplus_matmul_with_argmax_f64():
+    """Test MaxPlus matmul with argmax (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    c, argmax = maxplus_matmul_with_argmax_f64(a, b)
+    c = c.reshape(2, 2)
+    argmax = argmax.reshape(2, 2)
+
+    expected = np.array([[8.0, 9.0], [11.0, 12.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(c, expected)
+    expected_argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+    np.testing.assert_array_equal(argmax, expected_argmax)
+
+
+def test_minplus_matmul_with_argmax_f64():
+    """Test MinPlus matmul with argmax (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    c, argmax = minplus_matmul_with_argmax_f64(a, b)
+    c = c.reshape(2, 2)
+    argmax = argmax.reshape(2, 2)
+
+    expected = np.array([[2.0, 3.0], [5.0, 6.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(c, expected)
+    expected_argmax = np.array([[0, 0], [0, 0]], dtype=np.int32)
+    np.testing.assert_array_equal(argmax, expected_argmax)
+
+
+def test_maxmul_matmul_with_argmax_f64():
+    """Test MaxMul matmul with argmax (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    c, argmax = maxmul_matmul_with_argmax_f64(a, b)
+    c = c.reshape(2, 2)
+    argmax = argmax.reshape(2, 2)
+
+    expected = np.array([[15.0, 18.0], [30.0, 36.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(c, expected)
+    expected_argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+    np.testing.assert_array_equal(argmax, expected_argmax)
+
+
+def test_backward_a_f64():
+    """Test backward pass for gradient w.r.t. A (f64)."""
+    m, k, n = 2, 3, 2
+
+    grad_c = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+    argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+
+    grad_a = backward_a_f64(grad_c, argmax, k).reshape(m, k)
+
+    expected = np.array([[0.0, 0.0, 3.0], [0.0, 0.0, 7.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(grad_a, expected)
+
+
+def test_backward_b_f64():
+    """Test backward pass for gradient w.r.t. B (f64)."""
+    m, k, n = 2, 3, 2
+
+    grad_c = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+    argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+
+    grad_b = backward_b_f64(grad_c, argmax, k).reshape(k, n)
+
+    expected = np.array([[0.0, 0.0], [0.0, 0.0], [4.0, 6.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(grad_b, expected)
+
+
+# ============================================================================
+# MaxMul backward tests (different from MaxPlus/MinPlus)
+# ============================================================================
+
+
+def test_maxmul_backward_a():
+    """Test MaxMul backward pass for gradient w.r.t. A (f32).
+
+    For MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+    grad_A[i,k] = sum_j { grad_C[i,j] * B[k,j] if argmax[i,j] == k }
+    """
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+    # All argmax are k=2
+    grad_c = np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+    argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+
+    grad_a = maxmul_backward_a(grad_c, argmax, b).reshape(2, 3)
+
+    # grad_A[0,2] = grad_C[0,0]*B[2,0] + grad_C[0,1]*B[2,1] = 1*5 + 1*6 = 11
+    # grad_A[1,2] = grad_C[1,0]*B[2,0] + grad_C[1,1]*B[2,1] = 1*5 + 1*6 = 11
+    expected = np.array([[0.0, 0.0, 11.0], [0.0, 0.0, 11.0]], dtype=np.float32)
+    np.testing.assert_array_almost_equal(grad_a, expected)
+
+
+def test_maxmul_backward_b():
+    """Test MaxMul backward pass for gradient w.r.t. B (f32).
+
+    For MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+    grad_B[k,j] = sum_i { grad_C[i,j] * A[i,k] if argmax[i,j] == k }
+    """
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+    grad_c = np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float32)
+    argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+
+    grad_b = maxmul_backward_b(grad_c, argmax, a).reshape(3, 2)
+
+    # grad_B[2,0] = grad_C[0,0]*A[0,2] + grad_C[1,0]*A[1,2] = 1*3 + 1*6 = 9
+    # grad_B[2,1] = grad_C[0,1]*A[0,2] + grad_C[1,1]*A[1,2] = 1*3 + 1*6 = 9
+    expected = np.array([[0.0, 0.0], [0.0, 0.0], [9.0, 9.0]], dtype=np.float32)
+    np.testing.assert_array_almost_equal(grad_b, expected)
+
+
+def test_maxmul_backward_a_f64():
+    """Test MaxMul backward pass for gradient w.r.t. A (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    grad_c = np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float64)
+    argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+
+    grad_a = maxmul_backward_a_f64(grad_c, argmax, b).reshape(2, 3)
+
+    expected = np.array([[0.0, 0.0, 11.0], [0.0, 0.0, 11.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(grad_a, expected)
+
+
+def test_maxmul_backward_b_f64():
+    """Test MaxMul backward pass for gradient w.r.t. B (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    grad_c = np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float64)
+    argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+
+    grad_b = maxmul_backward_b_f64(grad_c, argmax, a).reshape(3, 2)
+
+    expected = np.array([[0.0, 0.0], [0.0, 0.0], [9.0, 9.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(grad_b, expected)
 
 
 # ============================================================================

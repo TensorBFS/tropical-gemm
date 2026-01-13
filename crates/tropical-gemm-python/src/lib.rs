@@ -422,6 +422,305 @@ fn maxmul_matmul_f64<'py>(
     Ok(c_scalars.into_pyarray(py))
 }
 
+/// Tropical MaxPlus matrix multiplication with argmax tracking (f64).
+#[pyfunction]
+fn maxplus_matmul_with_argmax_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    b: PyReadonlyArray2<'py, f64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let result: GemmWithArgmax<TropicalMaxPlus<f64>> =
+        tropical_matmul_with_argmax::<TropicalMaxPlus<f64>>(a_data, m, k, b_data, n);
+
+    let c_scalars: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
+    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+
+    Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
+}
+
+/// Tropical MinPlus matrix multiplication with argmax tracking (f64).
+#[pyfunction]
+fn minplus_matmul_with_argmax_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    b: PyReadonlyArray2<'py, f64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let result: GemmWithArgmax<TropicalMinPlus<f64>> =
+        tropical_matmul_with_argmax::<TropicalMinPlus<f64>>(a_data, m, k, b_data, n);
+
+    let c_scalars: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
+    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+
+    Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
+}
+
+/// Tropical MaxMul matrix multiplication with argmax tracking (f64).
+#[pyfunction]
+fn maxmul_matmul_with_argmax_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    b: PyReadonlyArray2<'py, f64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let result: GemmWithArgmax<TropicalMaxMul<f64>> =
+        tropical_matmul_with_argmax::<TropicalMaxMul<f64>>(a_data, m, k, b_data, n);
+
+    let c_scalars: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
+    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+
+    Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
+}
+
+/// Compute gradient with respect to matrix A (f64).
+#[pyfunction]
+fn backward_a_f64<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray2<'py, f64>,
+    argmax: PyReadonlyArray2<'py, i32>,
+    k: usize,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let shape = grad_c.shape();
+    let m = shape[0];
+    let n = shape[1];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+
+    let mut grad_a = vec![0.0f64; m * k];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = i * n + j;
+            let k_idx = argmax_data[idx] as usize;
+            if k_idx < k {
+                grad_a[i * k + k_idx] += grad_c_data[idx];
+            }
+        }
+    }
+
+    Ok(grad_a.into_pyarray(py))
+}
+
+/// Compute gradient with respect to matrix B (f64).
+#[pyfunction]
+fn backward_b_f64<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray2<'py, f64>,
+    argmax: PyReadonlyArray2<'py, i32>,
+    k: usize,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let shape = grad_c.shape();
+    let m = shape[0];
+    let n = shape[1];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+
+    let mut grad_b = vec![0.0f64; k * n];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = i * n + j;
+            let k_idx = argmax_data[idx] as usize;
+            if k_idx < k {
+                grad_b[k_idx * n + j] += grad_c_data[idx];
+            }
+        }
+    }
+
+    Ok(grad_b.into_pyarray(py))
+}
+
+// ============================================================================
+// MaxMul backward (different from MaxPlus/MinPlus because multiplication)
+// For MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+// grad_A[i,k] = sum_j { grad_C[i,j] * B[k,j] if argmax[i,j] == k }
+// grad_B[k,j] = sum_i { grad_C[i,j] * A[i,k] if argmax[i,j] == k }
+// ============================================================================
+
+/// Compute MaxMul gradient with respect to matrix A (f32).
+///
+/// For MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+/// grad_A[i,k] = sum_j { grad_C[i,j] * B[k,j] if argmax[i,j] == k }
+#[pyfunction]
+fn maxmul_backward_a<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray2<'py, f32>,
+    argmax: PyReadonlyArray2<'py, i32>,
+    b: PyReadonlyArray2<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let shape = grad_c.shape();
+    let m = shape[0];
+    let n = shape[1];
+    let k = b.shape()[0];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let mut grad_a = vec![0.0f32; m * k];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = i * n + j;
+            let k_idx = argmax_data[idx] as usize;
+            if k_idx < k {
+                // grad_A[i,k] += grad_C[i,j] * B[k,j]
+                grad_a[i * k + k_idx] += grad_c_data[idx] * b_data[k_idx * n + j];
+            }
+        }
+    }
+
+    Ok(grad_a.into_pyarray(py))
+}
+
+/// Compute MaxMul gradient with respect to matrix B (f32).
+///
+/// For MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+/// grad_B[k,j] = sum_i { grad_C[i,j] * A[i,k] if argmax[i,j] == k }
+#[pyfunction]
+fn maxmul_backward_b<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray2<'py, f32>,
+    argmax: PyReadonlyArray2<'py, i32>,
+    a: PyReadonlyArray2<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let shape = grad_c.shape();
+    let m = shape[0];
+    let n = shape[1];
+    let k = a.shape()[1];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+    let a_data = a.as_slice()?;
+
+    let mut grad_b = vec![0.0f32; k * n];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = i * n + j;
+            let k_idx = argmax_data[idx] as usize;
+            if k_idx < k {
+                // grad_B[k,j] += grad_C[i,j] * A[i,k]
+                grad_b[k_idx * n + j] += grad_c_data[idx] * a_data[i * k + k_idx];
+            }
+        }
+    }
+
+    Ok(grad_b.into_pyarray(py))
+}
+
+/// Compute MaxMul gradient with respect to matrix A (f64).
+#[pyfunction]
+fn maxmul_backward_a_f64<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray2<'py, f64>,
+    argmax: PyReadonlyArray2<'py, i32>,
+    b: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let shape = grad_c.shape();
+    let m = shape[0];
+    let n = shape[1];
+    let k = b.shape()[0];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let mut grad_a = vec![0.0f64; m * k];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = i * n + j;
+            let k_idx = argmax_data[idx] as usize;
+            if k_idx < k {
+                grad_a[i * k + k_idx] += grad_c_data[idx] * b_data[k_idx * n + j];
+            }
+        }
+    }
+
+    Ok(grad_a.into_pyarray(py))
+}
+
+/// Compute MaxMul gradient with respect to matrix B (f64).
+#[pyfunction]
+fn maxmul_backward_b_f64<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray2<'py, f64>,
+    argmax: PyReadonlyArray2<'py, i32>,
+    a: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let shape = grad_c.shape();
+    let m = shape[0];
+    let n = shape[1];
+    let k = a.shape()[1];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+    let a_data = a.as_slice()?;
+
+    let mut grad_b = vec![0.0f64; k * n];
+
+    for i in 0..m {
+        for j in 0..n {
+            let idx = i * n + j;
+            let k_idx = argmax_data[idx] as usize;
+            if k_idx < k {
+                grad_b[k_idx * n + j] += grad_c_data[idx] * a_data[i * k + k_idx];
+            }
+        }
+    }
+
+    Ok(grad_b.into_pyarray(py))
+}
+
 // ============================================================================
 // i32 operations
 // ============================================================================
@@ -621,6 +920,15 @@ fn tropical_gemm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(maxplus_matmul_f64, m)?)?;
     m.add_function(wrap_pyfunction!(minplus_matmul_f64, m)?)?;
     m.add_function(wrap_pyfunction!(maxmul_matmul_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(maxplus_matmul_with_argmax_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_with_argmax_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_with_argmax_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(backward_a_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(backward_b_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_backward_a, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_backward_b, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_backward_a_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_backward_b_f64, m)?)?;
 
     // i32 operations
     m.add_function(wrap_pyfunction!(maxplus_matmul_i32, m)?)?;
