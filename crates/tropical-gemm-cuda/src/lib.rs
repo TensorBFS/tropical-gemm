@@ -1646,10 +1646,8 @@ mod tests {
 
         // Backward pass
         let grad_c_batch = vec![vec![1.0f32; m * n]; 2];
-        let grad_a_batch =
-            tropical_backward_a_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
-        let grad_b_batch =
-            tropical_backward_b_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
+        let grad_a_batch = tropical_backward_a_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
+        let grad_b_batch = tropical_backward_b_gpu_batched(&grad_c_batch, &argmax_batch, m, k, n);
 
         assert_eq!(grad_a_batch.len(), 2);
         assert_eq!(grad_b_batch.len(), 2);

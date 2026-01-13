@@ -1,0 +1,2141 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>tropical-gemm</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="High-performance tropical matrix multiplication in Rust">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-d32796dd.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-fe721b39.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">tropical-gemm</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/TensorBFS/tropical-gemm" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="tropical-gemm"><a class="header" href="#tropical-gemm">tropical-gemm</a></h1>
+<p>High-performance tropical matrix multiplication in Rust with SIMD and CUDA backends.</p>
+<h2 id="what-is-tropical-algebra"><a class="header" href="#what-is-tropical-algebra">What is Tropical Algebra?</a></h2>
+<p><strong>Tropical algebra</strong> (also called max-plus or min-plus algebra) replaces standard arithmetic
+operations with alternative ones:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Standard</th><th>Tropical (MaxPlus)</th><th>Tropical (MinPlus)</th></tr>
+</thead>
+<tbody>
+<tr><td>a + b</td><td>max(a, b)</td><td>min(a, b)</td></tr>
+<tr><td>a × b</td><td>a + b</td><td>a + b</td></tr>
+<tr><td>0</td><td>-∞</td><td>+∞</td></tr>
+<tr><td>1</td><td>0</td><td>0</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="applications"><a class="header" href="#applications">Applications</a></h2>
+<p>Tropical matrix multiplication appears in many algorithms:</p>
+<ul>
+<li><strong>Shortest/Longest Path</strong>: Computing all-pairs shortest paths via matrix powers</li>
+<li><strong>Viterbi Algorithm</strong>: Finding most likely sequences in HMMs</li>
+<li><strong>Dynamic Programming</strong>: Optimizing over sequence alignments</li>
+<li><strong>Neural Networks</strong>: Tropical neural networks with piecewise-linear activations</li>
+<li><strong>Combinatorics</strong>: Counting optimal solutions</li>
+</ul>
+<h2 id="features"><a class="header" href="#features">Features</a></h2>
+<ul>
+<li><strong>Multiple Semirings</strong>: MaxPlus, MinPlus, MaxMul</li>
+<li><strong>SIMD Acceleration</strong>: AVX-512, AVX2, SSE4.1, NEON auto-detection</li>
+<li><strong>CUDA Backend</strong>: GPU-accelerated kernels via runtime compilation</li>
+<li><strong>Argmax Tracking</strong>: For backpropagation in differentiable programs</li>
+<li><strong>Batched Operations</strong>: Efficient batch processing</li>
+<li><strong>Python Bindings</strong>: PyTorch integration via PyO3</li>
+</ul>
+<h2 id="feature-matrix"><a class="header" href="#feature-matrix">Feature Matrix</a></h2>
+<h3 id="supported-operations-by-semiring-and-scalar-type"><a class="header" href="#supported-operations-by-semiring-and-scalar-type">Supported Operations by Semiring and Scalar Type</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Semiring</th><th>Scalar</th><th>CPU GEMM</th><th>CPU Batched</th><th>CPU Argmax</th><th>CPU Backward</th><th>GPU GEMM</th><th>GPU Batched</th><th>GPU Argmax</th><th>GPU Backward</th></tr>
+</thead>
+<tbody>
+<tr><td>MaxPlus</td><td>f32</td><td>SIMD</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>MaxPlus</td><td>f64</td><td>SIMD</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>MaxPlus</td><td>i32</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>N/A</td></tr>
+<tr><td>MaxPlus</td><td>i64</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>N/A</td></tr>
+<tr><td>MinPlus</td><td>f32</td><td>SIMD</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>MinPlus</td><td>f64</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>MinPlus</td><td>i32</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>N/A</td></tr>
+<tr><td>MinPlus</td><td>i64</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>N/A</td></tr>
+<tr><td>MaxMul</td><td>f32</td><td>SIMD</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>MaxMul</td><td>f64</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>MaxMul</td><td>i32</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>N/A</td></tr>
+<tr><td>MaxMul</td><td>i64</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>N/A</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Legend:</strong></p>
+<ul>
+<li><strong>SIMD</strong>: Optimized with AVX2/AVX-512/NEON vectorization</li>
+<li><strong>✅</strong>: Supported with portable implementation</li>
+<li><strong>N/A</strong>: Not applicable (integers don’t have gradients)</li>
+</ul>
+<h2 id="quick-example"><a class="header" href="#quick-example">Quick Example</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MatRef, MaxPlus};
+
+// Create 2x3 and 3x2 matrices
+let a_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+let b_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+let a = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;a_data, 2, 3);
+let b = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;b_data, 3, 2);
+
+// C[i,j] = max_k(A[i,k] + B[k,j])
+let c = &amp;a * &amp;b;
+assert_eq!(c.get_value(0, 0), 8.0); // max(1+1, 2+3, 3+5) = 8
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h1>
+<p>This section covers how to install and start using tropical-gemm.</p>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>tropical-gemm is organized as a Cargo workspace with three crates:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>tropical-gemm</code></td><td>Core library with CPU implementation</td></tr>
+<tr><td><code>tropical-gemm-cuda</code></td><td>Optional GPU acceleration via CUDA</td></tr>
+<tr><td><code>tropical-gemm-python</code></td><td>Python bindings for NumPy/PyTorch</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="system-requirements"><a class="header" href="#system-requirements">System Requirements</a></h2>
+<h3 id="cpu"><a class="header" href="#cpu">CPU</a></h3>
+<ul>
+<li>Rust 1.70 or later</li>
+<li>x86-64 (AVX2/AVX-512) or ARM64 (NEON) for best performance</li>
+</ul>
+<h3 id="gpu-optional"><a class="header" href="#gpu-optional">GPU (optional)</a></h3>
+<ul>
+<li>NVIDIA GPU with compute capability 3.5+</li>
+<li>CUDA Toolkit 11.0 or later</li>
+<li><code>nvcc</code> in PATH</li>
+</ul>
+<h3 id="python-optional"><a class="header" href="#python-optional">Python (optional)</a></h3>
+<ul>
+<li>Python 3.8+</li>
+<li>NumPy 1.20+</li>
+<li>PyTorch 2.0+ (for autograd integration)</li>
+</ul>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li><a href="#installation">Installation</a> - Detailed installation instructions</li>
+<li><a href="#quick-start">Quick Start</a> - Your first tropical matrix multiplication</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
+<h2 id="rust-crate"><a class="header" href="#rust-crate">Rust Crate</a></h2>
+<p>Add to your <code>Cargo.toml</code>:</p>
+<pre><code class="language-toml">[dependencies]
+tropical-gemm = "0.1"
+
+# For GPU acceleration (optional):
+tropical-gemm-cuda = "0.1"
+</code></pre>
+<h2 id="python-package"><a class="header" href="#python-package">Python Package</a></h2>
+<h3 id="from-source"><a class="header" href="#from-source">From Source</a></h3>
+<pre><code class="language-bash"># Clone the repository
+git clone https://github.com/TensorBFS/tropical-gemm
+cd tropical-gemm/crates/tropical-gemm-python
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate   # Windows
+
+# Install maturin and build
+pip install maturin
+maturin develop --release
+
+# Optional: with PyTorch support
+pip install torch
+</code></pre>
+<h3 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h3>
+<pre><code class="language-python">import tropical_gemm
+import numpy as np
+
+a = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+b = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+
+c = tropical_gemm.maxplus_matmul(a, b)
+print(c)  # [[5. 6.] [7. 8.]]
+</code></pre>
+<h2 id="cuda-setup"><a class="header" href="#cuda-setup">CUDA Setup</a></h2>
+<p>For GPU acceleration, ensure CUDA is properly installed:</p>
+<pre><code class="language-bash"># Check CUDA installation
+nvcc --version
+
+# If not found, install CUDA toolkit
+# Ubuntu:
+sudo apt install nvidia-cuda-toolkit
+
+# Or download from NVIDIA:
+# https://developer.nvidia.com/cuda-downloads
+</code></pre>
+<p>The CUDA kernels are compiled at runtime using NVRTC, so you don’t need to
+compile the library with a specific CUDA version.</p>
+<h2 id="building-from-source"><a class="header" href="#building-from-source">Building from Source</a></h2>
+<pre><code class="language-bash"># Clone
+git clone https://github.com/TensorBFS/tropical-gemm
+cd tropical-gemm
+
+# Build all crates
+cargo build --release --workspace
+
+# Run tests
+cargo test --workspace
+
+# Build documentation
+cargo doc --workspace --no-deps --open
+</code></pre>
+<h2 id="using-the-makefile"><a class="header" href="#using-the-makefile">Using the Makefile</a></h2>
+<p>A Makefile is provided for common tasks:</p>
+<pre><code class="language-bash">make help          # Show all targets
+make setup         # Setup development environment
+make build         # Build in release mode
+make test          # Run all tests
+make docs          # Build documentation
+make bench         # Run benchmarks
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h1>
+<p>This guide shows the basics of tropical matrix multiplication.</p>
+<h2 id="basic-matrix-multiplication"><a class="header" href="#basic-matrix-multiplication">Basic Matrix Multiplication</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MatRef, MaxPlus};
+
+// Create matrices from raw data (row-major order)
+let a_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3 matrix
+let b_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2 matrix
+
+// Create matrix views
+let a = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;a_data, 2, 3);
+let b = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;b_data, 3, 2);
+
+// Multiply using operator
+let c = &amp;a * &amp;b;
+
+// Or using method
+let c = a.matmul(&amp;b);
+
+// Access result
+println!("C[0,0] = {}", c.get_value(0, 0)); // 8.0 = max(1+1, 2+3, 3+5)
+<span class="boring">}</span></code></pre>
+<h2 id="understanding-the-result"><a class="header" href="#understanding-the-result">Understanding the Result</a></h2>
+<p>For MaxPlus semiring, the multiplication computes:</p>
+<pre><code>C[i,j] = max_k(A[i,k] + B[k,j])
+</code></pre>
+<p>For the example above:</p>
+<ul>
+<li>C[0,0] = max(1+1, 2+3, 3+5) = max(2, 5, 8) = <strong>8</strong></li>
+<li>C[0,1] = max(1+2, 2+4, 3+6) = max(3, 6, 9) = <strong>9</strong></li>
+<li>C[1,0] = max(4+1, 5+3, 6+5) = max(5, 8, 11) = <strong>11</strong></li>
+<li>C[1,1] = max(4+2, 5+4, 6+6) = max(6, 9, 12) = <strong>12</strong></li>
+</ul>
+<h2 id="using-different-semirings"><a class="header" href="#using-different-semirings">Using Different Semirings</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MatRef, MaxPlus, MinPlus, MaxMul};
+
+let a_data = [1.0f32, 2.0, 3.0, 4.0];
+let b_data = [1.0f32, 2.0, 3.0, 4.0];
+
+// MaxPlus: C[i,j] = max_k(A[i,k] + B[k,j])
+let a = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;a_data, 2, 2);
+let b = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;b_data, 2, 2);
+let c_maxplus = &amp;a * &amp;b;
+
+// MinPlus: C[i,j] = min_k(A[i,k] + B[k,j])
+let a = MatRef::&lt;MinPlus&lt;f32&gt;&gt;::from_slice(&amp;a_data, 2, 2);
+let b = MatRef::&lt;MinPlus&lt;f32&gt;&gt;::from_slice(&amp;b_data, 2, 2);
+let c_minplus = &amp;a * &amp;b;
+
+// MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+let a = MatRef::&lt;MaxMul&lt;f32&gt;&gt;::from_slice(&amp;a_data, 2, 2);
+let b = MatRef::&lt;MaxMul&lt;f32&gt;&gt;::from_slice(&amp;b_data, 2, 2);
+let c_maxmul = &amp;a * &amp;b;
+<span class="boring">}</span></code></pre>
+<h2 id="factory-methods"><a class="header" href="#factory-methods">Factory Methods</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus};
+
+// Create a zero matrix (all -∞ for MaxPlus)
+let zeros = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::zeros(3, 3);
+
+// Create an identity matrix (0 on diagonal, -∞ elsewhere for MaxPlus)
+let identity = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::identity(3);
+
+// Create from function
+let mat = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_fn(3, 3, |i, j| {
+    MaxPlus::from_scalar((i + j) as f32)
+});
+<span class="boring">}</span></code></pre>
+<h2 id="next-steps-1"><a class="header" href="#next-steps-1">Next Steps</a></h2>
+<ul>
+<li><a href="#semiring-types">Semiring Types</a> - Learn about different tropical semirings</li>
+<li><a href="#matrix-api">Matrix API</a> - Full matrix API reference</li>
+<li><a href="#gpu-acceleration">GPU Acceleration</a> - Using CUDA for large matrices</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="semiring-types"><a class="header" href="#semiring-types">Semiring Types</a></h1>
+<p>A <strong>semiring</strong> is an algebraic structure with two operations that generalize addition
+and multiplication. Tropical semirings replace standard operations with max/min and addition.</p>
+<h2 id="available-semirings"><a class="header" href="#available-semirings">Available Semirings</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>⊕ (add)</th><th>⊗ (mul)</th><th>Zero</th><th>One</th><th>Use Case</th></tr>
+</thead>
+<tbody>
+<tr><td><code>MaxPlus&lt;T&gt;</code></td><td>max</td><td>+</td><td>-∞</td><td>0</td><td>Longest path, Viterbi</td></tr>
+<tr><td><code>MinPlus&lt;T&gt;</code></td><td>min</td><td>+</td><td>+∞</td><td>0</td><td>Shortest path, Dijkstra</td></tr>
+<tr><td><code>MaxMul&lt;T&gt;</code></td><td>max</td><td>×</td><td>0</td><td>1</td><td>Maximum probability</td></tr>
+<tr><td><code>AndOr</code></td><td>OR</td><td>AND</td><td>false</td><td>true</td><td>Graph reachability</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="maxplus-semiring"><a class="header" href="#maxplus-semiring">MaxPlus Semiring</a></h2>
+<p>The <strong>MaxPlus</strong> (or max-plus) semiring uses:</p>
+<ul>
+<li>Addition: <code>a ⊕ b = max(a, b)</code></li>
+<li>Multiplication: <code>a ⊗ b = a + b</code></li>
+</ul>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MaxPlus, TropicalSemiring};
+
+let a = MaxPlus::from_scalar(3.0f32);
+let b = MaxPlus::from_scalar(5.0f32);
+
+// Tropical add: max(3, 5) = 5
+let sum = MaxPlus::tropical_add(a, b);
+assert_eq!(sum.value(), 5.0);
+
+// Tropical mul: 3 + 5 = 8
+let product = MaxPlus::tropical_mul(a, b);
+assert_eq!(product.value(), 8.0);
+<span class="boring">}</span></code></pre>
+<p><strong>Applications:</strong></p>
+<ul>
+<li>Longest path in graphs (Bellman-Ford with negated weights)</li>
+<li>Viterbi algorithm for HMM decoding</li>
+<li>Log-probability computations</li>
+</ul>
+<h2 id="minplus-semiring"><a class="header" href="#minplus-semiring">MinPlus Semiring</a></h2>
+<p>The <strong>MinPlus</strong> (or min-plus) semiring uses:</p>
+<ul>
+<li>Addition: <code>a ⊕ b = min(a, b)</code></li>
+<li>Multiplication: <code>a ⊗ b = a + b</code></li>
+</ul>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MinPlus, TropicalSemiring};
+
+let a = MinPlus::from_scalar(3.0f32);
+let b = MinPlus::from_scalar(5.0f32);
+
+// Tropical add: min(3, 5) = 3
+let sum = MinPlus::tropical_add(a, b);
+assert_eq!(sum.value(), 3.0);
+
+// Tropical mul: 3 + 5 = 8
+let product = MinPlus::tropical_mul(a, b);
+assert_eq!(product.value(), 8.0);
+<span class="boring">}</span></code></pre>
+<p><strong>Applications:</strong></p>
+<ul>
+<li>Shortest path (Floyd-Warshall, Dijkstra)</li>
+<li>Edit distance computation</li>
+<li>Resource allocation</li>
+</ul>
+<h2 id="maxmul-semiring"><a class="header" href="#maxmul-semiring">MaxMul Semiring</a></h2>
+<p>The <strong>MaxMul</strong> semiring uses:</p>
+<ul>
+<li>Addition: <code>a ⊕ b = max(a, b)</code></li>
+<li>Multiplication: <code>a ⊗ b = a × b</code></li>
+</ul>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MaxMul, TropicalSemiring};
+
+let a = MaxMul::from_scalar(3.0f32);
+let b = MaxMul::from_scalar(5.0f32);
+
+// Tropical add: max(3, 5) = 5
+let sum = MaxMul::tropical_add(a, b);
+assert_eq!(sum.value(), 5.0);
+
+// Tropical mul: 3 × 5 = 15
+let product = MaxMul::tropical_mul(a, b);
+assert_eq!(product.value(), 15.0);
+<span class="boring">}</span></code></pre>
+<p><strong>Applications:</strong></p>
+<ul>
+<li>Maximum probability paths (non-log space)</li>
+<li>Fuzzy set operations</li>
+<li>Reliability analysis</li>
+</ul>
+<h2 id="supported-scalar-types"><a class="header" href="#supported-scalar-types">Supported Scalar Types</a></h2>
+<p>Each semiring supports multiple scalar types:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Scalar</th><th>MaxPlus</th><th>MinPlus</th><th>MaxMul</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>f32</code></td><td>✅ SIMD</td><td>✅ SIMD</td><td>✅ SIMD</td><td>Best performance</td></tr>
+<tr><td><code>f64</code></td><td>✅ SIMD</td><td>✅</td><td>✅</td><td>Higher precision</td></tr>
+<tr><td><code>i32</code></td><td>✅</td><td>✅</td><td>✅</td><td>Integer operations</td></tr>
+<tr><td><code>i64</code></td><td>✅</td><td>✅</td><td>✅</td><td>Large integers</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="type-aliases"><a class="header" href="#type-aliases">Type Aliases</a></h2>
+<p>For convenience, shorter type aliases are provided:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MaxPlus, MinPlus, MaxMul, AndOr};
+
+// These are equivalent:
+type A = tropical_gemm::TropicalMaxPlus&lt;f32&gt;;
+type B = MaxPlus&lt;f32&gt;;  // Preferred
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="matrix-api"><a class="header" href="#matrix-api">Matrix API</a></h1>
+<p>tropical-gemm provides a matrix API inspired by <a href="https://github.com/sarah-ek/faer-rs">faer</a>.</p>
+<h2 id="matrix-types"><a class="header" href="#matrix-types">Matrix Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Mat&lt;S&gt;</code></td><td>Owned matrix with heap-allocated storage</td></tr>
+<tr><td><code>MatRef&lt;'a, S&gt;</code></td><td>Immutable view into matrix data</td></tr>
+<tr><td><code>MatMut&lt;'a, S&gt;</code></td><td>Mutable view into matrix data</td></tr>
+<tr><td><code>MatWithArgmax&lt;S&gt;</code></td><td>Matrix with argmax indices for backpropagation</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="creating-matrices"><a class="header" href="#creating-matrices">Creating Matrices</a></h2>
+<h3 id="from-raw-data"><a class="header" href="#from-raw-data">From Raw Data</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MatRef, MaxPlus};
+
+// Create a view from a slice (no allocation)
+let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+let a = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;data, 2, 3);
+
+// Create an owned matrix from a slice (allocates)
+let b = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_row_major(&amp;data, 2, 3);
+<span class="boring">}</span></code></pre>
+<h3 id="factory-methods-1"><a class="header" href="#factory-methods-1">Factory Methods</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus, TropicalSemiring};
+
+// Zero matrix (all elements = tropical zero)
+let zeros = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::zeros(3, 4);
+
+// Identity matrix (diagonal = tropical one, off-diagonal = tropical zero)
+let identity = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::identity(3);
+
+// From function
+let mat = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_fn(3, 3, |i, j| {
+    MaxPlus::from_scalar((i * 3 + j) as f32)
+});
+<span class="boring">}</span></code></pre>
+<h2 id="matrix-multiplication"><a class="header" href="#matrix-multiplication">Matrix Multiplication</a></h2>
+<h3 id="operator-syntax"><a class="header" href="#operator-syntax">Operator Syntax</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MatRef, MaxPlus};
+
+let a_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+let b_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+let a = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;a_data, 2, 3);
+let b = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;b_data, 3, 2);
+
+// Multiply using operators
+let c = &amp;a * &amp;b;  // Returns Mat&lt;S&gt;
+<span class="boring">}</span></code></pre>
+<h3 id="method-syntax"><a class="header" href="#method-syntax">Method Syntax</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let c = a.matmul(&amp;b);
+<span class="boring">}</span></code></pre>
+<h2 id="accessing-elements"><a class="header" href="#accessing-elements">Accessing Elements</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus, TropicalSemiring};
+
+let data = [1.0f32, 2.0, 3.0, 4.0];
+let mat = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_row_major(&amp;data, 2, 2);
+
+// Get the underlying scalar value
+let value = mat.get_value(0, 1);  // 2.0
+
+// Get the tropical element
+let elem = mat[(0, 1)];  // MaxPlus(2.0)
+
+// Dimensions
+let (rows, cols) = (mat.nrows(), mat.ncols());
+<span class="boring">}</span></code></pre>
+<h2 id="argmax-tracking"><a class="header" href="#argmax-tracking">Argmax Tracking</a></h2>
+<p>For backpropagation, track which k produced each output:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus};
+
+let a = Mat::&lt;MaxPlus&lt;f64&gt;&gt;::from_row_major(
+    &amp;[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3
+);
+let b = Mat::&lt;MaxPlus&lt;f64&gt;&gt;::from_row_major(
+    &amp;[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2
+);
+
+let result = a.matmul_argmax(&amp;b);
+
+// Get value and argmax
+let value = result.get_value(0, 0);    // 8.0
+let k_idx = result.get_argmax(0, 0);   // 2
+
+// Compute gradients
+let grad_c = vec![1.0f64; 4];  // upstream gradient (m × n)
+let grad_a = result.backward_a(&amp;grad_c);
+let grad_b = result.backward_b(&amp;grad_c);
+<span class="boring">}</span></code></pre>
+<h2 id="batched-operations"><a class="header" href="#batched-operations">Batched Operations</a></h2>
+<p>Process multiple matrices in parallel:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus};
+
+let a_batch = vec![
+    Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_row_major(&amp;[1.0, 2.0, 3.0, 4.0], 2, 2),
+    Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_row_major(&amp;[5.0, 6.0, 7.0, 8.0], 2, 2),
+];
+let b_batch = vec![
+    Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_row_major(&amp;[1.0, 2.0, 3.0, 4.0], 2, 2),
+    Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_row_major(&amp;[1.0, 2.0, 3.0, 4.0], 2, 2),
+];
+
+// Batched matmul (parallel by default)
+let c_batch = Mat::matmul_batched(&amp;a_batch, &amp;b_batch);
+
+// With argmax
+let results = Mat::matmul_batched_with_argmax(&amp;a_batch, &amp;b_batch);
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gpu-acceleration"><a class="header" href="#gpu-acceleration">GPU Acceleration</a></h1>
+<p>tropical-gemm-cuda provides NVIDIA GPU acceleration via CUDA.</p>
+<h2 id="requirements"><a class="header" href="#requirements">Requirements</a></h2>
+<ul>
+<li>NVIDIA GPU (compute capability 3.5+)</li>
+<li>CUDA Toolkit 11.0 or later</li>
+<li><code>nvcc</code> in PATH</li>
+</ul>
+<h2 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h2>
+<pre class="playground"><code class="language-rust">use tropical_gemm::{MatRef, MaxPlus};
+use tropical_gemm_cuda::{CudaContext, GpuMat};
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // Create CUDA context (compiles kernels on first use)
+    let ctx = CudaContext::new()?;
+
+    // Prepare CPU data
+    let a_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let b_data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+    let a = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;a_data, 2, 3);
+    let b = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;b_data, 3, 2);
+
+    // Upload to GPU
+    let a_gpu = GpuMat::from_matref(&amp;ctx, &amp;a)?;
+    let b_gpu = GpuMat::from_matref(&amp;ctx, &amp;b)?;
+
+    // Compute on GPU
+    let c_gpu = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+
+    // Download result
+    let c = c_gpu.to_mat(&amp;ctx)?;
+
+    println!("C[0,0] = {}", c.get_value(0, 0));
+    Ok(())
+}</code></pre>
+<h2 id="context-reuse"><a class="header" href="#context-reuse">Context Reuse</a></h2>
+<p>The <code>CudaContext</code> compiles CUDA kernels on first use. <strong>Always reuse contexts</strong>
+to avoid repeated compilation:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// GOOD: Reuse context
+let ctx = CudaContext::new()?;
+for _ in 0..100 {
+    let c = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+}
+
+// BAD: Creates new context each iteration
+for _ in 0..100 {
+    let ctx = CudaContext::new()?;  // Slow!
+    let c = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+}
+<span class="boring">}</span></code></pre>
+<h2 id="gpu-argmax"><a class="header" href="#gpu-argmax">GPU Argmax</a></h2>
+<p>For backpropagation with GPU computation:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let ctx = CudaContext::new()?;
+let a_gpu = GpuMat::from_matref(&amp;ctx, &amp;a)?;
+let b_gpu = GpuMat::from_matref(&amp;ctx, &amp;b)?;
+
+// Forward pass with argmax tracking
+let result = a_gpu.matmul_argmax(&amp;ctx, &amp;b_gpu)?;
+
+// Download values and argmax
+let result_cpu = result.to_mat_with_argmax(&amp;ctx)?;
+let value = result_cpu.get_value(0, 0);
+let k_idx = result_cpu.get_argmax(0, 0);
+
+// Backward pass on GPU
+let grad_c_gpu = GpuMat::from_matref(&amp;ctx, &amp;grad_c)?;
+let grad_a_gpu = result.backward_a(&amp;ctx, &amp;grad_c_gpu)?;
+let grad_b_gpu = result.backward_b(&amp;ctx, &amp;grad_c_gpu)?;
+<span class="boring">}</span></code></pre>
+<h2 id="batched-gpu-operations"><a class="header" href="#batched-gpu-operations">Batched GPU Operations</a></h2>
+<p>Process multiple matrices efficiently:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus};
+use tropical_gemm_cuda::{CudaContext, GpuMat};
+
+let ctx = CudaContext::new()?;
+
+// Upload batch to GPU
+let a_batch: Vec&lt;Mat&lt;MaxPlus&lt;f32&gt;&gt;&gt; = /* ... */;
+let b_batch: Vec&lt;Mat&lt;MaxPlus&lt;f32&gt;&gt;&gt; = /* ... */;
+
+let a_gpu_batch = GpuMat::from_mats(&amp;ctx, &amp;a_batch)?;
+let b_gpu_batch = GpuMat::from_mats(&amp;ctx, &amp;b_batch)?;
+
+// Batched multiply
+let c_gpu_batch = GpuMat::matmul_batched(&amp;ctx, &amp;a_gpu_batch, &amp;b_gpu_batch)?;
+
+// Download results
+let c_batch = GpuMat::to_mats(&amp;ctx, &amp;c_gpu_batch)?;
+<span class="boring">}</span></code></pre>
+<h2 id="one-shot-api"><a class="header" href="#one-shot-api">One-Shot API</a></h2>
+<p>For simple cases without context reuse:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::TropicalMaxPlus;
+use tropical_gemm_cuda::tropical_matmul_gpu;
+
+let a = vec![1.0f32; 64 * 64];
+let b = vec![1.0f32; 64 * 64];
+
+// One-shot GPU multiplication (creates temporary context)
+let c = tropical_matmul_gpu::&lt;TropicalMaxPlus&lt;f32&gt;&gt;(&amp;a, 64, 64, &amp;b, 64)?;
+<span class="boring">}</span></code></pre>
+<h2 id="performance-comparison"><a class="header" href="#performance-comparison">Performance Comparison</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Size</th><th>CPU SIMD</th><th>GPU</th><th>Speedup</th></tr>
+</thead>
+<tbody>
+<tr><td>256</td><td>4.1 ms</td><td>0.032 ms</td><td>128x</td></tr>
+<tr><td>512</td><td>32.8 ms</td><td>0.086 ms</td><td>381x</td></tr>
+<tr><td>1024</td><td>262.3 ms</td><td>0.358 ms</td><td>733x</td></tr>
+<tr><td>2048</td><td>2091.6 ms</td><td>2.510 ms</td><td>833x</td></tr>
+</tbody>
+</table>
+</div>
+<p>GPU becomes advantageous for matrices larger than ~256×256.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="pytorch-integration"><a class="header" href="#pytorch-integration">PyTorch Integration</a></h1>
+<p>tropical-gemm provides Python bindings for seamless PyTorch integration.</p>
+<h2 id="installation-1"><a class="header" href="#installation-1">Installation</a></h2>
+<pre><code class="language-bash">cd crates/tropical-gemm-python
+pip install maturin torch
+maturin develop --release
+</code></pre>
+<h2 id="basic-numpy-usage"><a class="header" href="#basic-numpy-usage">Basic NumPy Usage</a></h2>
+<pre><code class="language-python">import numpy as np
+import tropical_gemm
+
+a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+# MaxPlus: C[i,j] = max_k(A[i,k] + B[k,j])
+c = tropical_gemm.maxplus_matmul(a, b)
+
+# MinPlus: C[i,j] = min_k(A[i,k] + B[k,j])
+c = tropical_gemm.minplus_matmul(a, b)
+
+# MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+c = tropical_gemm.maxmul_matmul(a, b)
+</code></pre>
+<h2 id="pytorch-autograd-function"><a class="header" href="#pytorch-autograd-function">PyTorch Autograd Function</a></h2>
+<p>For differentiable tropical operations, implement a custom <code>torch.autograd.Function</code>:</p>
+<pre><code class="language-python">import torch
+import numpy as np
+import tropical_gemm
+
+class TropicalMaxPlusMatmul(torch.autograd.Function):
+    """Differentiable MaxPlus: C[i,j] = max_k(A[i,k] + B[k,j])"""
+
+    @staticmethod
+    def forward(ctx, a, b):
+        m, k = a.shape
+        n = b.shape[1]
+
+        # Convert to NumPy
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        # Forward pass with argmax tracking
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
+        c_np = np.array(c_flat).reshape(m, n)
+        argmax_np = np.array(argmax_flat).reshape(m, n)
+
+        # Save for backward
+        ctx.save_for_backward(torch.from_numpy(argmax_np))
+        ctx.k, ctx.m, ctx.n = k, m, n
+
+        return torch.from_numpy(c_np).to(a.device)
+
+    @staticmethod
+    def backward(ctx, grad_c):
+        argmax, = ctx.saved_tensors
+        k, m, n = ctx.k, ctx.m, ctx.n
+
+        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        argmax_np = argmax.numpy().astype(np.int32)
+
+        if not grad_c_np.flags["C_CONTIGUOUS"]:
+            grad_c_np = np.ascontiguousarray(grad_c_np)
+
+        # Backward pass
+        grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
+        grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
+
+        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+
+        return grad_a, grad_b
+</code></pre>
+<h2 id="using-the-autograd-function"><a class="header" href="#using-the-autograd-function">Using the Autograd Function</a></h2>
+<pre><code class="language-python"># Create tensors with gradients
+a = torch.randn(4, 5, requires_grad=True)
+b = torch.randn(5, 3, requires_grad=True)
+
+# Forward pass
+c = TropicalMaxPlusMatmul.apply(a, b)
+
+# Backward pass
+loss = c.sum()
+loss.backward()
+
+print(a.grad.shape)  # (4, 5)
+print(b.grad.shape)  # (5, 3)
+</code></pre>
+<h2 id="training-example"><a class="header" href="#training-example">Training Example</a></h2>
+<pre><code class="language-python">import torch
+
+# Learnable parameters
+a = torch.randn(4, 5, requires_grad=True)
+b = torch.randn(5, 3, requires_grad=True)
+target = torch.randn(4, 3)
+
+optimizer = torch.optim.Adam([a, b], lr=0.1)
+
+for step in range(100):
+    optimizer.zero_grad()
+
+    # Forward
+    c = TropicalMaxPlusMatmul.apply(a, b)
+
+    # Loss
+    loss = ((c - target) ** 2).mean()
+
+    # Backward
+    loss.backward()
+
+    # Update
+    optimizer.step()
+
+    if step % 20 == 0:
+        print(f"Step {step}: loss = {loss.item():.4f}")
+</code></pre>
+<h2 id="gradient-semantics"><a class="header" href="#gradient-semantics">Gradient Semantics</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Semiring</th><th>Forward</th><th>Backward Rule</th></tr>
+</thead>
+<tbody>
+<tr><td>MaxPlus</td><td><code>max_k(A + B)</code></td><td><code>∂C/∂A = 1</code> at argmax</td></tr>
+<tr><td>MinPlus</td><td><code>min_k(A + B)</code></td><td><code>∂C/∂A = 1</code> at argmin</td></tr>
+<tr><td>MaxMul</td><td><code>max_k(A × B)</code></td><td><code>∂C/∂A = B</code> at argmax</td></tr>
+</tbody>
+</table>
+</div>
+<p>The gradients are <strong>sparse</strong>: only the winning index contributes.</p>
+<h2 id="complete-example"><a class="header" href="#complete-example">Complete Example</a></h2>
+<p>See <code>crates/tropical-gemm-python/examples/pytorch_tropical.py</code> for:</p>
+<ul>
+<li>All three autograd functions (MaxPlus, MinPlus, MaxMul)</li>
+<li>Gradient verification tests</li>
+<li>Shortest/longest path examples</li>
+<li>Optimization demos</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
+<p>This section describes the internal architecture of tropical-gemm.</p>
+<h2 id="overview-1"><a class="header" href="#overview-1">Overview</a></h2>
+<p>tropical-gemm achieves high performance through:</p>
+<ol>
+<li><strong>BLIS-style blocking</strong> for cache efficiency</li>
+<li><strong>SIMD microkernels</strong> for vectorization</li>
+<li><strong>Runtime dispatch</strong> for optimal kernel selection</li>
+<li><strong>CUDA kernels</strong> for GPU acceleration</li>
+</ol>
+<h2 id="crate-structure"><a class="header" href="#crate-structure">Crate Structure</a></h2>
+<pre><code>tropical-gemm/
+├── src/
+│   ├── lib.rs          # Public API
+│   ├── api.rs          # Function-based API
+│   ├── types/          # Semiring definitions
+│   │   ├── traits.rs   # TropicalSemiring trait
+│   │   ├── max_plus.rs
+│   │   ├── min_plus.rs
+│   │   └── max_mul.rs
+│   ├── core/           # BLIS algorithm
+│   │   ├── gemm.rs     # 5-loop blocking
+│   │   ├── kernel.rs   # Microkernel trait
+│   │   ├── packing.rs  # Matrix packing
+│   │   └── tiling.rs   # Cache parameters
+│   ├── simd/           # SIMD kernels
+│   │   ├── dispatch.rs # Runtime selection
+│   │   ├── detect.rs   # CPU detection
+│   │   └── kernels/    # Per-architecture
+│   └── mat/            # Matrix types
+
+tropical-gemm-cuda/
+├── src/
+│   ├── lib.rs          # Public API
+│   ├── context.rs      # CUDA context
+│   ├── kernels.rs      # Kernel management
+│   └── gpu_mat.rs      # GPU matrix type
+└── kernels/
+    └── tropical_gemm.cu  # CUDA source
+</code></pre>
+<h2 id="performance-layers"><a class="header" href="#performance-layers">Performance Layers</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                    User API (Mat, MatRef)                   │
+├─────────────────────────────────────────────────────────────┤
+│                  Function API (tropical_matmul)             │
+├─────────────────────────────────────────────────────────────┤
+│               SIMD Dispatch (KernelDispatch)                │
+├─────────────────────────────────────────────────────────────┤
+│           BLIS 5-Loop Blocking (tropical_gemm_inner)        │
+├─────────────────────────────────────────────────────────────┤
+│                    SIMD Microkernel                         │
+│            (AVX2 / AVX-512 / NEON / Portable)               │
+└─────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="key-design-decisions"><a class="header" href="#key-design-decisions">Key Design Decisions</a></h2>
+<h3 id="1-semiring-as-type-parameter"><a class="header" href="#1-semiring-as-type-parameter">1. Semiring as Type Parameter</a></h3>
+<p>Operations are generic over the semiring type, enabling compile-time specialization:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn tropical_matmul&lt;S: TropicalSemiring&gt;(
+    a: &amp;[S::Scalar], m: usize, k: usize,
+    b: &amp;[S::Scalar], n: usize
+) -&gt; Vec&lt;S&gt;
+<span class="boring">}</span></code></pre>
+<h3 id="2-scalar-vs-semiring-types"><a class="header" href="#2-scalar-vs-semiring-types">2. Scalar vs Semiring Types</a></h3>
+<ul>
+<li><strong>Input</strong>: Raw scalar data (<code>&amp;[f32]</code>, <code>&amp;[f64]</code>)</li>
+<li><strong>Output</strong>: Semiring-wrapped values (<code>Vec&lt;MaxPlus&lt;f32&gt;&gt;</code>)</li>
+</ul>
+<p>This avoids unnecessary wrapping in hot paths.</p>
+<h3 id="3-runtime-simd-dispatch"><a class="header" href="#3-runtime-simd-dispatch">3. Runtime SIMD Dispatch</a></h3>
+<p>CPU features are detected at runtime, not compile time:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>match simd_level() {
+    SimdLevel::Avx512 =&gt; avx512_kernel(...),
+    SimdLevel::Avx2   =&gt; avx2_kernel(...),
+    _                 =&gt; portable_kernel(...),
+}
+<span class="boring">}</span></code></pre>
+<h3 id="4-cuda-runtime-compilation"><a class="header" href="#4-cuda-runtime-compilation">4. CUDA Runtime Compilation</a></h3>
+<p>Kernels are compiled from CUDA C source at runtime via NVRTC:</p>
+<ul>
+<li>No compile-time CUDA dependency</li>
+<li>Portability across CUDA versions</li>
+<li>Template-like specialization via macros</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="blis-algorithm"><a class="header" href="#blis-algorithm">BLIS Algorithm</a></h1>
+<p>The CPU implementation uses BLIS-style cache blocking for optimal performance.</p>
+<h2 id="5-loop-blocking"><a class="header" href="#5-loop-blocking">5-Loop Blocking</a></h2>
+<p>Matrix multiplication is blocked into tiles that fit in cache:</p>
+<pre><code>┌──────────────────────────────────────────────────────────────────────────┐
+│ Loop 5: for jc in 0..N step NC    (L3 cache - columns of B)             │
+│   Loop 4: for pc in 0..K step KC  (L2 cache - depth)                    │
+│     Pack B[pc:KC, jc:NC] → B̃  (contiguous in L3)                        │
+│     Loop 3: for ic in 0..M step MC  (L1 cache - rows of A)              │
+│       Pack A[ic:MC, pc:KC] → Ã  (contiguous in L2)                      │
+│       Loop 2: for jr in 0..NC step NR  (register blocking)              │
+│         Loop 1: for ir in 0..MC step MR  (microkernel)                  │
+│           microkernel(Ã[ir], B̃[jr], C[ic+ir, jc+jr])                    │
+└──────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="cache-tiling-parameters"><a class="header" href="#cache-tiling-parameters">Cache Tiling Parameters</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Parameter</th><th>Description</th><th>f32 AVX2</th><th>f64 AVX2</th><th>Portable</th></tr>
+</thead>
+<tbody>
+<tr><td>MC</td><td>Rows per L2 block</td><td>256</td><td>128</td><td>64</td></tr>
+<tr><td>NC</td><td>Columns per L3 block</td><td>256</td><td>128</td><td>64</td></tr>
+<tr><td>KC</td><td>Depth per block</td><td>512</td><td>256</td><td>256</td></tr>
+<tr><td>MR</td><td>Microkernel rows</td><td>8</td><td>4</td><td>4</td></tr>
+<tr><td>NR</td><td>Microkernel columns</td><td>8</td><td>4</td><td>4</td></tr>
+</tbody>
+</table>
+</div>
+<p>Parameters are tuned to fit in cache:</p>
+<ul>
+<li><code>MC × KC</code> fits in L2 cache</li>
+<li><code>KC × NC</code> fits in L3 cache</li>
+<li><code>MR × NR</code> fits in registers</li>
+</ul>
+<h2 id="packing"><a class="header" href="#packing">Packing</a></h2>
+<p>Before computation, matrices are <strong>packed</strong> into contiguous buffers:</p>
+<h3 id="pack-a-mc--kc-block"><a class="header" href="#pack-a-mc--kc-block">Pack A (MC × KC block)</a></h3>
+<p>Original layout (row-major):</p>
+<pre><code>A[0,0] A[0,1] A[0,2] ...
+A[1,0] A[1,1] A[1,2] ...
+...
+</code></pre>
+<p>Packed layout (MR-contiguous panels):</p>
+<pre><code>A[0,0] A[1,0] ... A[MR-1,0]   // First column of first panel
+A[0,1] A[1,1] ... A[MR-1,1]   // Second column of first panel
+...
+A[MR,0] A[MR+1,0] ...         // First column of second panel
+</code></pre>
+<h3 id="pack-b-kc--nc-block"><a class="header" href="#pack-b-kc--nc-block">Pack B (KC × NC block)</a></h3>
+<p>Packed into NR-wide panels for broadcasting:</p>
+<pre><code>B[0,0] B[0,1] ... B[0,NR-1]   // First row of first panel
+B[1,0] B[1,1] ... B[1,NR-1]   // Second row of first panel
+...
+</code></pre>
+<h2 id="benefits"><a class="header" href="#benefits">Benefits</a></h2>
+<ol>
+<li><strong>Sequential access</strong>: Packed data is accessed linearly</li>
+<li><strong>Cache reuse</strong>: Each block is loaded once, used many times</li>
+<li><strong>TLB efficiency</strong>: Fewer page table lookups</li>
+<li><strong>SIMD friendly</strong>: Contiguous data enables vectorization</li>
+</ol>
+<h2 id="code-location"><a class="header" href="#code-location">Code Location</a></h2>
+<ul>
+<li><code>core/gemm.rs</code>: Main blocking loops</li>
+<li><code>core/packing.rs</code>: Pack functions</li>
+<li><code>core/tiling.rs</code>: TilingParams struct</li>
+<li><code>core/kernel.rs</code>: Microkernel trait</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="simd-kernels"><a class="header" href="#simd-kernels">SIMD Kernels</a></h1>
+<p>The microkernel is vectorized using SIMD instructions for maximum throughput.</p>
+<h2 id="supported-architectures"><a class="header" href="#supported-architectures">Supported Architectures</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Architecture</th><th>Instruction Set</th><th>Vector Width</th><th>f32 MR×NR</th><th>f64 MR×NR</th></tr>
+</thead>
+<tbody>
+<tr><td>x86_64</td><td>AVX-512</td><td>512-bit</td><td>16×16</td><td>8×8</td></tr>
+<tr><td>x86_64</td><td>AVX2</td><td>256-bit</td><td>8×8</td><td>4×4</td></tr>
+<tr><td>x86_64</td><td>SSE4.1</td><td>128-bit</td><td>4×4</td><td>2×2</td></tr>
+<tr><td>aarch64</td><td>NEON</td><td>128-bit</td><td>4×4</td><td>2×2</td></tr>
+<tr><td>Any</td><td>Portable</td><td>Scalar</td><td>4×4</td><td>4×4</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="runtime-detection"><a class="header" href="#runtime-detection">Runtime Detection</a></h2>
+<p>CPU features are detected at runtime:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{simd_level, SimdLevel};
+
+match simd_level() {
+    SimdLevel::Avx512 =&gt; println!("Using AVX-512"),
+    SimdLevel::Avx2   =&gt; println!("Using AVX2"),
+    SimdLevel::Sse41  =&gt; println!("Using SSE4.1"),
+    SimdLevel::Neon   =&gt; println!("Using NEON"),
+    SimdLevel::None   =&gt; println!("Using portable"),
+}
+<span class="boring">}</span></code></pre>
+<h2 id="microkernel-design"><a class="header" href="#microkernel-design">Microkernel Design</a></h2>
+<p>For MaxPlus f32 with AVX2 (8-wide vectors):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Pseudocode for 8×8 microkernel
+for k in 0..KC {
+    // Load 8 elements from packed A
+    let a_vec = _mm256_loadu_ps(a_ptr);
+
+    // For each column in the 8-column output tile
+    for j in 0..8 {
+        // Broadcast scalar from packed B
+        let b_scalar = _mm256_broadcast_ss(b_ptr + j);
+
+        // Tropical multiply: a + b (element-wise)
+        let prod = _mm256_add_ps(a_vec, b_scalar);
+
+        // Tropical accumulate: max(c, prod)
+        c_vec[j] = _mm256_max_ps(c_vec[j], prod);
+    }
+
+    a_ptr += 8;  // Next column in packed A
+    b_ptr += 8;  // Next row in packed B
+}
+<span class="boring">}</span></code></pre>
+<h2 id="semiring-specific-operations"><a class="header" href="#semiring-specific-operations">Semiring-Specific Operations</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Semiring</th><th>Tropical Mul</th><th>Tropical Add</th></tr>
+</thead>
+<tbody>
+<tr><td>MaxPlus</td><td><code>_mm256_add_ps</code></td><td><code>_mm256_max_ps</code></td></tr>
+<tr><td>MinPlus</td><td><code>_mm256_add_ps</code></td><td><code>_mm256_min_ps</code></td></tr>
+<tr><td>MaxMul</td><td><code>_mm256_mul_ps</code></td><td><code>_mm256_max_ps</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="dispatch-mechanism"><a class="header" href="#dispatch-mechanism">Dispatch Mechanism</a></h2>
+<p>The <code>KernelDispatch</code> trait routes to the appropriate implementation:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl KernelDispatch for TropicalMaxPlus&lt;f32&gt; {
+    unsafe fn dispatch_gemm(...) {
+        match simd_level() {
+            SimdLevel::Avx2 | SimdLevel::Avx512 =&gt; {
+                tropical_gemm_inner::&lt;Self, Avx2MaxPlusF32&gt;(...);
+            }
+            _ =&gt; {
+                tropical_gemm_inner::&lt;Self, PortableMicrokernel&gt;(...);
+            }
+        }
+    }
+}
+<span class="boring">}</span></code></pre>
+<h2 id="code-location-1"><a class="header" href="#code-location-1">Code Location</a></h2>
+<ul>
+<li><code>simd/detect.rs</code>: CPU feature detection</li>
+<li><code>simd/dispatch.rs</code>: Runtime dispatch trait</li>
+<li><code>simd/kernels/avx2.rs</code>: AVX2 implementations</li>
+<li><code>simd/kernels/neon.rs</code>: NEON implementations</li>
+<li><code>simd/kernels/portable.rs</code>: Fallback implementation</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="cuda-implementation"><a class="header" href="#cuda-implementation">CUDA Implementation</a></h1>
+<p>The GPU backend uses CUDA with runtime kernel compilation.</p>
+<h2 id="architecture-1"><a class="header" href="#architecture-1">Architecture</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                      User API                               │
+│           (GpuMat::matmul, tropical_matmul_gpu)             │
+├─────────────────────────────────────────────────────────────┤
+│                    CudaContext                              │
+│         (kernel compilation, device management)             │
+├─────────────────────────────────────────────────────────────┤
+│                      NVRTC                                  │
+│           (runtime kernel compilation)                      │
+├─────────────────────────────────────────────────────────────┤
+│                   CUDA Kernels                              │
+│       (tropical_gemm.cu, specialized per semiring)          │
+└─────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="runtime-compilation"><a class="header" href="#runtime-compilation">Runtime Compilation</a></h2>
+<p>Kernels are compiled from CUDA C source at runtime using NVRTC:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// On first CudaContext::new()
+let ctx = CudaContext::new()?;  // Compiles kernels (~1-2 seconds)
+
+// Subsequent operations are fast
+let c = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;  // Just kernel launch
+<span class="boring">}</span></code></pre>
+<p>Benefits:</p>
+<ul>
+<li><strong>No build-time CUDA dependency</strong>: Users don’t need nvcc at build time</li>
+<li><strong>Portability</strong>: Works across CUDA versions</li>
+<li><strong>Specialization</strong>: Kernels optimized for specific semirings</li>
+</ul>
+<h2 id="kernel-design"><a class="header" href="#kernel-design">Kernel Design</a></h2>
+<h3 id="thread-block-organization"><a class="header" href="#thread-block-organization">Thread Block Organization</a></h3>
+<pre><code>Block size: 16×16 threads (256 threads per block)
+Grid: ceil(M/16) × ceil(N/16) blocks
+
+Each thread computes one output element C[i,j]
+</code></pre>
+<h3 id="memory-access-pattern"><a class="header" href="#memory-access-pattern">Memory Access Pattern</a></h3>
+<pre><code class="language-cuda">__global__ void tropical_maxplus_gemm(
+    const float* A, const float* B, float* C,
+    int M, int N, int K
+) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row &lt; M &amp;&amp; col &lt; N) {
+        float max_val = -INFINITY;
+        for (int k = 0; k &lt; K; k++) {
+            float sum = A[row * K + k] + B[k * N + col];
+            max_val = fmaxf(max_val, sum);
+        }
+        C[row * N + col] = max_val;
+    }
+}
+</code></pre>
+<h3 id="shared-memory-tiling"><a class="header" href="#shared-memory-tiling">Shared Memory Tiling</a></h3>
+<p>For larger matrices, shared memory is used:</p>
+<pre><code class="language-cuda">__shared__ float As[TILE_SIZE][TILE_SIZE];
+__shared__ float Bs[TILE_SIZE][TILE_SIZE];
+
+// Load tiles cooperatively
+As[ty][tx] = A[row * K + (tile * TILE_SIZE + tx)];
+Bs[ty][tx] = B[(tile * TILE_SIZE + ty) * N + col];
+__syncthreads();
+
+// Compute partial result from tile
+for (int k = 0; k &lt; TILE_SIZE; k++) {
+    max_val = fmaxf(max_val, As[ty][k] + Bs[k][tx]);
+}
+</code></pre>
+<h2 id="argmax-kernels"><a class="header" href="#argmax-kernels">Argmax Kernels</a></h2>
+<p>For backpropagation, kernels track which k index achieved the max:</p>
+<pre><code class="language-cuda">__global__ void tropical_maxplus_gemm_argmax(
+    const float* A, const float* B,
+    float* C, int* argmax,
+    int M, int N, int K
+) {
+    // ... setup ...
+
+    float max_val = -INFINITY;
+    int max_k = 0;
+
+    for (int k = 0; k &lt; K; k++) {
+        float sum = A[row * K + k] + B[k * N + col];
+        if (sum &gt; max_val) {
+            max_val = sum;
+            max_k = k;
+        }
+    }
+
+    C[row * N + col] = max_val;
+    argmax[row * N + col] = max_k;
+}
+</code></pre>
+<h2 id="batched-kernels"><a class="header" href="#batched-kernels">Batched Kernels</a></h2>
+<p>For processing multiple matrices:</p>
+<pre><code class="language-cuda">// Strided batched: matrices stored contiguously
+__global__ void tropical_maxplus_gemm_batched(
+    const float* A, const float* B, float* C,
+    int M, int N, int K, int batch_count,
+    int stride_a, int stride_b, int stride_c
+) {
+    int batch = blockIdx.z;
+    // ... standard GEMM with offset by batch * stride ...
+}
+</code></pre>
+<h2 id="memory-management"><a class="header" href="#memory-management">Memory Management</a></h2>
+<h3 id="device-memory-allocation"><a class="header" href="#device-memory-allocation">Device Memory Allocation</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Allocate GPU memory
+let d_ptr = cuda_malloc(size_bytes)?;
+
+// Copy host → device
+cuda_memcpy_h2d(d_ptr, h_data, size_bytes)?;
+
+// Copy device → host
+cuda_memcpy_d2h(h_data, d_ptr, size_bytes)?;
+
+// Free
+cuda_free(d_ptr)?;
+<span class="boring">}</span></code></pre>
+<h3 id="pinned-memory-for-faster-transfers"><a class="header" href="#pinned-memory-for-faster-transfers">Pinned Memory (for faster transfers)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// For frequent CPU↔GPU transfers, use pinned memory
+let pinned = cuda_malloc_host(size_bytes)?;
+// ... 2-3x faster transfers ...
+cuda_free_host(pinned)?;
+<span class="boring">}</span></code></pre>
+<h2 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h2>
+<p>CUDA errors are wrapped in Rust Result types:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>match CudaContext::new() {
+    Ok(ctx) =&gt; { /* use context */ }
+    Err(CudaError::NoDevice) =&gt; {
+        println!("No CUDA device found, using CPU");
+    }
+    Err(CudaError::CompilationFailed(msg)) =&gt; {
+        eprintln!("Kernel compilation failed: {}", msg);
+    }
+    Err(e) =&gt; return Err(e.into()),
+}
+<span class="boring">}</span></code></pre>
+<h2 id="code-location-2"><a class="header" href="#code-location-2">Code Location</a></h2>
+<ul>
+<li><code>tropical-gemm-cuda/src/context.rs</code>: CUDA context and compilation</li>
+<li><code>tropical-gemm-cuda/src/gpu_mat.rs</code>: GPU matrix type</li>
+<li><code>tropical-gemm-cuda/src/kernels.rs</code>: Kernel management</li>
+<li><code>tropical-gemm-cuda/kernels/tropical_gemm.cu</code>: CUDA kernel source</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="performance-guide"><a class="header" href="#performance-guide">Performance Guide</a></h1>
+<p>This guide helps you get the best performance from tropical-gemm.</p>
+<h2 id="cpu-vs-gpu-selection"><a class="header" href="#cpu-vs-gpu-selection">CPU vs GPU Selection</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Matrix Size</th><th>Recommendation</th><th>Reason</th></tr>
+</thead>
+<tbody>
+<tr><td>&lt; 128×128</td><td>CPU</td><td>GPU transfer overhead dominates</td></tr>
+<tr><td>128-256</td><td>CPU or GPU</td><td>Similar performance</td></tr>
+<tr><td>&gt; 256×256</td><td>GPU</td><td>GPU computation advantage</td></tr>
+<tr><td>&gt; 1024×1024</td><td>GPU (strongly)</td><td>100-800x speedup</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="benchmark-results-maxplus-f32"><a class="header" href="#benchmark-results-maxplus-f32">Benchmark Results (MaxPlus f32)</a></h3>
+<p>Tested on NVIDIA RTX A4500 (Ampere) with AMD Ryzen 9 5900X.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Size</th><th>CPU AVX2</th><th>GPU</th><th>GPU Speedup</th></tr>
+</thead>
+<tbody>
+<tr><td>64</td><td>0.05 ms</td><td>0.02 ms</td><td>2.5x</td></tr>
+<tr><td>128</td><td>0.4 ms</td><td>0.02 ms</td><td>20x</td></tr>
+<tr><td>256</td><td>4.1 ms</td><td>0.03 ms</td><td>137x</td></tr>
+<tr><td>512</td><td>32.8 ms</td><td>0.09 ms</td><td>364x</td></tr>
+<tr><td>1024</td><td>262 ms</td><td>0.36 ms</td><td>728x</td></tr>
+<tr><td>2048</td><td>2092 ms</td><td>2.5 ms</td><td>837x</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="rust-cuda-vs-c-reference"><a class="header" href="#rust-cuda-vs-c-reference">Rust CUDA vs C Reference</a></h3>
+<p>Comparison with <a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Size</th><th>C Library (ms)</th><th>Rust CUDA (ms)</th><th>Ratio</th></tr>
+</thead>
+<tbody>
+<tr><td>256</td><td>0.028</td><td>0.032</td><td>1.14x</td></tr>
+<tr><td>512</td><td>0.074</td><td>0.086</td><td>1.16x</td></tr>
+<tr><td>1024</td><td>0.315</td><td>0.358</td><td>1.14x</td></tr>
+<tr><td>2048</td><td>2.224</td><td>2.509</td><td>1.13x</td></tr>
+</tbody>
+</table>
+</div>
+<p>The C library is ~13-16% faster due to pre-compiled PTX vs runtime compilation.</p>
+<h3 id="gpu-backward-pass-performance"><a class="header" href="#gpu-backward-pass-performance">GPU Backward Pass Performance</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Size</th><th>Forward (ms)</th><th>Backward A (ms)</th><th>Backward B (ms)</th></tr>
+</thead>
+<tbody>
+<tr><td>256</td><td>0.032</td><td>0.018</td><td>0.018</td></tr>
+<tr><td>512</td><td>0.086</td><td>0.052</td><td>0.052</td></tr>
+<tr><td>1024</td><td>0.358</td><td>0.183</td><td>0.184</td></tr>
+<tr><td>2048</td><td>2.510</td><td>1.312</td><td>1.315</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="cpu-optimization"><a class="header" href="#cpu-optimization">CPU Optimization</a></h2>
+<h3 id="simd-detection"><a class="header" href="#simd-detection">SIMD Detection</a></h3>
+<p>Ensure optimal SIMD is being used:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{simd_level, SimdLevel};
+
+match simd_level() {
+    SimdLevel::Avx512 =&gt; println!("Best: AVX-512"),
+    SimdLevel::Avx2 =&gt; println!("Good: AVX2"),
+    SimdLevel::Sse41 =&gt; println!("Okay: SSE4.1"),
+    SimdLevel::Neon =&gt; println!("ARM: NEON"),
+    SimdLevel::None =&gt; println!("Slow: Portable fallback"),
+}
+<span class="boring">}</span></code></pre>
+<h3 id="memory-layout"><a class="header" href="#memory-layout">Memory Layout</a></h3>
+<p>Row-major contiguous data is fastest:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// GOOD: Contiguous row-major
+let a = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_fn(m, k, |i, j| data[i * k + j]);
+
+// SLOWER: Non-contiguous requires packing overhead
+let a_ref = MatRef::from_slice_strided(&amp;data, m, k, stride);
+<span class="boring">}</span></code></pre>
+<h3 id="cache-efficiency"><a class="header" href="#cache-efficiency">Cache Efficiency</a></h3>
+<p>For best cache utilization:</p>
+<ul>
+<li><strong>Square matrices</strong>: Optimal blocking</li>
+<li><strong>Tall-skinny (M &gt;&gt; K)</strong>: Good cache reuse for A</li>
+<li><strong>Short-wide (K &gt;&gt; M)</strong>: May have cache pressure</li>
+</ul>
+<h2 id="gpu-optimization"><a class="header" href="#gpu-optimization">GPU Optimization</a></h2>
+<h3 id="context-reuse-1"><a class="header" href="#context-reuse-1">Context Reuse</a></h3>
+<p><strong>Critical</strong>: Reuse <code>CudaContext</code> to avoid repeated kernel compilation:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// GOOD: Create once, reuse many times
+let ctx = CudaContext::new()?;  // ~1-2 seconds
+for batch in batches {
+    let c = a.matmul(&amp;ctx, &amp;b)?;  // Fast
+}
+
+// BAD: Creates new context each time
+for batch in batches {
+    let ctx = CudaContext::new()?;  // Slow!
+    let c = a.matmul(&amp;ctx, &amp;b)?;
+}
+<span class="boring">}</span></code></pre>
+<h3 id="batched-operations-1"><a class="header" href="#batched-operations-1">Batched Operations</a></h3>
+<p>For multiple matrix multiplications, use batched API:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// GOOD: Single kernel launch for all matrices
+let c_batch = GpuMat::matmul_batched(&amp;ctx, &amp;a_batch, &amp;b_batch)?;
+
+// SLOWER: Sequential kernel launches
+let c_batch: Vec&lt;_&gt; = a_batch.iter()
+    .zip(&amp;b_batch)
+    .map(|(a, b)| a.matmul(&amp;ctx, b))
+    .collect();
+<span class="boring">}</span></code></pre>
+<h3 id="memory-transfer"><a class="header" href="#memory-transfer">Memory Transfer</a></h3>
+<p>Minimize CPU↔GPU transfers:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// GOOD: Keep data on GPU between operations
+let a_gpu = GpuMat::from_matref(&amp;ctx, &amp;a)?;
+let b_gpu = GpuMat::from_matref(&amp;ctx, &amp;b)?;
+
+// Multiple operations without transfer
+let c_gpu = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+let d_gpu = c_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+let e_gpu = d_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+
+// Only transfer final result
+let e = e_gpu.to_mat(&amp;ctx)?;
+
+// BAD: Transfer for each operation
+for i in 0..3 {
+    let a_gpu = GpuMat::from_matref(&amp;ctx, &amp;a)?;  // Upload
+    let c_gpu = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+    let c = c_gpu.to_mat(&amp;ctx)?;  // Download
+    a = c;  // Use result for next iteration
+}
+<span class="boring">}</span></code></pre>
+<h2 id="pytorch-training"><a class="header" href="#pytorch-training">PyTorch Training</a></h2>
+<h3 id="keep-context-alive"><a class="header" href="#keep-context-alive">Keep Context Alive</a></h3>
+<pre><code class="language-python"># Create context once at module initialization
+class TropicalLayer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Context created once
+        self.ctx = tropical_gemm.CudaContext()
+
+    def forward(self, a, b):
+        # Reuse context
+        return tropical_matmul_gpu(self.ctx, a, b)
+</code></pre>
+<h3 id="batch-your-data"><a class="header" href="#batch-your-data">Batch Your Data</a></h3>
+<pre><code class="language-python"># GOOD: Large batch, single kernel
+output = tropical_matmul(large_batch_a, large_batch_b)
+
+# SLOWER: Many small operations
+outputs = [tropical_matmul(a, b) for a, b in zip(small_as, small_bs)]
+</code></pre>
+<h2 id="memory-considerations"><a class="header" href="#memory-considerations">Memory Considerations</a></h2>
+<h3 id="argmax-memory"><a class="header" href="#argmax-memory">Argmax Memory</a></h3>
+<p>With argmax tracking, memory usage increases:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Operation</th><th>Memory per element</th></tr>
+</thead>
+<tbody>
+<tr><td>Standard GEMM</td><td>4 bytes (f32)</td></tr>
+<tr><td>With argmax</td><td>8 bytes (f32 + i32)</td></tr>
+</tbody>
+</table>
+</div>
+<p>For large matrices, this can be significant:</p>
+<ul>
+<li>4096×4096 standard: 64 MB</li>
+<li>4096×4096 with argmax: 128 MB</li>
+</ul>
+<h3 id="gpu-memory"><a class="header" href="#gpu-memory">GPU Memory</a></h3>
+<p>Check available GPU memory:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let (free, total) = cuda_mem_info()?;
+println!("GPU memory: {} MB free / {} MB total",
+    free / 1024 / 1024,
+    total / 1024 / 1024);
+<span class="boring">}</span></code></pre>
+<h2 id="profiling"><a class="header" href="#profiling">Profiling</a></h2>
+<h3 id="cpu-profiling"><a class="header" href="#cpu-profiling">CPU Profiling</a></h3>
+<pre><code class="language-bash"># Linux perf
+perf record --call-graph dwarf ./target/release/benchmark
+perf report
+
+# Flamegraph
+cargo install flamegraph
+cargo flamegraph --bin benchmark
+</code></pre>
+<h3 id="gpu-profiling"><a class="header" href="#gpu-profiling">GPU Profiling</a></h3>
+<pre><code class="language-bash"># NVIDIA Nsight
+nsys profile ./target/release/gpu_benchmark
+nsys-ui report.nsys-rep
+
+# nvprof (older)
+nvprof ./target/release/gpu_benchmark
+</code></pre>
+<h2 id="troubleshooting-performance"><a class="header" href="#troubleshooting-performance">Troubleshooting Performance</a></h2>
+<h3 id="unexpectedly-slow-cpu"><a class="header" href="#unexpectedly-slow-cpu">Unexpectedly Slow CPU</a></h3>
+<ol>
+<li>Check SIMD level (should be AVX2 or better on modern x86)</li>
+<li>Ensure data is contiguous (avoid strided access)</li>
+<li>Check for memory pressure (matrix too large for cache)</li>
+</ol>
+<h3 id="unexpectedly-slow-gpu"><a class="header" href="#unexpectedly-slow-gpu">Unexpectedly Slow GPU</a></h3>
+<ol>
+<li>Verify context reuse (compilation is slow)</li>
+<li>Check transfer overhead (small matrices dominated by transfer)</li>
+<li>Ensure sufficient GPU memory (avoid swapping)</li>
+<li>Use batched API for multiple matrices</li>
+</ol>
+<h2 id="running-benchmarks"><a class="header" href="#running-benchmarks">Running Benchmarks</a></h2>
+<pre><code class="language-bash"># CPU benchmark
+cargo run --release --example bench_rust -p tropical-gemm
+
+# CUDA vs CPU benchmark
+cargo run --release --example bench_cuda_vs_cpu -p tropical-gemm-cuda
+
+# GPU backward pass benchmark
+cargo run --release --example bench_backward -p tropical-gemm-cuda
+</code></pre>
+<p>Or use the Makefile:</p>
+<pre><code class="language-bash">make bench          # Run all benchmarks
+make bench-cpu      # CPU only
+make bench-cuda     # CUDA only
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h1>
+<p>Common issues and solutions for tropical-gemm.</p>
+<h2 id="installation-issues"><a class="header" href="#installation-issues">Installation Issues</a></h2>
+<h3 id="rust-compilation-errors"><a class="header" href="#rust-compilation-errors">Rust Compilation Errors</a></h3>
+<p><strong>Error: “missing SIMD intrinsics”</strong></p>
+<pre><code>error[E0433]: failed to resolve: use of undeclared crate or module `core_arch`
+</code></pre>
+<p><strong>Solution</strong>: Update Rust to latest stable:</p>
+<pre><code class="language-bash">rustup update stable
+</code></pre>
+<p><strong>Error: “target feature <code>avx2</code> is not enabled”</strong></p>
+<p>This is expected on non-x86 platforms. The portable fallback will be used automatically.</p>
+<h3 id="cuda-issues"><a class="header" href="#cuda-issues">CUDA Issues</a></h3>
+<p><strong>Error: “CUDA driver not found”</strong></p>
+<pre><code>CudaError: CUDA driver version is insufficient
+</code></pre>
+<p><strong>Solution</strong>:</p>
+<ol>
+<li>Install/update NVIDIA drivers</li>
+<li>Verify with <code>nvidia-smi</code></li>
+<li>Install CUDA Toolkit</li>
+</ol>
+<p><strong>Error: “nvcc not found”</strong></p>
+<pre><code>CudaError: Failed to compile kernel: nvcc not found
+</code></pre>
+<p><strong>Solution</strong>:</p>
+<pre><code class="language-bash"># Add CUDA to PATH
+export PATH=/usr/local/cuda/bin:$PATH
+
+# Verify
+nvcc --version
+</code></pre>
+<p><strong>Error: “Kernel compilation failed”</strong></p>
+<pre><code>CudaError: CompilationFailed: ...
+</code></pre>
+<p><strong>Solution</strong>:</p>
+<ol>
+<li>Check CUDA version compatibility (requires 11.0+)</li>
+<li>Ensure CUDA headers are installed</li>
+<li>Try reinstalling CUDA Toolkit</li>
+</ol>
+<h3 id="python-binding-issues"><a class="header" href="#python-binding-issues">Python Binding Issues</a></h3>
+<p><strong>Error: “module ‘tropical_gemm’ not found”</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; import tropical_gemm
+ModuleNotFoundError: No module named 'tropical_gemm'
+</code></pre>
+<p><strong>Solution</strong>:</p>
+<pre><code class="language-bash">cd crates/tropical-gemm-python
+pip install maturin
+maturin develop --release
+</code></pre>
+<p><strong>Error: “symbol not found in flat namespace”</strong> (macOS)</p>
+<pre><code>ImportError: dlopen(...): symbol not found in flat namespace
+</code></pre>
+<p><strong>Solution</strong>: Rebuild with correct Python version:</p>
+<pre><code class="language-bash"># Ensure using correct Python
+which python
+python --version
+
+# Rebuild
+maturin develop --release
+</code></pre>
+<p><strong>Error: “dtype mismatch”</strong></p>
+<pre><code>TypeError: Expected float32 array, got float64
+</code></pre>
+<p><strong>Solution</strong>: Explicitly cast to float32:</p>
+<pre><code class="language-python">import numpy as np
+a = a.astype(np.float32)
+b = b.astype(np.float32)
+c = tropical_gemm.maxplus_matmul(a, b)
+</code></pre>
+<h2 id="runtime-issues"><a class="header" href="#runtime-issues">Runtime Issues</a></h2>
+<h3 id="incorrect-results"><a class="header" href="#incorrect-results">Incorrect Results</a></h3>
+<p><strong>Symptom: All outputs are -inf or inf</strong></p>
+<p>This typically means input contains NaN or inf values:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Check for invalid values
+for &amp;x in data.iter() {
+    if x.is_nan() || x.is_infinite() {
+        panic!("Invalid input value: {}", x);
+    }
+}
+<span class="boring">}</span></code></pre>
+<p><strong>Symptom: Results differ between CPU and GPU</strong></p>
+<p>Small numerical differences are expected due to floating-point associativity. For MaxPlus/MinPlus, results should be identical (only comparisons).</p>
+<p>For MaxMul, small differences may occur:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Allow small tolerance
+let diff = (cpu_result - gpu_result).abs();
+assert!(diff &lt; 1e-5, "Results differ by {}", diff);
+<span class="boring">}</span></code></pre>
+<h3 id="performance-issues"><a class="header" href="#performance-issues">Performance Issues</a></h3>
+<p><strong>Symptom: GPU slower than CPU</strong></p>
+<p>For small matrices, transfer overhead dominates:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Rule of thumb: GPU beneficial for N &gt; 256
+if n &lt; 256 {
+    // Use CPU
+    tropical_matmul::&lt;MaxPlus&lt;f32&gt;&gt;(&amp;a, m, k, &amp;b, n)
+} else {
+    // Use GPU
+    tropical_matmul_gpu::&lt;MaxPlus&lt;f32&gt;&gt;(&amp;a, m, k, &amp;b, n)?
+}
+<span class="boring">}</span></code></pre>
+<p><strong>Symptom: CPU slower than expected</strong></p>
+<p>Check SIMD detection:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::simd_level;
+println!("SIMD level: {:?}", simd_level());
+// Should be Avx2 or Avx512 on modern x86
+<span class="boring">}</span></code></pre>
+<h3 id="memory-issues"><a class="header" href="#memory-issues">Memory Issues</a></h3>
+<p><strong>Error: “out of memory” (GPU)</strong></p>
+<pre><code>CudaError: Out of memory
+</code></pre>
+<p><strong>Solution</strong>:</p>
+<ol>
+<li>Use smaller batch sizes</li>
+<li>Process matrices sequentially</li>
+<li>Free unused GPU memory</li>
+</ol>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Process in chunks
+for chunk in matrices.chunks(batch_size) {
+    let result = process_batch(&amp;ctx, chunk)?;
+    // Results are downloaded, GPU memory freed
+}
+<span class="boring">}</span></code></pre>
+<p><strong>Error: “allocation failed” (CPU)</strong></p>
+<p>Large matrices may exceed available RAM:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Estimate memory needed
+let bytes = m * n * std::mem::size_of::&lt;f32&gt;();
+println!("Matrix requires {} MB", bytes / 1024 / 1024);
+<span class="boring">}</span></code></pre>
+<h2 id="pytorch-issues"><a class="header" href="#pytorch-issues">PyTorch Issues</a></h2>
+<h3 id="gradient-issues"><a class="header" href="#gradient-issues">Gradient Issues</a></h3>
+<p><strong>Symptom: Gradients are all zeros</strong></p>
+<p>Check that tensors require gradients:</p>
+<pre><code class="language-python">a = torch.randn(4, 5, requires_grad=True)  # Must be True
+b = torch.randn(5, 3, requires_grad=True)
+
+c = TropicalMaxPlusMatmul.apply(a, b)
+loss = c.sum()
+loss.backward()
+
+print(a.grad)  # Should not be None
+</code></pre>
+<p><strong>Symptom: “RuntimeError: element 0 of tensors does not require grad”</strong></p>
+<p>Ensure input tensors have <code>requires_grad=True</code>:</p>
+<pre><code class="language-python">a = torch.tensor([[1.0, 2.0]], requires_grad=True)
+# Not: a = torch.tensor([[1.0, 2.0]])  # No gradients!
+</code></pre>
+<h3 id="device-mismatch"><a class="header" href="#device-mismatch">Device Mismatch</a></h3>
+<p><strong>Error: “Expected all tensors on same device”</strong></p>
+<pre><code class="language-python"># Ensure both inputs on same device
+a = a.to('cuda')
+b = b.to('cuda')
+c = TropicalMaxPlusMatmul.apply(a, b)
+</code></pre>
+<h2 id="getting-help"><a class="header" href="#getting-help">Getting Help</a></h2>
+<p>If you encounter issues not covered here:</p>
+<ol>
+<li>Check GitHub issues: https://github.com/TensorBFS/tropical-gemm/issues</li>
+<li>Open a new issue with:
+<ul>
+<li>Error message</li>
+<li>Rust/Python version</li>
+<li>OS and hardware</li>
+<li>Minimal reproduction code</li>
+</ul>
+</li>
+</ol>
+<h3 id="diagnostic-information"><a class="header" href="#diagnostic-information">Diagnostic Information</a></h3>
+<p>Include this in bug reports:</p>
+<pre><code class="language-bash"># Rust version
+rustc --version
+cargo --version
+
+# CUDA (if applicable)
+nvcc --version
+nvidia-smi
+
+# Python (if applicable)
+python --version
+pip show tropical_gemm
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="api-reference"><a class="header" href="#api-reference">API Reference</a></h1>
+<p>This page provides quick reference to the main APIs.</p>
+<p>For complete documentation, see the <a href="https://docs.rs/tropical-gemm">Rust docs</a>.</p>
+<h2 id="crate-overview"><a class="header" href="#crate-overview">Crate Overview</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>tropical-gemm</code></td><td>CPU implementation with SIMD</td></tr>
+<tr><td><code>tropical-gemm-cuda</code></td><td>GPU implementation with CUDA</td></tr>
+<tr><td><code>tropical-gemm-python</code></td><td>Python bindings</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="semiring-types-1"><a class="header" href="#semiring-types-1">Semiring Types</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MaxPlus, MinPlus, MaxMul};
+use tropical_gemm::types::{TropicalMaxPlus, TropicalMinPlus, TropicalMaxMul};
+
+// Wrapper types (for storage)
+let a: MaxPlus&lt;f32&gt; = MaxPlus::new(3.0);
+let b: MinPlus&lt;f64&gt; = MinPlus::new(5.0);
+
+// Marker types (for generic functions)
+type S = TropicalMaxPlus&lt;f32&gt;;
+<span class="boring">}</span></code></pre>
+<h2 id="matrix-types-1"><a class="header" href="#matrix-types-1">Matrix Types</a></h2>
+<h3 id="mat-owned"><a class="header" href="#mat-owned">Mat (Owned)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus};
+
+// Create from function
+let a = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_fn(m, k, |i, j| value);
+
+// Create from scalar slice
+let a = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_scalar_slice(&amp;data, m, k);
+
+// Access
+let val = a.get_value(i, j);  // Returns f32
+let dim = a.dim();            // Returns (rows, cols)
+<span class="boring">}</span></code></pre>
+<h3 id="matref-borrowed"><a class="header" href="#matref-borrowed">MatRef (Borrowed)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{MatRef, MaxPlus};
+
+// From slice
+let a = MatRef::&lt;MaxPlus&lt;f32&gt;&gt;::from_slice(&amp;data, m, k);
+
+// From Mat
+let a_ref = a.as_ref();
+<span class="boring">}</span></code></pre>
+<h3 id="matmut-mutable"><a class="header" href="#matmut-mutable">MatMut (Mutable)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::MatMut;
+
+let mut c = Mat::zeros(m, n);
+let c_mut = c.as_mut();
+<span class="boring">}</span></code></pre>
+<h2 id="matrix-operations"><a class="header" href="#matrix-operations">Matrix Operations</a></h2>
+<h3 id="high-level-api-mat"><a class="header" href="#high-level-api-mat">High-Level API (Mat)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{Mat, MaxPlus};
+
+let a = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_scalar_slice(&amp;a_data, m, k);
+let b = Mat::&lt;MaxPlus&lt;f32&gt;&gt;::from_scalar_slice(&amp;b_data, k, n);
+
+// Standard multiply
+let c = a.matmul(&amp;b);
+
+// With argmax tracking
+let result = a.matmul_with_argmax(&amp;b);
+let value = result.get_value(i, j);
+let argmax = result.get_argmax(i, j);
+<span class="boring">}</span></code></pre>
+<h3 id="low-level-api-functions"><a class="header" href="#low-level-api-functions">Low-Level API (Functions)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{tropical_matmul, tropical_matmul_with_argmax, TropicalMaxPlus};
+
+// Standard multiply
+let c = tropical_matmul::&lt;TropicalMaxPlus&lt;f32&gt;&gt;(&amp;a, m, k, &amp;b, n);
+
+// With argmax
+let (values, argmax) = tropical_matmul_with_argmax::&lt;TropicalMaxPlus&lt;f32&gt;&gt;(&amp;a, m, k, &amp;b, n);
+<span class="boring">}</span></code></pre>
+<h2 id="gpu-api"><a class="header" href="#gpu-api">GPU API</a></h2>
+<h3 id="cudacontext"><a class="header" href="#cudacontext">CudaContext</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm_cuda::CudaContext;
+
+let ctx = CudaContext::new()?;  // Compiles kernels
+<span class="boring">}</span></code></pre>
+<h3 id="gpumat"><a class="header" href="#gpumat">GpuMat</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm_cuda::GpuMat;
+use tropical_gemm::{MatRef, MaxPlus};
+
+// Upload
+let a_gpu = GpuMat::from_matref(&amp;ctx, &amp;a)?;
+
+// Compute
+let c_gpu = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;
+
+// With argmax
+let result = a_gpu.matmul_argmax(&amp;ctx, &amp;b_gpu)?;
+
+// Download
+let c = c_gpu.to_mat(&amp;ctx)?;
+<span class="boring">}</span></code></pre>
+<h3 id="batched-operations-2"><a class="header" href="#batched-operations-2">Batched Operations</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm_cuda::GpuMat;
+
+// Upload batch
+let a_batch = GpuMat::from_mats(&amp;ctx, &amp;a_mats)?;
+let b_batch = GpuMat::from_mats(&amp;ctx, &amp;b_mats)?;
+
+// Batched multiply
+let c_batch = GpuMat::matmul_batched(&amp;ctx, &amp;a_batch, &amp;b_batch)?;
+
+// Download batch
+let c_mats = GpuMat::to_mats(&amp;ctx, &amp;c_batch)?;
+<span class="boring">}</span></code></pre>
+<h2 id="python-api"><a class="header" href="#python-api">Python API</a></h2>
+<h3 id="numpy-functions"><a class="header" href="#numpy-functions">NumPy Functions</a></h3>
+<pre><code class="language-python">import tropical_gemm
+import numpy as np
+
+a = np.array([[1, 2], [3, 4]], dtype=np.float32)
+b = np.array([[5, 6], [7, 8]], dtype=np.float32)
+
+# Basic operations
+c = tropical_gemm.maxplus_matmul(a, b)
+c = tropical_gemm.minplus_matmul(a, b)
+c = tropical_gemm.maxmul_matmul(a, b)
+
+# With argmax
+values, argmax = tropical_gemm.maxplus_matmul_with_argmax(a, b)
+</code></pre>
+<h3 id="backward-pass"><a class="header" href="#backward-pass">Backward Pass</a></h3>
+<pre><code class="language-python"># Gradient computation
+grad_a = tropical_gemm.backward_a(grad_c, argmax, k)
+grad_b = tropical_gemm.backward_b(grad_c, argmax, k)
+</code></pre>
+<h2 id="utility-functions"><a class="header" href="#utility-functions">Utility Functions</a></h2>
+<h3 id="simd-detection-1"><a class="header" href="#simd-detection-1">SIMD Detection</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tropical_gemm::{simd_level, SimdLevel};
+
+match simd_level() {
+    SimdLevel::Avx512 =&gt; { /* ... */ }
+    SimdLevel::Avx2 =&gt; { /* ... */ }
+    SimdLevel::Sse41 =&gt; { /* ... */ }
+    SimdLevel::Neon =&gt; { /* ... */ }
+    SimdLevel::None =&gt; { /* ... */ }
+}
+<span class="boring">}</span></code></pre>
+<h2 id="type-aliases-1"><a class="header" href="#type-aliases-1">Type Aliases</a></h2>
+<p>For convenience:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// These are equivalent:
+use tropical_gemm::MaxPlus;
+use tropical_gemm::types::max_plus::MaxPlus;
+
+// Marker types for generics:
+use tropical_gemm::TropicalMaxPlus;  // = TropicalSemiringImpl&lt;MaxPlusTag, T&gt;
+use tropical_gemm::TropicalMinPlus;
+use tropical_gemm::TropicalMaxMul;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="changelog"><a class="header" href="#changelog">Changelog</a></h1>
+<p>All notable changes to tropical-gemm.</p>
+<h2 id="unreleased"><a class="header" href="#unreleased">[Unreleased]</a></h2>
+<h3 id="added"><a class="header" href="#added">Added</a></h3>
+<ul>
+<li>mdBook documentation</li>
+<li>Comprehensive architecture documentation</li>
+<li>Performance tuning guide</li>
+<li>Troubleshooting guide</li>
+</ul>
+<h2 id="010---initial-release"><a class="header" href="#010---initial-release">[0.1.0] - Initial Release</a></h2>
+<h3 id="features-1"><a class="header" href="#features-1">Features</a></h3>
+<ul>
+<li>High-performance tropical matrix multiplication</li>
+<li>Support for three semirings: MaxPlus, MinPlus, MaxMul</li>
+<li>SIMD acceleration (AVX-512, AVX2, SSE4.1, NEON)</li>
+<li>CUDA GPU acceleration</li>
+<li>Argmax tracking for backpropagation</li>
+<li>Python bindings with NumPy support</li>
+<li>PyTorch autograd integration</li>
+</ul>
+<h3 id="crates"><a class="header" href="#crates">Crates</a></h3>
+<ul>
+<li><code>tropical-gemm</code>: Core CPU implementation</li>
+<li><code>tropical-gemm-cuda</code>: CUDA GPU backend</li>
+<li><code>tropical-gemm-python</code>: Python bindings</li>
+</ul>
+<h3 id="performance"><a class="header" href="#performance">Performance</a></h3>
+<ul>
+<li>BLIS-style 5-loop cache blocking</li>
+<li>Runtime SIMD dispatch</li>
+<li>GPU speedup up to 800x for large matrices</li>
+</ul>
+<hr>
+<h2 id="version-history"><a class="header" href="#version-history">Version History</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Version</th><th>Date</th><th>Highlights</th></tr>
+</thead>
+<tbody>
+<tr><td>0.1.0</td><td>2024</td><td>Initial release</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="migration-guides"><a class="header" href="#migration-guides">Migration Guides</a></h2>
+<h3 id="from-numpy-implementation"><a class="header" href="#from-numpy-implementation">From NumPy Implementation</a></h3>
+<p>If migrating from a pure NumPy tropical matrix multiplication:</p>
+<pre><code class="language-python"># Before (NumPy)
+def maxplus_matmul_numpy(a, b):
+    m, k = a.shape
+    n = b.shape[1]
+    c = np.full((m, n), -np.inf)
+    for i in range(m):
+        for j in range(n):
+            for kk in range(k):
+                c[i, j] = max(c[i, j], a[i, kk] + b[kk, j])
+    return c
+
+# After (tropical-gemm)
+import tropical_gemm
+c = tropical_gemm.maxplus_matmul(a, b)
+</code></pre>
+<h3 id="api-changes"><a class="header" href="#api-changes">API Changes</a></h3>
+<p>No breaking changes yet (this is the first release).</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>

@@ -93,8 +93,9 @@ fn bench_forward_with_argmax(c: &mut Criterion) {
         let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n).unwrap();
 
         // Warm up - compile kernel
-        let _ = tropical_matmul_gpu_with_ctx_and_argmax::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu)
-            .unwrap();
+        let _ =
+            tropical_matmul_gpu_with_ctx_and_argmax::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu)
+                .unwrap();
 
         group.throughput(Throughput::Elements(elements));
 
@@ -248,18 +249,14 @@ fn bench_comparison(c: &mut Criterion) {
         group.throughput(Throughput::Elements(elements));
 
         // Forward without argmax
-        group.bench_with_input(
-            BenchmarkId::new("forward_no_argmax", n),
-            &n,
-            |bench, _| {
-                bench.iter(|| {
-                    black_box(
-                        tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu)
-                            .unwrap(),
-                    )
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("forward_no_argmax", n), &n, |bench, _| {
+            bench.iter(|| {
+                black_box(
+                    tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu)
+                        .unwrap(),
+                )
+            });
+        });
 
         // Forward with argmax
         group.bench_with_input(
