@@ -43,14 +43,19 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
-          pip install maturin numpy torch
+          pip install maturin numpy torch pytest
         shell: bash
-      - name: Build and test Python bindings
+      - name: Build and install Python bindings
         run: |
           source .venv/bin/activate
           cd crates/tropical-gemm-python
           maturin develop
-          python -c "import tropical_gemm; print('Import successful')"
+        shell: bash
+      - name: Run pytest
+        run: |
+          source .venv/bin/activate
+          cd crates/tropical-gemm-python
+          pytest -v
         shell: bash
       - name: Run PyTorch example
         run: |
