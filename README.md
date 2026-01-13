@@ -170,24 +170,50 @@ let grad_b = result.backward_b(&ctx, &grad_c_gpu)?;
 ### Python Bindings (PyTorch Integration)
 
 ```python
-import torch
 import numpy as np
 import tropical_gemm
 
-# Create matrices
+# NumPy arrays
 a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
 b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
 
-# MaxPlus matmul with argmax for backprop
-c, argmax = tropical_gemm.maxplus_matmul_with_argmax(a, b)
+# Basic matmul
+c = tropical_gemm.maxplus_matmul(a, b)  # C[i,j] = max_k(A[i,k] + B[k,j])
+c = tropical_gemm.minplus_matmul(a, b)  # C[i,j] = min_k(A[i,k] + B[k,j])
+c = tropical_gemm.maxmul_matmul(a, b)   # C[i,j] = max_k(A[i,k] * B[k,j])
 
-# Compute gradients
-grad_c = np.ones((2, 2), dtype=np.float32)
-grad_a = tropical_gemm.backward_a(grad_c, argmax, k=3)
-grad_b = tropical_gemm.backward_b(grad_c, argmax, k=3)
+# With argmax for backprop
+c, argmax = tropical_gemm.maxplus_matmul_with_argmax(a, b)
 ```
 
-See `crates/tropical-gemm-python/examples/pytorch_tropical.py` for full PyTorch custom autograd integration.
+#### PyTorch Differentiable Operations
+
+For PyTorch integration with automatic differentiation, see the complete example at
+`crates/tropical-gemm-python/examples/pytorch_tropical.py`. This provides ready-to-use
+`torch.autograd.Function` implementations for all semirings:
+
+```python
+# Copy TropicalMaxPlusMatmul, TropicalMinPlusMatmul, TropicalMaxMulMatmul
+# from examples/pytorch_tropical.py, then:
+
+import torch
+
+a = torch.randn(4, 5, requires_grad=True)
+b = torch.randn(5, 3, requires_grad=True)
+
+c = TropicalMaxPlusMatmul.apply(a, b)  # MaxPlus (longest path)
+c = TropicalMinPlusMatmul.apply(a, b)  # MinPlus (shortest path)
+c = TropicalMaxMulMatmul.apply(a, b)   # MaxMul (max probability)
+
+# Gradients flow through!
+loss = c.sum()
+loss.backward()
+print(a.grad)  # Sparse gradients at argmax positions
+```
+
+The backward pass correctly handles:
+- **MaxPlus/MinPlus**: Additive gradient rule (grad = 1 at argmax positions)
+- **MaxMul**: Multiplicative gradient rule (chain rule: grad_A = grad_C * B, grad_B = grad_C * A)
 
 ## Benchmark Results
 

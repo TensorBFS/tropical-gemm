@@ -168,6 +168,77 @@ class TropicalMinPlusMatmul(torch.autograd.Function):
         return grad_a, grad_b
 
 
+class TropicalMaxMulMatmul(torch.autograd.Function):
+    """
+    Custom autograd function for MaxMul tropical matrix multiplication.
+
+    Forward: C[i,j] = max_k(A[i,k] * B[k,j])
+
+    The backward pass differs from MaxPlus/MinPlus because the operation
+    is multiplication, not addition. The chain rule gives:
+    - grad_A[i,k] = grad_C[i,j] * B[k,j] if k == argmax[i,j]
+    - grad_B[k,j] = grad_C[i,j] * A[i,k] if k == argmax[i,j]
+
+    Useful for max-probability computations (non-log space).
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        m, k = a.shape
+        n = b.shape[1]
+
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
+
+        c_np = np.array(c_flat).reshape(m, n)
+        argmax_np = np.array(argmax_flat).reshape(m, n)
+
+        # Save inputs and argmax for backward (needed for multiplicative gradient)
+        ctx.save_for_backward(
+            torch.from_numpy(a_np),
+            torch.from_numpy(b_np),
+            torch.from_numpy(argmax_np),
+        )
+        ctx.k = k
+        ctx.m = m
+        ctx.n = n
+
+        return torch.from_numpy(c_np).to(a.device)
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        a, b, argmax = ctx.saved_tensors
+        k_dim = ctx.k
+        m = ctx.m
+        n = ctx.n
+
+        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        argmax_np = argmax.numpy().astype(np.int32)
+        a_np = a.numpy().astype(np.float32)
+        b_np = b.numpy().astype(np.float32)
+
+        if not grad_c_np.flags["C_CONTIGUOUS"]:
+            grad_c_np = np.ascontiguousarray(grad_c_np)
+        if not argmax_np.flags["C_CONTIGUOUS"]:
+            argmax_np = np.ascontiguousarray(argmax_np)
+
+        # Use multiplicative backward rule
+        grad_a_flat = tropical_gemm.maxmul_backward_a(grad_c_np, argmax_np, b_np)
+        grad_b_flat = tropical_gemm.maxmul_backward_b(grad_c_np, argmax_np, a_np)
+
+        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k_dim)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k_dim, n)).to(grad_c.device)
+
+        return grad_a, grad_b
+
+
 # Convenience functions
 def tropical_maxplus_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Functional interface for MaxPlus tropical matmul."""
@@ -177,6 +248,11 @@ def tropical_maxplus_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 def tropical_minplus_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Functional interface for MinPlus tropical matmul."""
     return TropicalMinPlusMatmul.apply(a, b)
+
+
+def tropical_maxmul_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Functional interface for MaxMul tropical matmul."""
+    return TropicalMaxMulMatmul.apply(a, b)
 
 
 def verify_gradients():
