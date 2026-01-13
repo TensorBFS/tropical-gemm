@@ -4,7 +4,7 @@
 [![Coverage](https://codecov.io/gh/TensorBFS/tropical-gemm/branch/main/graph/badge.svg)](https://codecov.io/gh/TensorBFS/tropical-gemm)
 [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://tensorbfs.github.io/tropical-gemm/)
 
-High-performance tropical matrix multiplication in Rust with SIMD and CUDA backends.
+High-performance tropical matrix multiplication in Rust with SIMD and CUDA backends. Inspired by [CuTropicalGEMM.jl](https://github.com/TensorBFS/CuTropicalGEMM.jl).
 
 ## Features
 
