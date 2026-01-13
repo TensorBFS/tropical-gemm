@@ -49,6 +49,16 @@ __device__ __forceinline__ long long saturating_add_minplus_i64(long long a, lon
     return a + b;
 }
 
+// Simple multiplication for MaxMul integer types
+// For MaxMul: zero = 0, one = 1, add = max, mul = *
+// Note: 0 * anything = 0 (correct absorbing element behavior)
+__device__ __forceinline__ int mul_i32(int a, int b) {
+    return a * b;
+}
+__device__ __forceinline__ long long mul_i64(long long a, long long b) {
+    return a * b;
+}
+
 // atomicAdd for double (not supported on all architectures)
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 600
 __device__ double atomicAddDouble(double* address, double val) {
@@ -1052,18 +1062,22 @@ TROPICAL_GEMM_ARGMAX_F64(tropical_maxmul_f64_nn_with_argmax,  0.0,         >, *)
 // --- I32 Basic GEMM Kernels ---
 TROPICAL_GEMM_I32(tropical_maxplus_i32_nn, NEG_INF_I32, max_i32, saturating_add_maxplus_i32)
 TROPICAL_GEMM_I32(tropical_minplus_i32_nn, INF_I32,     min_i32, saturating_add_minplus_i32)
+TROPICAL_GEMM_I32(tropical_maxmul_i32_nn,  0,           max_i32, mul_i32)
 
 // --- I64 Basic GEMM Kernels ---
 TROPICAL_GEMM_I64(tropical_maxplus_i64_nn, NEG_INF_I64, max_i64, saturating_add_maxplus_i64)
 TROPICAL_GEMM_I64(tropical_minplus_i64_nn, INF_I64,     min_i64, saturating_add_minplus_i64)
+TROPICAL_GEMM_I64(tropical_maxmul_i64_nn,  0LL,         max_i64, mul_i64)
 
 // --- I32 GEMM with Argmax Kernels ---
 TROPICAL_GEMM_ARGMAX_I32(tropical_maxplus_i32_nn_with_argmax, NEG_INF_I32, >, saturating_add_maxplus_i32)
 TROPICAL_GEMM_ARGMAX_I32(tropical_minplus_i32_nn_with_argmax, INF_I32,     <, saturating_add_minplus_i32)
+TROPICAL_GEMM_ARGMAX_I32(tropical_maxmul_i32_nn_with_argmax,  0,           >, mul_i32)
 
 // --- I64 GEMM with Argmax Kernels ---
 TROPICAL_GEMM_ARGMAX_I64(tropical_maxplus_i64_nn_with_argmax, NEG_INF_I64, >, saturating_add_maxplus_i64)
 TROPICAL_GEMM_ARGMAX_I64(tropical_minplus_i64_nn_with_argmax, INF_I64,     <, saturating_add_minplus_i64)
+TROPICAL_GEMM_ARGMAX_I64(tropical_maxmul_i64_nn_with_argmax,  0LL,         >, mul_i64)
 
 // --- Backward Pass Kernels (float/double only, no integer gradients) ---
 TROPICAL_BACKWARD_A(tropical_backward_a_f32, float,  atomicAdd)

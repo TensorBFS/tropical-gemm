@@ -169,11 +169,13 @@ macro_rules! impl_cuda_kernel_i64 {
 impl_cuda_kernel_i32! {
     TropicalMaxPlus<i32> => "tropical_maxplus_i32_nn",
     TropicalMinPlus<i32> => "tropical_minplus_i32_nn",
+    TropicalMaxMul<i32> => "tropical_maxmul_i32_nn",
 }
 
 impl_cuda_kernel_i64! {
     TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn",
     TropicalMinPlus<i64> => "tropical_minplus_i64_nn",
+    TropicalMaxMul<i64> => "tropical_maxmul_i64_nn",
 }
 
 // ============================================================================
@@ -346,9 +348,11 @@ macro_rules! impl_cuda_kernel_with_argmax_i64 {
 impl_cuda_kernel_with_argmax_i32! {
     TropicalMaxPlus<i32> => "tropical_maxplus_i32_nn_with_argmax",
     TropicalMinPlus<i32> => "tropical_minplus_i32_nn_with_argmax",
+    TropicalMaxMul<i32> => "tropical_maxmul_i32_nn_with_argmax",
 }
 
 impl_cuda_kernel_with_argmax_i64! {
     TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn_with_argmax",
     TropicalMinPlus<i64> => "tropical_minplus_i64_nn_with_argmax",
+    TropicalMaxMul<i64> => "tropical_maxmul_i64_nn_with_argmax",
 }

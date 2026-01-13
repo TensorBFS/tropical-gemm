@@ -33,8 +33,8 @@ High-performance tropical matrix multiplication in Rust with SIMD and CUDA backe
 | `MinPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
 | `MaxMul` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `MaxMul` | `f64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `MaxMul` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `MaxMul` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MaxMul` | `i32` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
+| `MaxMul` | `i64` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
 
 **Legend:**
 - ✅ SIMD: Optimized with AVX2/AVX-512/NEON vectorization

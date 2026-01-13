@@ -1,24 +1,47 @@
-"""Tests for tropical_gemm Python bindings."""
+"""Tests for tropical_gemm Python bindings.
+
+Tests cover all semiring types (MaxPlus, MinPlus, MaxMul) and
+all scalar types (f32, f64, i32, i64).
+"""
 
 import numpy as np
 import pytest
 from tropical_gemm import (
+    # f32 operations
     maxplus_matmul,
     minplus_matmul,
+    maxmul_matmul,
     maxplus_matmul_with_argmax,
     minplus_matmul_with_argmax,
+    maxmul_matmul_with_argmax,
     backward_a,
     backward_b,
+    # f64 operations
+    maxplus_matmul_f64,
+    minplus_matmul_f64,
+    maxmul_matmul_f64,
+    # i32 operations
+    maxplus_matmul_i32,
+    minplus_matmul_i32,
+    maxmul_matmul_i32,
+    # i64 operations
+    maxplus_matmul_i64,
+    minplus_matmul_i64,
+    maxmul_matmul_i64,
 )
 
 
-def test_maxplus_matmul_basic():
-    """Test basic MaxPlus matmul: C[i,j] = max_k(A[i,k] + B[k,j])."""
+# ============================================================================
+# MaxPlus f32 tests
+# ============================================================================
+
+
+def test_maxplus_matmul_f32():
+    """Test basic MaxPlus matmul (f32): C[i,j] = max_k(A[i,k] + B[k,j])."""
     a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
     b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
 
-    c = maxplus_matmul(a, b)
-    c = c.reshape(2, 2)
+    c = maxplus_matmul(a, b).reshape(2, 2)
 
     # C[0,0] = max(1+1, 2+3, 3+5) = max(2, 5, 8) = 8
     # C[0,1] = max(1+2, 2+4, 3+6) = max(3, 6, 9) = 9
@@ -28,13 +51,34 @@ def test_maxplus_matmul_basic():
     np.testing.assert_array_almost_equal(c, expected)
 
 
-def test_minplus_matmul_basic():
-    """Test basic MinPlus matmul: C[i,j] = min_k(A[i,k] + B[k,j])."""
+def test_maxplus_matmul_with_argmax_f32():
+    """Test MaxPlus matmul with argmax tracking (f32)."""
     a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
     b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
 
-    c = minplus_matmul(a, b)
+    c, argmax = maxplus_matmul_with_argmax(a, b)
     c = c.reshape(2, 2)
+    argmax = argmax.reshape(2, 2)
+
+    expected = np.array([[8.0, 9.0], [11.0, 12.0]], dtype=np.float32)
+    np.testing.assert_array_almost_equal(c, expected)
+
+    # All should be k=2 (third column) since 3+5, 3+6, 6+5, 6+6 are maxes
+    expected_argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+    np.testing.assert_array_equal(argmax, expected_argmax)
+
+
+# ============================================================================
+# MinPlus f32 tests
+# ============================================================================
+
+
+def test_minplus_matmul_f32():
+    """Test basic MinPlus matmul (f32): C[i,j] = min_k(A[i,k] + B[k,j])."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+    c = minplus_matmul(a, b).reshape(2, 2)
 
     # C[0,0] = min(1+1, 2+3, 3+5) = min(2, 5, 8) = 2
     # C[0,1] = min(1+2, 2+4, 3+6) = min(3, 6, 9) = 3
@@ -44,27 +88,8 @@ def test_minplus_matmul_basic():
     np.testing.assert_array_almost_equal(c, expected)
 
 
-def test_maxplus_matmul_with_argmax():
-    """Test MaxPlus matmul with argmax tracking."""
-    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
-    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
-
-    c, argmax = maxplus_matmul_with_argmax(a, b)
-    c = c.reshape(2, 2)
-    argmax = argmax.reshape(2, 2)
-
-    # Values should match maxplus_matmul
-    expected = np.array([[8.0, 9.0], [11.0, 12.0]], dtype=np.float32)
-    np.testing.assert_array_almost_equal(c, expected)
-
-    # argmax[i,j] = k that gave the max value
-    # All should be k=2 (third column) since 3+5, 3+6, 6+5, 6+6 are maxes
-    expected_argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
-    np.testing.assert_array_equal(argmax, expected_argmax)
-
-
-def test_minplus_matmul_with_argmax():
-    """Test MinPlus matmul with argmax tracking."""
+def test_minplus_matmul_with_argmax_f32():
+    """Test MinPlus matmul with argmax tracking (f32)."""
     a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
     b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
 
@@ -72,14 +97,168 @@ def test_minplus_matmul_with_argmax():
     c = c.reshape(2, 2)
     argmax = argmax.reshape(2, 2)
 
-    # Values should match minplus_matmul
     expected = np.array([[2.0, 3.0], [5.0, 6.0]], dtype=np.float32)
     np.testing.assert_array_almost_equal(c, expected)
 
-    # argmax[i,j] = k that gave the min value
     # All should be k=0 (first column) since 1+1, 1+2, 4+1, 4+2 are mins
     expected_argmax = np.array([[0, 0], [0, 0]], dtype=np.int32)
     np.testing.assert_array_equal(argmax, expected_argmax)
+
+
+# ============================================================================
+# MaxMul f32 tests
+# ============================================================================
+
+
+def test_maxmul_matmul_f32():
+    """Test basic MaxMul matmul (f32): C[i,j] = max_k(A[i,k] * B[k,j])."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+    c = maxmul_matmul(a, b).reshape(2, 2)
+
+    # C[0,0] = max(1*1, 2*3, 3*5) = max(1, 6, 15) = 15
+    # C[0,1] = max(1*2, 2*4, 3*6) = max(2, 8, 18) = 18
+    # C[1,0] = max(4*1, 5*3, 6*5) = max(4, 15, 30) = 30
+    # C[1,1] = max(4*2, 5*4, 6*6) = max(8, 20, 36) = 36
+    expected = np.array([[15.0, 18.0], [30.0, 36.0]], dtype=np.float32)
+    np.testing.assert_array_almost_equal(c, expected)
+
+
+def test_maxmul_matmul_with_argmax_f32():
+    """Test MaxMul matmul with argmax tracking (f32)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+    c, argmax = maxmul_matmul_with_argmax(a, b)
+    c = c.reshape(2, 2)
+    argmax = argmax.reshape(2, 2)
+
+    expected = np.array([[15.0, 18.0], [30.0, 36.0]], dtype=np.float32)
+    np.testing.assert_array_almost_equal(c, expected)
+
+    # All should be k=2 (third column) since 3*5, 3*6, 6*5, 6*6 are maxes
+    expected_argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
+    np.testing.assert_array_equal(argmax, expected_argmax)
+
+
+# ============================================================================
+# f64 tests
+# ============================================================================
+
+
+def test_maxplus_matmul_f64():
+    """Test MaxPlus matmul (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    c = maxplus_matmul_f64(a, b).reshape(2, 2)
+
+    expected = np.array([[8.0, 9.0], [11.0, 12.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(c, expected)
+
+
+def test_minplus_matmul_f64():
+    """Test MinPlus matmul (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    c = minplus_matmul_f64(a, b).reshape(2, 2)
+
+    expected = np.array([[2.0, 3.0], [5.0, 6.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(c, expected)
+
+
+def test_maxmul_matmul_f64():
+    """Test MaxMul matmul (f64)."""
+    a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+    b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float64)
+
+    c = maxmul_matmul_f64(a, b).reshape(2, 2)
+
+    expected = np.array([[15.0, 18.0], [30.0, 36.0]], dtype=np.float64)
+    np.testing.assert_array_almost_equal(c, expected)
+
+
+# ============================================================================
+# i32 tests
+# ============================================================================
+
+
+def test_maxplus_matmul_i32():
+    """Test MaxPlus matmul (i32)."""
+    a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
+    b = np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int32)
+
+    c = maxplus_matmul_i32(a, b).reshape(2, 2)
+
+    expected = np.array([[8, 9], [11, 12]], dtype=np.int32)
+    np.testing.assert_array_equal(c, expected)
+
+
+def test_minplus_matmul_i32():
+    """Test MinPlus matmul (i32)."""
+    a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
+    b = np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int32)
+
+    c = minplus_matmul_i32(a, b).reshape(2, 2)
+
+    expected = np.array([[2, 3], [5, 6]], dtype=np.int32)
+    np.testing.assert_array_equal(c, expected)
+
+
+def test_maxmul_matmul_i32():
+    """Test MaxMul matmul (i32)."""
+    a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
+    b = np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int32)
+
+    c = maxmul_matmul_i32(a, b).reshape(2, 2)
+
+    expected = np.array([[15, 18], [30, 36]], dtype=np.int32)
+    np.testing.assert_array_equal(c, expected)
+
+
+# ============================================================================
+# i64 tests
+# ============================================================================
+
+
+def test_maxplus_matmul_i64():
+    """Test MaxPlus matmul (i64)."""
+    a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int64)
+    b = np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int64)
+
+    c = maxplus_matmul_i64(a, b).reshape(2, 2)
+
+    expected = np.array([[8, 9], [11, 12]], dtype=np.int64)
+    np.testing.assert_array_equal(c, expected)
+
+
+def test_minplus_matmul_i64():
+    """Test MinPlus matmul (i64)."""
+    a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int64)
+    b = np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int64)
+
+    c = minplus_matmul_i64(a, b).reshape(2, 2)
+
+    expected = np.array([[2, 3], [5, 6]], dtype=np.int64)
+    np.testing.assert_array_equal(c, expected)
+
+
+def test_maxmul_matmul_i64():
+    """Test MaxMul matmul (i64)."""
+    a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int64)
+    b = np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int64)
+
+    c = maxmul_matmul_i64(a, b).reshape(2, 2)
+
+    expected = np.array([[15, 18], [30, 36]], dtype=np.int64)
+    np.testing.assert_array_equal(c, expected)
+
+
+# ============================================================================
+# Backward pass tests (f32 only, gradients don't apply to integers)
+# ============================================================================
 
 
 def test_backward_a():
@@ -90,8 +269,7 @@ def test_backward_a():
     # argmax indicates which k produced each output
     argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
 
-    grad_a = backward_a(grad_c, argmax, k)
-    grad_a = grad_a.reshape(m, k)
+    grad_a = backward_a(grad_c, argmax, k).reshape(m, k)
 
     # grad_a[i,k] = sum_j { grad_c[i,j] if argmax[i,j] == k }
     # Since all argmax are 2:
@@ -108,8 +286,7 @@ def test_backward_b():
     grad_c = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
     argmax = np.array([[2, 2], [2, 2]], dtype=np.int32)
 
-    grad_b = backward_b(grad_c, argmax, k)
-    grad_b = grad_b.reshape(k, n)
+    grad_b = backward_b(grad_c, argmax, k).reshape(k, n)
 
     # grad_b[k,j] = sum_i { grad_c[i,j] if argmax[i,j] == k }
     # Since all argmax are 2:
@@ -119,6 +296,11 @@ def test_backward_b():
     np.testing.assert_array_almost_equal(grad_b, expected)
 
 
+# ============================================================================
+# Error handling tests
+# ============================================================================
+
+
 def test_dimension_mismatch():
     """Test that dimension mismatch raises error."""
     a = np.array([[1.0, 2.0]], dtype=np.float32)  # 1x2
@@ -126,6 +308,20 @@ def test_dimension_mismatch():
 
     with pytest.raises(ValueError, match="Dimension mismatch"):
         maxplus_matmul(a, b)
+
+
+def test_dimension_mismatch_i32():
+    """Test dimension mismatch with i32."""
+    a = np.array([[1, 2]], dtype=np.int32)
+    b = np.array([[1], [2], [3]], dtype=np.int32)
+
+    with pytest.raises(ValueError, match="Dimension mismatch"):
+        maxplus_matmul_i32(a, b)
+
+
+# ============================================================================
+# Edge case tests
+# ============================================================================
 
 
 def test_square_matrix():
@@ -151,7 +347,10 @@ def test_single_element():
     assert c[0] == 8.0  # 5 + 3
 
     c = minplus_matmul(a, b)
-    assert c[0] == 8.0  # 5 + 3 (same for single element)
+    assert c[0] == 8.0  # 5 + 3
+
+    c = maxmul_matmul(a, b)
+    assert c[0] == 15.0  # 5 * 3
 
 
 def test_negative_values():
@@ -159,23 +358,58 @@ def test_negative_values():
     a = np.array([[-1.0, -2.0], [-3.0, -4.0]], dtype=np.float32)
     b = np.array([[-1.0, -2.0], [-3.0, -4.0]], dtype=np.float32)
 
-    c = maxplus_matmul(a, b)
-    c = c.reshape(2, 2)
-
+    c = maxplus_matmul(a, b).reshape(2, 2)
     # C[0,0] = max(-1+-1, -2+-3) = max(-2, -5) = -2
     assert c[0, 0] == -2.0
 
 
+def test_negative_integers():
+    """Test with negative integer values."""
+    a = np.array([[-1, -2], [-3, -4]], dtype=np.int32)
+    b = np.array([[-1, -2], [-3, -4]], dtype=np.int32)
+
+    c = maxplus_matmul_i32(a, b).reshape(2, 2)
+    assert c[0, 0] == -2
+
+
 def test_infinity_handling():
-    """Test with infinity values (tropical zero)."""
-    inf = np.float32('inf')
+    """Test with infinity values (tropical zero for MinPlus)."""
+    inf = np.float32("inf")
     a = np.array([[0.0, inf], [inf, 0.0]], dtype=np.float32)
     b = np.array([[0.0, inf], [inf, 0.0]], dtype=np.float32)
 
-    c = minplus_matmul(a, b)
-    c = c.reshape(2, 2)
-
+    c = minplus_matmul(a, b).reshape(2, 2)
     # MinPlus: C[i,j] = min_k(A[i,k] + B[k,j])
     # C[0,0] = min(0+0, inf+inf) = 0
-    # C[0,1] = min(0+inf, inf+0) = 0 (inf is tropical zero)
     assert c[0, 0] == 0.0
+
+
+def test_maxmul_with_zeros():
+    """Test MaxMul with zeros (tropical zero)."""
+    a = np.array([[0.0, 1.0], [2.0, 0.0]], dtype=np.float32)
+    b = np.array([[0.0, 1.0], [2.0, 0.0]], dtype=np.float32)
+
+    c = maxmul_matmul(a, b).reshape(2, 2)
+    # MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
+    # C[0,0] = max(0*0, 1*2) = max(0, 2) = 2
+    # C[0,1] = max(0*1, 1*0) = max(0, 0) = 0
+    # C[1,0] = max(2*0, 0*2) = max(0, 0) = 0
+    # C[1,1] = max(2*1, 0*0) = max(2, 0) = 2
+    expected = np.array([[2.0, 0.0], [0.0, 2.0]], dtype=np.float32)
+    np.testing.assert_array_almost_equal(c, expected)
+
+
+def test_larger_matrix():
+    """Test with a larger matrix to verify correctness at scale."""
+    n = 16
+    np.random.seed(42)
+    a = np.random.randn(n, n).astype(np.float32)
+    b = np.random.randn(n, n).astype(np.float32)
+
+    c = maxplus_matmul(a, b).reshape(n, n)
+
+    # Verify a few elements manually
+    for i in range(min(3, n)):
+        for j in range(min(3, n)):
+            expected = np.max(a[i, :] + b[:, j])
+            np.testing.assert_almost_equal(c[i, j], expected, decimal=5)
