@@ -12,7 +12,44 @@ High-performance tropical matrix multiplication in Rust with SIMD and CUDA backe
 - **SIMD Acceleration**: AVX-512, AVX2, SSE4.1, NEON auto-detection
 - **CUDA Backend**: GPU-accelerated kernels via cudarc/NVRTC
 - **Argmax Tracking**: For backpropagation in tropical neural networks
+- **Batched Operations**: Efficient batch processing for multiple matrices
+- **Backward Pass**: Gradient computation for automatic differentiation
+- **Python Bindings**: PyTorch integration via PyO3
 - **Cache-Optimized**: BLIS-style 5-loop blocking
+
+## Feature Matrix
+
+### Supported Operations by Semiring Type
+
+| Semiring | Scalar | CPU GEMM | CPU Batched | CPU Argmax | CPU Backward | GPU GEMM | GPU Batched | GPU Argmax | GPU Backward |
+|----------|--------|----------|-------------|------------|--------------|----------|-------------|------------|--------------|
+| `MaxPlus` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `MaxPlus` | `f64` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `MaxPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MaxPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MinPlus` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `MinPlus` | `f64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| `MinPlus` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MinPlus` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MaxMul` | `f32` | ✅ SIMD | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| `MaxMul` | `f64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MaxMul` | `i32` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `MaxMul` | `i64` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+**Legend:**
+- ✅ SIMD: Optimized with AVX2/AVX-512/NEON vectorization
+- ✅: Supported with portable implementation
+- ❌: Not yet implemented
+
+### Semiring Definitions
+
+| Type | Addition (⊕) | Multiplication (⊗) | Zero | One | Use Case |
+|------|--------------|-------------------|------|-----|----------|
+| `MaxPlus<T>` | max | + | -∞ | 0 | Viterbi, longest path |
+| `MinPlus<T>` | min | + | +∞ | 0 | Shortest path, Dijkstra |
+| `MaxMul<T>` | max | × | 0 | 1 | Probability (non-log) |
+| `AndOr` | OR | AND | false | true | Graph reachability |
+| `CountingTropical<T,C>` | max+count | +,× | (-∞,0) | (0,1) | Path counting |
 
 ## Installation
 
@@ -71,6 +108,25 @@ let c_gpu = a_gpu.matmul(&ctx, &b_gpu)?;
 let c = c_gpu.to_mat(&ctx)?;
 ```
 
+### Batched Operations
+
+```rust
+use tropical_gemm::{Mat, MaxPlus};
+
+// Create batch of matrices
+let a_batch = vec![
+    Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2),
+    Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2),
+];
+let b_batch = vec![
+    Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2),
+    Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2),
+];
+
+// Batched matmul (parallel by default)
+let c_batch = Mat::matmul_batched(&a_batch, &b_batch);
+```
+
 ### Argmax Tracking (for Backpropagation)
 
 ```rust
@@ -84,6 +140,11 @@ let result = a.matmul_argmax(&b);
 // Get the optimal value and which k produced it
 let value = result.get_value(0, 0); // 8.0
 let k_idx = result.get_argmax(0, 0); // 2 (k=2 gave max)
+
+// Compute gradients for backpropagation
+let grad_c = vec![1.0f64; 4]; // upstream gradient
+let grad_a = result.backward_a(&grad_c);
+let grad_b = result.backward_b(&grad_c);
 ```
 
 GPU argmax is also available:
@@ -99,23 +160,39 @@ let b_gpu = GpuMat::from_matref(&ctx, &b)?;
 let result = a_gpu.matmul_argmax(&ctx, &b_gpu)?;
 let result_cpu = result.to_mat_with_argmax(&ctx)?;
 // result_cpu.get_argmax(i, j) = k such that C[i,j] = A[i,k] + B[k,j]
+
+// GPU backward pass
+let grad_a = result.backward_a(&ctx, &grad_c_gpu)?;
+let grad_b = result.backward_b(&ctx, &grad_c_gpu)?;
 ```
 
-## Supported Semirings
+### Python Bindings (PyTorch Integration)
 
-| Type | Addition (⊕) | Multiplication (⊗) | Zero | One | Use Case |
-|------|--------------|-------------------|------|-----|----------|
-| `MaxPlus<T>` | max | + | -∞ | 0 | Viterbi, longest path |
-| `MinPlus<T>` | min | + | +∞ | 0 | Shortest path, Dijkstra |
-| `MaxMul<T>` | max | × | 0 | 1 | Probability (non-log) |
-| `AndOr` | OR | AND | false | true | Graph reachability |
-| `CountingTropical<T,C>` | max+count | +,× | (-∞,0) | (0,1) | Path counting |
+```python
+import torch
+import numpy as np
+import tropical_gemm
+
+# Create matrices
+a = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+b = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+
+# MaxPlus matmul with argmax for backprop
+c, argmax = tropical_gemm.maxplus_matmul_with_argmax(a, b)
+
+# Compute gradients
+grad_c = np.ones((2, 2), dtype=np.float32)
+grad_a = tropical_gemm.backward_a(grad_c, argmax, k=3)
+grad_b = tropical_gemm.backward_b(grad_c, argmax, k=3)
+```
+
+See `crates/tropical-gemm-python/examples/pytorch_tropical.py` for full PyTorch custom autograd integration.
 
 ## Benchmark Results
 
-Tested on NVIDIA RTX A4500 (Ampere, sm_86).
+Tested on NVIDIA RTX A4500 (Ampere, sm_86) with AMD Ryzen 9 5900X.
 
-### GPU vs CPU Performance
+### GPU vs CPU Performance (MaxPlus f32)
 
 | Size | CPU SIMD (ms) | GPU Kernel (ms) | Speedup |
 |------|---------------|-----------------|---------|
@@ -137,18 +214,30 @@ Comparison with [TropicalGemm_Cuda](https://github.com/ArrogantGao/TropicalGemm_
 
 The C library is ~13-16% faster due to pre-compiled PTX vs runtime compilation.
 
+### GPU Backward Pass Performance
+
+| Size | Forward (ms) | Backward A (ms) | Backward B (ms) |
+|------|--------------|-----------------|-----------------|
+| 256  | 0.032        | 0.018           | 0.018           |
+| 512  | 0.086        | 0.052           | 0.052           |
+| 1024 | 0.358        | 0.183           | 0.184           |
+| 2048 | 2.510        | 1.312           | 1.315           |
+
 ## Crate Structure
 
 ```
 tropical-gemm/
-├── tropical-gemm       # Main crate: types, CPU backend, public API
-│   ├── mat/            # Matrix types (Mat, MatRef, MatMut)
-│   ├── types/          # Semiring type definitions
-│   ├── core/           # BLIS-style GEMM algorithms
-│   └── simd/           # SIMD kernels (AVX-512, AVX2, NEON)
+├── tropical-gemm         # Main crate: types, CPU backend, public API
+│   ├── mat/              # Matrix types (Mat, MatRef, MatMut)
+│   ├── types/            # Semiring type definitions
+│   ├── core/             # BLIS-style GEMM algorithms
+│   └── simd/             # SIMD kernels (AVX-512, AVX2, NEON)
 │
-└── tropical-gemm-cuda  # GPU backend (optional)
-    └── kernels/        # CUDA kernel source
+├── tropical-gemm-cuda    # GPU backend (optional)
+│   └── kernels/          # CUDA kernel source
+│
+└── tropical-gemm-python  # Python bindings (PyO3)
+    └── examples/         # PyTorch integration examples
 ```
 
 ## Running Benchmarks
@@ -159,6 +248,9 @@ cargo run --release --example bench_rust -p tropical-gemm
 
 # CUDA vs CPU benchmark
 cargo run --release --example bench_cuda_vs_cpu -p tropical-gemm-cuda
+
+# GPU backward pass benchmark
+cargo run --release --example bench_backward -p tropical-gemm-cuda
 ```
 
 ## License
