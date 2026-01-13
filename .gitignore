@@ -15,6 +15,20 @@
 .DS_Store
 Thumbs.db
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.whl
+*.egg-info/
+
+# Coverage
+tarpaulin-report.html
+cobertura.xml
+*.profraw
+lcov.info
+
 # Benchmarks
 /benchmarks/bench_c_cuda
-tarpaulin-report.html

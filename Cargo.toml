@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/tropical-gemm-cuda",
     "crates/tropical-gemm",
+    "crates/tropical-gemm-python",
 ]
 
 [workspace.package]

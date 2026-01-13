@@ -116,10 +116,70 @@ impl_cuda_kernel_f32! {
 
 impl_cuda_kernel_f64! {
     TropicalMaxPlus<f64> => "tropical_maxplus_f64_nn",
+    TropicalMinPlus<f64> => "tropical_minplus_f64_nn",
+    TropicalMaxMul<f64> => "tropical_maxmul_f64_nn",
+}
+
+/// Macro to implement CudaKernel for i32 types.
+/// Uses same block sizes as f32 (64x32x64) since int is 4 bytes.
+macro_rules! impl_cuda_kernel_i32 {
+    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+        $(
+            impl CudaKernel for $semiring {
+                const KERNEL_NAME: &'static str = $kernel_name;
+
+                fn launch_gemm(
+                    ctx: &CudaContext,
+                    a: &GpuMatrix<i32>,
+                    b: &GpuMatrix<i32>,
+                    c: &mut GpuMatrix<i32>,
+                ) -> Result<()> {
+                    let grid = CudaContext::grid_dims_f32(a.rows(), b.cols());
+                    let block = CudaContext::block_dims_f32();
+                    launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
+                }
+            }
+        )*
+    };
+}
+
+/// Macro to implement CudaKernel for i64 types.
+/// Uses same block sizes as f64 (32x16x32) since long long is 8 bytes.
+macro_rules! impl_cuda_kernel_i64 {
+    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+        $(
+            impl CudaKernel for $semiring {
+                const KERNEL_NAME: &'static str = $kernel_name;
+
+                fn launch_gemm(
+                    ctx: &CudaContext,
+                    a: &GpuMatrix<i64>,
+                    b: &GpuMatrix<i64>,
+                    c: &mut GpuMatrix<i64>,
+                ) -> Result<()> {
+                    let grid = CudaContext::grid_dims_f64(a.rows(), b.cols());
+                    let block = CudaContext::block_dims_f64();
+                    launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
+                }
+            }
+        )*
+    };
+}
+
+impl_cuda_kernel_i32! {
+    TropicalMaxPlus<i32> => "tropical_maxplus_i32_nn",
+    TropicalMinPlus<i32> => "tropical_minplus_i32_nn",
+    TropicalMaxMul<i32> => "tropical_maxmul_i32_nn",
+}
+
+impl_cuda_kernel_i64! {
+    TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn",
+    TropicalMinPlus<i64> => "tropical_minplus_i64_nn",
+    TropicalMaxMul<i64> => "tropical_maxmul_i64_nn",
 }
 
 // ============================================================================
-// CudaKernelWithArgmax - for backward propagation
+// CudaKernelWithArgmax - for path reconstruction (integers don't have gradients)
 // ============================================================================
 
 /// Trait for tropical GEMM with argmax tracking (for backward propagation).
@@ -232,9 +292,67 @@ macro_rules! impl_cuda_kernel_with_argmax_f64 {
 impl_cuda_kernel_with_argmax_f32! {
     TropicalMaxPlus<f32> => "tropical_maxplus_f32_nn_with_argmax",
     TropicalMinPlus<f32> => "tropical_minplus_f32_nn_with_argmax",
+    TropicalMaxMul<f32> => "tropical_maxmul_f32_nn_with_argmax",
 }
 
 impl_cuda_kernel_with_argmax_f64! {
     TropicalMaxPlus<f64> => "tropical_maxplus_f64_nn_with_argmax",
     TropicalMinPlus<f64> => "tropical_minplus_f64_nn_with_argmax",
+    TropicalMaxMul<f64> => "tropical_maxmul_f64_nn_with_argmax",
+}
+
+/// Macro to implement CudaKernelWithArgmax for i32 types.
+macro_rules! impl_cuda_kernel_with_argmax_i32 {
+    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+        $(
+            impl CudaKernelWithArgmax for $semiring {
+                const ARGMAX_KERNEL_NAME: &'static str = $kernel_name;
+
+                fn launch_gemm_with_argmax(
+                    ctx: &CudaContext,
+                    a: &GpuMatrix<i32>,
+                    b: &GpuMatrix<i32>,
+                    c: &mut GpuMatrixWithArgmax<i32>,
+                ) -> Result<()> {
+                    let grid = CudaContext::grid_dims_f32(a.rows(), b.cols());
+                    let block = CudaContext::block_dims_f32();
+                    launch_kernel_with_argmax_impl(ctx, Self::ARGMAX_KERNEL_NAME, a, b, c, grid, block)
+                }
+            }
+        )*
+    };
+}
+
+/// Macro to implement CudaKernelWithArgmax for i64 types.
+macro_rules! impl_cuda_kernel_with_argmax_i64 {
+    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+        $(
+            impl CudaKernelWithArgmax for $semiring {
+                const ARGMAX_KERNEL_NAME: &'static str = $kernel_name;
+
+                fn launch_gemm_with_argmax(
+                    ctx: &CudaContext,
+                    a: &GpuMatrix<i64>,
+                    b: &GpuMatrix<i64>,
+                    c: &mut GpuMatrixWithArgmax<i64>,
+                ) -> Result<()> {
+                    let grid = CudaContext::grid_dims_f64(a.rows(), b.cols());
+                    let block = CudaContext::block_dims_f64();
+                    launch_kernel_with_argmax_impl(ctx, Self::ARGMAX_KERNEL_NAME, a, b, c, grid, block)
+                }
+            }
+        )*
+    };
+}
+
+impl_cuda_kernel_with_argmax_i32! {
+    TropicalMaxPlus<i32> => "tropical_maxplus_i32_nn_with_argmax",
+    TropicalMinPlus<i32> => "tropical_minplus_i32_nn_with_argmax",
+    TropicalMaxMul<i32> => "tropical_maxmul_i32_nn_with_argmax",
+}
+
+impl_cuda_kernel_with_argmax_i64! {
+    TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn_with_argmax",
+    TropicalMinPlus<i64> => "tropical_minplus_i64_nn_with_argmax",
+    TropicalMaxMul<i64> => "tropical_maxmul_i64_nn_with_argmax",
 }

@@ -1,0 +1,16 @@
+coverage:
+  status:
+    project:
+      default:
+        # Don't fail CI on coverage changes
+        informational: true
+    patch:
+      default:
+        # Don't fail CI on patch coverage
+        informational: true
+
+ignore:
+  # Exclude CUDA crate - requires GPU to test
+  - "crates/tropical-gemm-cuda/**"
+  # Exclude Python bindings - PyO3 FFI glue can't be instrumented by tarpaulin
+  - "crates/tropical-gemm-python/**"
