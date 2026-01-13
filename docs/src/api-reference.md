@@ -2,7 +2,7 @@
 
 This page provides quick reference to the main APIs.
 
-For complete documentation, see the [Rust docs](https://docs.rs/tropical-gemm).
+For complete documentation, see the [Rust API docs](../api/tropical_gemm/index.html).
 
 ## Crate Overview
 

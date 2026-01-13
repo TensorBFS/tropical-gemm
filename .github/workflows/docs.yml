@@ -22,12 +22,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --workspace --exclude tropical-gemm-cuda
-      - run: |
+
+      # Install mdBook
+      - name: Install mdBook
+        run: cargo install mdbook --no-default-features --features search
+
+      # Build Rust API docs
+      - name: Build Rust docs
+        run: cargo doc --no-deps --workspace --exclude tropical-gemm-cuda
+
+      # Build mdBook
+      - name: Build mdBook
+        run: mdbook build docs/
+
+      # Assemble public directory
+      - name: Assemble docs
+        run: |
           mkdir -p public
-          cp -r target/doc/* public/
-          echo '<meta http-equiv="refresh" content="0; url=tropical_gemm/index.html">' > public/index.html
+          # mdBook as main site
+          cp -r docs/book/* public/
+          # Rust API docs under /api/
+          mkdir -p public/api
+          cp -r target/doc/* public/api/
+          # Redirect /api/ to tropical_gemm
+          echo '<meta http-equiv="refresh" content="0; url=tropical_gemm/index.html">' > public/api/index.html
           touch public/.nojekyll
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: public

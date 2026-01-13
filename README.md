@@ -51,7 +51,7 @@ c = tropical_gemm.maxplus_matmul(a, b)
 
 📖 **[User Guide](https://tensorbfs.github.io/tropical-gemm/)** - Installation, tutorials, examples
 
-📚 **[API Reference](https://docs.rs/tropical-gemm)** - Rust API documentation
+📚 **[API Reference](https://tensorbfs.github.io/tropical-gemm/api/tropical_gemm/)** - Rust API documentation
 
 ## Semirings
 
