@@ -1,0 +1,14 @@
+coverage:
+  status:
+    project:
+      default:
+        # Don't fail CI on coverage changes
+        informational: true
+    patch:
+      default:
+        # Don't fail CI on patch coverage
+        informational: true
+
+ignore:
+  # Exclude CUDA crate - requires GPU to test
+  - "crates/tropical-gemm-cuda/**"
