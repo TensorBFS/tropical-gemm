@@ -8,7 +8,7 @@
 //! use tropical_gemm_cuda::{tropical_matmul_gpu, CudaContext};
 //! use tropical_gemm::types::TropicalMaxPlus;
 //!
-//! // Simple one-shot API
+//! // Simple one-shot API (uses cached global context for performance)
 //! let a = vec![1.0f32; 1024 * 1024];
 //! let b = vec![1.0f32; 1024 * 1024];
 //! let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 1024, 1024, &b, 1024)?;
@@ -16,7 +16,7 @@
 //!
 //! # Persistent Context
 //!
-//! For multiple operations, reuse the CUDA context to avoid repeated kernel compilation:
+//! For explicit context management:
 //!
 //! ```ignore
 //! use tropical_gemm_cuda::{CudaContext, GpuMatrix, tropical_gemm_gpu};
@@ -32,12 +32,57 @@
 //!
 //! let c = c_gpu.to_host_row_major(&ctx)?;
 //! ```
+//!
+//! # Performance
+//!
+//! The convenience functions (`tropical_matmul_gpu`, etc.) use a lazily-initialized
+//! global context that persists across calls. This avoids the ~7 second NVRTC
+//! compilation overhead on each call.
 
 mod context;
 mod error;
 mod gpu_mat;
 mod kernels;
 mod memory;
+
+use once_cell::sync::OnceCell;
+use std::sync::Mutex;
+
+/// Global CUDA context for convenience functions.
+/// Lazily initialized on first use, persists for process lifetime.
+static GLOBAL_CONTEXT: OnceCell<CudaContext> = OnceCell::new();
+
+/// Mutex to ensure only one thread initializes the context.
+static INIT_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Get or initialize the global CUDA context.
+///
+/// This function is thread-safe and will only initialize the context once.
+/// Subsequent calls return the cached context.
+///
+/// # Errors
+///
+/// Returns an error if CUDA initialization fails (no device, driver issues, etc.)
+pub fn get_global_context() -> Result<&'static CudaContext> {
+    // Fast path: already initialized
+    if let Some(ctx) = GLOBAL_CONTEXT.get() {
+        return Ok(ctx);
+    }
+
+    // Slow path: need to initialize
+    let _lock = INIT_MUTEX.lock().unwrap();
+
+    // Double-check after acquiring lock
+    if let Some(ctx) = GLOBAL_CONTEXT.get() {
+        return Ok(ctx);
+    }
+
+    // Initialize and store
+    let ctx = CudaContext::new()?;
+    let _ = GLOBAL_CONTEXT.set(ctx);
+
+    Ok(GLOBAL_CONTEXT.get().unwrap())
+}
 
 pub use context::CudaContext;
 pub use error::{CudaError, Result};
@@ -102,15 +147,16 @@ where
         )));
     }
 
-    let ctx = CudaContext::new()?;
+    // Use global cached context to avoid NVRTC recompilation
+    let ctx = get_global_context()?;
 
-    let a_gpu = GpuMatrix::from_host_row_major(&ctx, a, m, k)?;
-    let b_gpu = GpuMatrix::from_host_row_major(&ctx, b, k, n)?;
-    let mut c_gpu = GpuMatrix::alloc(&ctx, m, n)?;
+    let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
+    let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+    let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
-    T::launch_gemm(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+    T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-    c_gpu.to_host_row_major(&ctx)
+    c_gpu.to_host_row_major(ctx)
 }
 
 /// Tropical matrix multiplication with persistent context.
@@ -241,16 +287,17 @@ where
         )));
     }
 
-    let ctx = CudaContext::new()?;
+    // Use global cached context to avoid NVRTC recompilation
+    let ctx = get_global_context()?;
 
-    let a_gpu = GpuMatrix::from_host_row_major(&ctx, a, m, k)?;
-    let b_gpu = GpuMatrix::from_host_row_major(&ctx, b, k, n)?;
-    let mut c_gpu = GpuMatrixWithArgmax::alloc(&ctx, m, n)?;
+    let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
+    let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+    let mut c_gpu = GpuMatrixWithArgmax::alloc(ctx, m, n)?;
 
-    T::launch_gemm_with_argmax(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+    T::launch_gemm_with_argmax(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-    let c = c_gpu.matrix_to_host_row_major(&ctx)?;
-    let argmax = c_gpu.argmax_to_host_row_major(&ctx)?;
+    let c = c_gpu.matrix_to_host_row_major(ctx)?;
+    let argmax = c_gpu.argmax_to_host_row_major(ctx)?;
 
     Ok((c, argmax))
 }
@@ -404,17 +451,18 @@ where
         }
     }
 
-    let ctx = CudaContext::new()?;
+    // Use global cached context to avoid NVRTC recompilation
+    let ctx = get_global_context()?;
     let mut results = Vec::with_capacity(batch_size);
 
     for (a, b) in a_batch.iter().zip(b_batch.iter()) {
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, a, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, b, k, n)?;
-        let mut c_gpu = GpuMatrix::alloc(&ctx, m, n)?;
+        let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+        let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
-        T::launch_gemm(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+        T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        results.push(c_gpu.to_host_row_major(&ctx)?);
+        results.push(c_gpu.to_host_row_major(ctx)?);
     }
 
     Ok(results)
@@ -472,20 +520,21 @@ where
         return Ok(Vec::new());
     }
 
-    let ctx = CudaContext::new()?;
+    // Use global cached context to avoid NVRTC recompilation
+    let ctx = get_global_context()?;
     let mut c = vec![T::Scalar::default(); batch_size * c_stride];
 
     for i in 0..batch_size {
         let a_slice = &a[i * a_stride..(i + 1) * a_stride];
         let b_slice = &b[i * b_stride..(i + 1) * b_stride];
 
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, a_slice, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, b_slice, k, n)?;
-        let mut c_gpu = GpuMatrix::alloc(&ctx, m, n)?;
+        let a_gpu = GpuMatrix::from_host_row_major(ctx, a_slice, m, k)?;
+        let b_gpu = GpuMatrix::from_host_row_major(ctx, b_slice, k, n)?;
+        let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
-        T::launch_gemm(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+        T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        let c_result = c_gpu.to_host_row_major(&ctx)?;
+        let c_result = c_gpu.to_host_row_major(ctx)?;
         c[i * c_stride..(i + 1) * c_stride].copy_from_slice(&c_result);
     }
 
@@ -927,18 +976,19 @@ where
         }
     }
 
-    let ctx = CudaContext::new()?;
+    // Use global cached context to avoid NVRTC recompilation
+    let ctx = get_global_context()?;
     let mut results = Vec::with_capacity(batch_size);
 
     for (a, b) in a_batch.iter().zip(b_batch.iter()) {
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, a, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, b, k, n)?;
-        let mut c_gpu = GpuMatrixWithArgmax::alloc(&ctx, m, n)?;
+        let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+        let mut c_gpu = GpuMatrixWithArgmax::alloc(ctx, m, n)?;
 
-        T::launch_gemm_with_argmax(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+        T::launch_gemm_with_argmax(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        let c_values = c_gpu.matrix_to_host_row_major(&ctx)?;
-        let c_argmax = c_gpu.argmax_to_host_row_major(&ctx)?;
+        let c_values = c_gpu.matrix_to_host_row_major(ctx)?;
+        let c_argmax = c_gpu.argmax_to_host_row_major(ctx)?;
         results.push((c_values, c_argmax));
     }
 
