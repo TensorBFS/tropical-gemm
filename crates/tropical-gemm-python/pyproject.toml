@@ -35,6 +35,6 @@ dev = ["pytest", "torch>=2.0"]
 Repository = "https://github.com/TensorBFS/tropical-gemm"
 
 [tool.maturin]
-features = ["pyo3/extension-module", "cuda"]
+features = ["pyo3/extension-module"]
 module-name = "tropical_gemm._core"
 python-source = "python"
