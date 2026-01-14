@@ -5,10 +5,11 @@ MNIST Classification with Tropical Neural Networks
 This example demonstrates using tropical affine maps in a neural network
 for digit classification, compared with standard ReLU networks.
 
-Tropical Affine Map: y[i] = max_k(x[k] + W[k,i]) + b[i]
-- The "max" provides non-linearity (winner-take-all selection)
-- The "+" combines inputs with learned weights (in log-space sense)
-- The bias "b" shifts decision boundaries
+Tropical Affine Map: y[i] = max(max_k(x[k] + W[k,i]), b[i])
+- The outer "max" is tropical addition (⊕) combining matmul result with bias
+- The inner "max" over k is the tropical matrix multiplication
+- The "+" is tropical multiplication (⊗)
+- The bias "b" acts as a learned threshold
 
 This is the tropical analog of the standard affine transformation (Ax + b).
 
@@ -82,15 +83,15 @@ class TropicalAffine(nn.Module):
     """
     Tropical MaxPlus affine layer: y = W ⊗ x ⊕ b (in tropical notation).
 
-    Computes: y[i] = max_k(x[k] + W[k,i]) + b[i]
+    Computes: y[i] = max(max_k(x[k] + W[k,i]), b[i])
 
     This is the tropical analog of an affine transformation (Ax + b).
     - The tropical "multiplication" (⊗) is standard addition
     - The tropical "addition" (⊕) is the max operation
-    - The bias b[i] shifts the output after the max selection
+    - The bias b[i] is combined via max (tropical addition)
 
     The max operation provides winner-take-all non-linearity, while
-    the bias allows shifting decision boundaries.
+    the bias provides a learned threshold for each output.
 
     Args:
         features: Number of features (input = output dimension)
@@ -104,18 +105,19 @@ class TropicalAffine(nn.Module):
 
         # Learnable weight matrix (initialized near identity-like)
         self.weight = nn.Parameter(torch.randn(features, features) * 0.1)
-        # Learnable bias for affine transformation
+        # Learnable bias for tropical affine (combined via max)
         self.bias = nn.Parameter(torch.zeros(features))
         self.norm = nn.LayerNorm(features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Tropical matmul: y[i] = max_k(x[k] + W[k,i])
+        # Tropical matmul: tmp[i] = max_k(x[k] + W[k,i])
         if self.use_gpu:
             out = tropical_maxplus_matmul_gpu(x, self.weight)
         else:
             out = tropical_maxplus_matmul(x, self.weight)
-        # Add bias for affine map: y[i] = max_k(x[k] + W[k,i]) + b[i]
-        return self.norm(out + self.bias)
+        # Tropical affine: y[i] = max(tmp[i], b[i]) - tropical addition with bias
+        out = torch.maximum(out, self.bias)
+        return self.norm(out)
 
 
 class HybridTropicalMLP(nn.Module):
@@ -325,8 +327,8 @@ def main():
     print("  Tropical: Linear -> TropicalAffine(256) -> Linear -> TropicalAffine(128) -> Linear")
     print("  Standard: Linear -> ReLU -> Linear -> ReLU -> Linear")
     print()
-    print("Tropical Affine: y[i] = max_k(x[k] + W[k,i]) + b[i]")
-    print("The max provides winner-take-all selection, bias shifts boundaries.")
+    print("Tropical Affine: y[i] = max(max_k(x[k] + W[k,i]), b[i])")
+    print("Bias is combined via max (tropical addition), acts as threshold.")
     print("=" * 60)
 
 

@@ -57,11 +57,7 @@ jobs:
           cd crates/tropical-gemm-python
           pytest -v
         shell: bash
-      - name: Run PyTorch example
-        run: |
-          source .venv/bin/activate
-          python crates/tropical-gemm-python/examples/pytorch_tropical.py
-        shell: bash
+      # PyTorch examples skipped in CI (require GPU or long training time)
 
   clippy:
     name: Clippy
