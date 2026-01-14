@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-594eec4b.js";
+            window.path_to_searchindex_js = "searchindex-4715aa1c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -310,6 +310,29 @@ tropical-gemm = "0.1"
 tropical-gemm-cuda = "0.1"
 </code></pre>
 <h2 id="python-package"><a class="header" href="#python-package">Python Package</a></h2>
+<h3 id="from-pypi-recommended"><a class="header" href="#from-pypi-recommended">From PyPI (Recommended)</a></h3>
+<pre><code class="language-bash"># Basic installation
+pip install tropical-gemm
+
+# With PyTorch support for automatic differentiation
+pip install tropical-gemm[torch]
+
+# For development
+pip install tropical-gemm[dev]
+</code></pre>
+<h3 id="optional-dependencies"><a class="header" href="#optional-dependencies">Optional Dependencies</a></h3>
+<p>The Python package has optional extras:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Extra</th><th>Command</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>torch</code></td><td><code>pip install tropical-gemm[torch]</code></td><td>PyTorch integration with autograd support</td></tr>
+<tr><td><code>dev</code></td><td><code>pip install tropical-gemm[dev]</code></td><td>Development dependencies (pytest, torch)</td></tr>
+</tbody>
+</table>
+</div>
 <h3 id="from-source"><a class="header" href="#from-source">From Source</a></h3>
 <pre><code class="language-bash"># Clone the repository
 git clone https://github.com/TensorBFS/tropical-gemm
@@ -324,8 +347,8 @@ source .venv/bin/activate  # Linux/Mac
 pip install maturin
 maturin develop --release
 
-# Optional: with PyTorch support
-pip install torch
+# With CUDA support
+maturin develop --release --features cuda
 </code></pre>
 <h3 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h3>
 <pre><code class="language-python">import tropical_gemm
@@ -336,6 +359,24 @@ b = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
 
 c = tropical_gemm.maxplus_matmul(a, b)
 print(c)  # [[5. 6.] [7. 8.]]
+
+# Check GPU availability
+print(f"CUDA available: {tropical_gemm.cuda_available()}")
+</code></pre>
+<h3 id="verify-pytorch-integration"><a class="header" href="#verify-pytorch-integration">Verify PyTorch Integration</a></h3>
+<pre><code class="language-python">import torch
+from tropical_gemm.pytorch import tropical_maxplus_matmul, GPU_AVAILABLE
+
+print(f"GPU available: {GPU_AVAILABLE}")
+
+a = torch.randn(3, 4, requires_grad=True)
+b = torch.randn(4, 5, requires_grad=True)
+
+c = tropical_maxplus_matmul(a, b)
+c.sum().backward()
+
+print(f"grad_a: {a.grad.shape}")  # (3, 4)
+print(f"grad_b: {b.grad.shape}")  # (4, 5)
 </code></pre>
 <h2 id="cuda-setup"><a class="header" href="#cuda-setup">CUDA Setup</a></h2>
 <p>For GPU acceleration, ensure CUDA is properly installed:</p>
@@ -351,6 +392,15 @@ sudo apt install nvidia-cuda-toolkit
 </code></pre>
 <p>The CUDA kernels are compiled at runtime using NVRTC, so you don’t need to
 compile the library with a specific CUDA version.</p>
+<h3 id="building-python-package-with-cuda"><a class="header" href="#building-python-package-with-cuda">Building Python Package with CUDA</a></h3>
+<pre><code class="language-bash">cd crates/tropical-gemm-python
+
+# Build with CUDA feature
+maturin develop --features cuda
+
+# Or for release
+maturin build --release --features cuda
+</code></pre>
 <h2 id="building-from-source"><a class="header" href="#building-from-source">Building from Source</a></h2>
 <pre><code class="language-bash"># Clone
 git clone https://github.com/TensorBFS/tropical-gemm
@@ -834,11 +884,19 @@ let c = tropical_matmul_gpu::&lt;TropicalMaxPlus&lt;f32&gt;&gt;(&amp;a, 64, 64, 
 <p>GPU becomes advantageous for matrices larger than ~256×256.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="pytorch-integration"><a class="header" href="#pytorch-integration">PyTorch Integration</a></h1>
-<p>tropical-gemm provides Python bindings for seamless PyTorch integration.</p>
+<p>tropical-gemm provides Python bindings with full PyTorch autograd support.</p>
 <h2 id="installation-1"><a class="header" href="#installation-1">Installation</a></h2>
-<pre><code class="language-bash">cd crates/tropical-gemm-python
-pip install maturin torch
-maturin develop --release
+<pre><code class="language-bash"># From PyPI
+pip install tropical-gemm
+
+# With PyTorch support (recommended)
+pip install tropical-gemm[torch]
+
+# For GPU support (requires CUDA toolkit)
+pip install maturin
+git clone https://github.com/TensorBFS/tropical-gemm
+cd tropical-gemm/crates/tropical-gemm-python
+maturin develop --features cuda
 </code></pre>
 <h2 id="basic-numpy-usage"><a class="header" href="#basic-numpy-usage">Basic NumPy Usage</a></h2>
 <pre><code class="language-python">import numpy as np
@@ -855,15 +913,163 @@ c = tropical_gemm.minplus_matmul(a, b)
 
 # MaxMul: C[i,j] = max_k(A[i,k] * B[k,j])
 c = tropical_gemm.maxmul_matmul(a, b)
+
+# With argmax tracking for backpropagation
+c, argmax = tropical_gemm.maxplus_matmul_with_argmax(a, b)
 </code></pre>
-<h2 id="pytorch-autograd-function"><a class="header" href="#pytorch-autograd-function">PyTorch Autograd Function</a></h2>
-<p>For differentiable tropical operations, implement a custom <code>torch.autograd.Function</code>:</p>
+<h2 id="pytorch-module-recommended"><a class="header" href="#pytorch-module-recommended">PyTorch Module (Recommended)</a></h2>
+<p>The <code>tropical_gemm.pytorch</code> module provides pre-built autograd functions:</p>
+<pre><code class="language-python">import torch
+from tropical_gemm.pytorch import (
+    # CPU operations
+    tropical_maxplus_matmul,
+    tropical_minplus_matmul,
+    tropical_maxmul_matmul,
+    # GPU operations (requires CUDA)
+    tropical_maxplus_matmul_gpu,
+    tropical_minplus_matmul_gpu,
+    tropical_maxmul_matmul_gpu,
+    # Check GPU availability
+    GPU_AVAILABLE,
+)
+
+# Create tensors with gradient tracking
+a = torch.randn(100, 50, requires_grad=True)
+b = torch.randn(50, 80, requires_grad=True)
+
+# Forward pass - compute tropical matmul
+c = tropical_maxplus_matmul(a, b)
+
+# Backward pass - gradients computed automatically
+loss = c.sum()
+loss.backward()
+
+print(f"grad_a shape: {a.grad.shape}")  # (100, 50)
+print(f"grad_b shape: {b.grad.shape}")  # (50, 80)
+</code></pre>
+<h3 id="gpu-acceleration-1"><a class="header" href="#gpu-acceleration-1">GPU Acceleration</a></h3>
+<p>For larger matrices, use GPU-accelerated functions:</p>
+<pre><code class="language-python">if GPU_AVAILABLE:
+    a = torch.randn(1024, 512, requires_grad=True)
+    b = torch.randn(512, 1024, requires_grad=True)
+
+    c = tropical_maxplus_matmul_gpu(a, b)
+    loss = c.sum()
+    loss.backward()  # Gradients still work!
+</code></pre>
+<h3 id="available-functions"><a class="header" href="#available-functions">Available Functions</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>CPU Function</th><th>GPU Function</th><th>Operation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>tropical_maxplus_matmul</code></td><td><code>tropical_maxplus_matmul_gpu</code></td><td>max_k(A[i,k] + B[k,j])</td></tr>
+<tr><td><code>tropical_minplus_matmul</code></td><td><code>tropical_minplus_matmul_gpu</code></td><td>min_k(A[i,k] + B[k,j])</td></tr>
+<tr><td><code>tropical_maxmul_matmul</code></td><td><code>tropical_maxmul_matmul_gpu</code></td><td>max_k(A[i,k] * B[k,j])</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="training-example"><a class="header" href="#training-example">Training Example</a></h2>
+<pre><code class="language-python">import torch
+from tropical_gemm.pytorch import tropical_maxplus_matmul
+
+# Learnable parameters
+a = torch.randn(64, 128, requires_grad=True)
+b = torch.randn(128, 32, requires_grad=True)
+target = torch.randn(64, 32)
+
+optimizer = torch.optim.Adam([a, b], lr=0.1)
+
+for step in range(100):
+    optimizer.zero_grad()
+
+    # Forward - tropical matmul
+    c = tropical_maxplus_matmul(a, b)
+
+    # Loss
+    loss = ((c - target) ** 2).mean()
+
+    # Backward - gradients flow through tropical operation
+    loss.backward()
+
+    # Update parameters
+    optimizer.step()
+
+    if step % 20 == 0:
+        print(f"Step {step}: loss = {loss.item():.4f}")
+</code></pre>
+<h2 id="gradient-semantics"><a class="header" href="#gradient-semantics">Gradient Semantics</a></h2>
+<p>The gradient computation depends on the semiring type:</p>
+<h3 id="maxplus--minplus-additive-rule"><a class="header" href="#maxplus--minplus-additive-rule">MaxPlus / MinPlus (Additive Rule)</a></h3>
+<p>For <code>C[i,j] = max_k(A[i,k] + B[k,j])</code>, let <code>k* = argmax_k(A[i,k] + B[k,j])</code>:</p>
+<ul>
+<li><code>grad_A[i,k*] += grad_C[i,j]</code></li>
+<li><code>grad_B[k*,j] += grad_C[i,j]</code></li>
+</ul>
+<p>The gradient is <strong>sparse</strong> - only the winning index contributes.</p>
+<h3 id="maxmul-multiplicative-rule"><a class="header" href="#maxmul-multiplicative-rule">MaxMul (Multiplicative Rule)</a></h3>
+<p>For <code>C[i,j] = max_k(A[i,k] * B[k,j])</code>, let <code>k* = argmax_k(A[i,k] * B[k,j])</code>:</p>
+<ul>
+<li><code>grad_A[i,k*] += grad_C[i,j] * B[k*,j]</code></li>
+<li><code>grad_B[k*,j] += grad_C[i,j] * A[i,k*]</code></li>
+</ul>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Semiring</th><th>Forward</th><th>Backward Rule</th></tr>
+</thead>
+<tbody>
+<tr><td>MaxPlus</td><td>max_k(A + B)</td><td>∂C/∂A = 1 at argmax</td></tr>
+<tr><td>MinPlus</td><td>min_k(A + B)</td><td>∂C/∂A = 1 at argmin</td></tr>
+<tr><td>MaxMul</td><td>max_k(A × B)</td><td>∂C/∂A = B at argmax</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="graph-algorithms"><a class="header" href="#graph-algorithms">Graph Algorithms</a></h2>
+<h3 id="shortest-path-minplus"><a class="header" href="#shortest-path-minplus">Shortest Path (MinPlus)</a></h3>
+<pre><code class="language-python">import torch
+from tropical_gemm.pytorch import tropical_minplus_matmul
+
+# Adjacency matrix (inf = no edge)
+inf = float("inf")
+adj = torch.tensor([
+    [0.0, 1.0, inf, 4.0],
+    [inf, 0.0, 2.0, inf],
+    [inf, inf, 0.0, 1.0],
+    [inf, inf, inf, 0.0],
+])
+
+# 2-hop shortest paths
+two_hop = tropical_minplus_matmul(adj, adj)
+
+# 3-hop shortest paths
+three_hop = tropical_minplus_matmul(two_hop, adj)
+</code></pre>
+<h3 id="longest-path-maxplus"><a class="header" href="#longest-path-maxplus">Longest Path (MaxPlus)</a></h3>
+<pre><code class="language-python">import torch
+from tropical_gemm.pytorch import tropical_maxplus_matmul
+
+# Edge weights for critical path analysis
+neg_inf = float("-inf")
+adj = torch.tensor([
+    [0.0, 3.0, 2.0, neg_inf],
+    [neg_inf, 0.0, neg_inf, 4.0],
+    [neg_inf, neg_inf, 0.0, 5.0],
+    [neg_inf, neg_inf, neg_inf, 0.0],
+])
+
+# 2-hop longest paths
+two_hop = tropical_maxplus_matmul(adj, adj)
+</code></pre>
+<h2 id="custom-autograd-function-advanced"><a class="header" href="#custom-autograd-function-advanced">Custom Autograd Function (Advanced)</a></h2>
+<p>If you need custom behavior, you can still define your own autograd function:</p>
 <pre><code class="language-python">import torch
 import numpy as np
 import tropical_gemm
 
 class TropicalMaxPlusMatmul(torch.autograd.Function):
-    """Differentiable MaxPlus: C[i,j] = max_k(A[i,k] + B[k,j])"""
+    """Custom differentiable MaxPlus: C[i,j] = max_k(A[i,k] + B[k,j])"""
 
     @staticmethod
     def forward(ctx, a, b):
@@ -910,70 +1116,13 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
 
         return grad_a, grad_b
 </code></pre>
-<h2 id="using-the-autograd-function"><a class="header" href="#using-the-autograd-function">Using the Autograd Function</a></h2>
-<pre><code class="language-python"># Create tensors with gradients
-a = torch.randn(4, 5, requires_grad=True)
-b = torch.randn(5, 3, requires_grad=True)
-
-# Forward pass
-c = TropicalMaxPlusMatmul.apply(a, b)
-
-# Backward pass
-loss = c.sum()
-loss.backward()
-
-print(a.grad.shape)  # (4, 5)
-print(b.grad.shape)  # (5, 3)
-</code></pre>
-<h2 id="training-example"><a class="header" href="#training-example">Training Example</a></h2>
-<pre><code class="language-python">import torch
-
-# Learnable parameters
-a = torch.randn(4, 5, requires_grad=True)
-b = torch.randn(5, 3, requires_grad=True)
-target = torch.randn(4, 3)
-
-optimizer = torch.optim.Adam([a, b], lr=0.1)
-
-for step in range(100):
-    optimizer.zero_grad()
-
-    # Forward
-    c = TropicalMaxPlusMatmul.apply(a, b)
-
-    # Loss
-    loss = ((c - target) ** 2).mean()
-
-    # Backward
-    loss.backward()
-
-    # Update
-    optimizer.step()
-
-    if step % 20 == 0:
-        print(f"Step {step}: loss = {loss.item():.4f}")
-</code></pre>
-<h2 id="gradient-semantics"><a class="header" href="#gradient-semantics">Gradient Semantics</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Semiring</th><th>Forward</th><th>Backward Rule</th></tr>
-</thead>
-<tbody>
-<tr><td>MaxPlus</td><td><code>max_k(A + B)</code></td><td><code>∂C/∂A = 1</code> at argmax</td></tr>
-<tr><td>MinPlus</td><td><code>min_k(A + B)</code></td><td><code>∂C/∂A = 1</code> at argmin</td></tr>
-<tr><td>MaxMul</td><td><code>max_k(A × B)</code></td><td><code>∂C/∂A = B</code> at argmax</td></tr>
-</tbody>
-</table>
-</div>
-<p>The gradients are <strong>sparse</strong>: only the winning index contributes.</p>
 <h2 id="complete-example"><a class="header" href="#complete-example">Complete Example</a></h2>
 <p>See <code>crates/tropical-gemm-python/examples/pytorch_tropical.py</code> for:</p>
 <ul>
-<li>All three autograd functions (MaxPlus, MinPlus, MaxMul)</li>
 <li>Gradient verification tests</li>
 <li>Shortest/longest path examples</li>
 <li>Optimization demos</li>
+<li>GPU benchmarks</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="architecture"><a class="header" href="#architecture">Architecture</a></h1>
@@ -2096,22 +2245,6 @@ c = tropical_gemm.maxplus_matmul(a, b)
         <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
         <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
         <script>
