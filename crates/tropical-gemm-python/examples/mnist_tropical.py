@@ -2,15 +2,18 @@
 """
 MNIST Classification with Tropical Neural Networks
 
-This example demonstrates using tropical MaxPlus layers in a neural network
+This example demonstrates using tropical affine maps in a neural network
 for digit classification, compared with standard ReLU networks.
 
-Tropical semiring: C[i,j] = max_k(A[i,k] + B[k,j])
+Tropical Affine Map: y[i] = max_k(x[k] + W[k,i]) + b[i]
 - The "max" provides non-linearity (winner-take-all selection)
 - The "+" combines inputs with learned weights (in log-space sense)
+- The bias "b" shifts decision boundaries
+
+This is the tropical analog of the standard affine transformation (Ax + b).
 
 Architecture:
-- Hybrid MLP: Linear -> TropicalMaxPlus -> LayerNorm -> Linear -> TropicalMaxPlus -> Linear
+- Hybrid MLP: Linear -> TropicalAffine -> LayerNorm -> Linear -> TropicalAffine -> Linear
 - Standard MLP: Linear -> ReLU -> Linear -> ReLU -> Linear
 
 Note: This example uses CPU by default. GPU acceleration is more beneficial
@@ -75,14 +78,19 @@ class TropicalLinear(nn.Module):
         return f"in_features={self.in_features}, out_features={self.out_features}, gpu={self.use_gpu}"
 
 
-class TropicalActivation(nn.Module):
+class TropicalAffine(nn.Module):
     """
-    Tropical MaxPlus activation layer.
+    Tropical MaxPlus affine layer: y = W ⊗ x ⊕ b (in tropical notation).
 
-    Computes: y[i] = max_k(x[k] + W[k,i]) where W is a learnable activation matrix.
+    Computes: y[i] = max_k(x[k] + W[k,i]) + b[i]
 
-    This replaces ReLU as the non-linearity. The tropical max-plus operation
-    selects the maximum weighted path, providing winner-take-all dynamics.
+    This is the tropical analog of an affine transformation (Ax + b).
+    - The tropical "multiplication" (⊗) is standard addition
+    - The tropical "addition" (⊕) is the max operation
+    - The bias b[i] shifts the output after the max selection
+
+    The max operation provides winner-take-all non-linearity, while
+    the bias allows shifting decision boundaries.
 
     Args:
         features: Number of features (input = output dimension)
@@ -94,41 +102,46 @@ class TropicalActivation(nn.Module):
         self.features = features
         self.use_gpu = use_gpu and GPU_AVAILABLE
 
-        # Learnable activation weights (initialized near identity-like)
+        # Learnable weight matrix (initialized near identity-like)
         self.weight = nn.Parameter(torch.randn(features, features) * 0.1)
+        # Learnable bias for affine transformation
+        self.bias = nn.Parameter(torch.zeros(features))
         self.norm = nn.LayerNorm(features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Tropical matmul: y[i] = max_k(x[k] + W[k,i])
         if self.use_gpu:
             out = tropical_maxplus_matmul_gpu(x, self.weight)
         else:
             out = tropical_maxplus_matmul(x, self.weight)
-        return self.norm(out)
+        # Add bias for affine map: y[i] = max_k(x[k] + W[k,i]) + b[i]
+        return self.norm(out + self.bias)
 
 
 class HybridTropicalMLP(nn.Module):
     """
-    Hybrid MLP using TropicalMaxPlus as activation function.
+    Hybrid MLP using Tropical Affine maps as activation function.
 
     Architecture:
-        Input(784) -> Linear(256) -> TropicalMaxPlus(256)
-                   -> Linear(128) -> TropicalMaxPlus(128)
+        Input(784) -> Linear(256) -> TropicalAffine(256)
+                   -> Linear(128) -> TropicalAffine(128)
                    -> Linear(10)
 
-    The TropicalMaxPlus layers replace ReLU activations, providing
-    max-based non-linearity with learnable activation weights.
+    The TropicalAffine layers compute: y[i] = max_k(x[k] + W[k,i]) + b[i]
+    This is the tropical analog of an affine transformation, providing
+    max-based non-linearity with learnable weights and biases.
     """
 
     def __init__(self, use_gpu: bool = True):
         super().__init__()
 
-        # Layer 1: Linear + TropicalMaxPlus activation
+        # Layer 1: Linear + TropicalAffine
         self.fc1 = nn.Linear(784, 256)
-        self.act1 = TropicalActivation(256, use_gpu=use_gpu)
+        self.act1 = TropicalAffine(256, use_gpu=use_gpu)
 
-        # Layer 2: Linear + TropicalMaxPlus activation
+        # Layer 2: Linear + TropicalAffine
         self.fc2 = nn.Linear(256, 128)
-        self.act2 = TropicalActivation(128, use_gpu=use_gpu)
+        self.act2 = TropicalAffine(128, use_gpu=use_gpu)
 
         # Output layer (no activation - logits for CrossEntropyLoss)
         self.fc_out = nn.Linear(128, 10)
@@ -136,11 +149,11 @@ class HybridTropicalMLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.view(x.size(0), -1)
 
-        # Layer 1: Linear -> TropicalMaxPlus
+        # Layer 1: Linear -> TropicalAffine
         x = self.fc1(x)
         x = self.act1(x)
 
-        # Layer 2: Linear -> TropicalMaxPlus
+        # Layer 2: Linear -> TropicalAffine
         x = self.fc2(x)
         x = self.act2(x)
 
@@ -309,11 +322,11 @@ def main():
     print(f"  Standard MLP (ReLU):  {standard_acc:.1f}% test accuracy")
     print()
     print("Architecture comparison:")
-    print("  Tropical: Linear -> TropicalMaxPlus(256) -> Linear -> TropicalMaxPlus(128) -> Linear")
+    print("  Tropical: Linear -> TropicalAffine(256) -> Linear -> TropicalAffine(128) -> Linear")
     print("  Standard: Linear -> ReLU -> Linear -> ReLU -> Linear")
     print()
-    print("The tropical layer uses max_k(x[k] + w[k]) which provides")
-    print("winner-take-all selection with sparse gradient flow.")
+    print("Tropical Affine: y[i] = max_k(x[k] + W[k,i]) + b[i]")
+    print("The max provides winner-take-all selection, bias shifts boundaries.")
     print("=" * 60)
 
 
