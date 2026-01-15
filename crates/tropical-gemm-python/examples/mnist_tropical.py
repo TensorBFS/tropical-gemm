@@ -103,8 +103,11 @@ class TropicalAffine(nn.Module):
         self.features = features
         self.use_gpu = use_gpu and GPU_AVAILABLE
 
-        # Learnable weight matrix (initialized near identity-like)
-        self.weight = nn.Parameter(torch.randn(features, features) * 0.1)
+        # Learnable weight matrix (initialized to near-identity)
+        # 0 on diagonal, -1 off diagonal
+        init_weight = torch.full((features, features), -1.0)
+        init_weight.fill_diagonal_(0.0)
+        self.weight = nn.Parameter(init_weight)
         # Learnable bias for tropical affine (combined via max)
         self.bias = nn.Parameter(torch.zeros(features))
         self.norm = nn.LayerNorm(features)
@@ -296,6 +299,11 @@ def main():
 
     # Train Hybrid Tropical MLP
     tropical_model = HybridTropicalMLP(use_gpu=use_gpu)
+
+    # Record initial weights
+    init_w1 = tropical_model.act1.weight.data.clone()
+    init_w2 = tropical_model.act2.weight.data.clone()
+
     tropical_acc = train_model(
         tropical_model,
         train_loader,
@@ -304,6 +312,20 @@ def main():
         lr=lr,
         name="Hybrid Tropical MLP",
     )
+
+    # Check if tropical weights changed
+    final_w1 = tropical_model.act1.weight.data
+    final_w2 = tropical_model.act2.weight.data
+
+    print("\n--- Tropical Weight Analysis ---")
+    print(f"TropicalAffine layer 1 (256x256):")
+    print(f"  Weight change (L2 norm): {(final_w1 - init_w1).norm().item():.4f}")
+    print(f"  Initial diag mean: {init_w1.diag().mean().item():.4f}, off-diag mean: {(init_w1.sum() - init_w1.diag().sum()).item() / (256*256-256):.4f}")
+    print(f"  Final diag mean:   {final_w1.diag().mean().item():.4f}, off-diag mean: {(final_w1.sum() - final_w1.diag().sum()).item() / (256*256-256):.4f}")
+    print(f"TropicalAffine layer 2 (128x128):")
+    print(f"  Weight change (L2 norm): {(final_w2 - init_w2).norm().item():.4f}")
+    print(f"  Initial diag mean: {init_w2.diag().mean().item():.4f}, off-diag mean: {(init_w2.sum() - init_w2.diag().sum()).item() / (128*128-128):.4f}")
+    print(f"  Final diag mean:   {final_w2.diag().mean().item():.4f}, off-diag mean: {(final_w2.sum() - final_w2.diag().sum()).item() / (128*128-128):.4f}")
 
     # Train Standard MLP for comparison
     standard_model = StandardMLP()
