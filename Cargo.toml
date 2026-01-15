@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/tropical-gemm-cuda",
+    "crates/tropical-gemm-metal",
     "crates/tropical-gemm",
     "crates/tropical-gemm-python",
 ]
@@ -16,6 +17,7 @@ repository = "https://github.com/TensorBFS/tropical-gemm"
 [workspace.dependencies]
 # Internal crates
 tropical-gemm-cuda = { version = "0.1.0", path = "crates/tropical-gemm-cuda" }
+tropical-gemm-metal = { version = "0.1.0", path = "crates/tropical-gemm-metal" }
 tropical-gemm = { version = "0.1.0", path = "crates/tropical-gemm" }
 
 # External dependencies
