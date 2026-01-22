@@ -5,7 +5,7 @@
 .PHONY: setup setup-rust setup-python setup-cuda
 .PHONY: test-rust test-python test-all
 .PHONY: bench-cpu bench-cuda bench-all
-.PHONY: example-rust example-python
+.PHONY: example-rust example-python example-mnist example-mnist-gpu
 .PHONY: docs-build docs-serve docs-deploy docs-book docs-book-serve
 .PHONY: fmt clippy lint coverage
 
@@ -41,8 +41,10 @@ help:
 	@echo "  bench-cuda     - Run CUDA benchmarks"
 	@echo ""
 	@echo "Example targets:"
-	@echo "  example-rust   - Run Rust examples"
-	@echo "  example-python - Run Python examples"
+	@echo "  example-rust      - Run Rust examples"
+	@echo "  example-python    - Run Python PyTorch example"
+	@echo "  example-mnist     - Run MNIST tropical example (CPU)"
+	@echo "  example-mnist-gpu - Run MNIST tropical example (GPU)"
 	@echo ""
 	@echo "Documentation targets:"
 	@echo "  docs           - Build all documentation (API + user guide)"
@@ -78,6 +80,7 @@ setup-python:
 	@echo "Setting up Python environment..."
 	cd crates/tropical-gemm-python && \
 		python -m venv .venv && \
+		unset CONDA_PREFIX && \
 		. .venv/bin/activate && \
 		pip install --upgrade pip && \
 		pip install maturin pytest numpy && \
@@ -117,6 +120,7 @@ test-rust:
 test-python:
 	@echo "Running Python tests..."
 	cd crates/tropical-gemm-python && \
+		unset CONDA_PREFIX && \
 		. .venv/bin/activate && \
 		pytest tests/ -v
 	@echo "Python tests complete."
@@ -159,10 +163,32 @@ example-rust:
 example-python:
 	@echo "Running Python examples..."
 	cd crates/tropical-gemm-python && \
+		unset CONDA_PREFIX && \
 		. .venv/bin/activate && \
 		pip install torch --quiet 2>/dev/null || true && \
+		maturin develop && \
 		python examples/pytorch_tropical.py
 	@echo "Python examples complete."
+
+example-mnist:
+	@echo "Running MNIST tropical example (CPU)..."
+	cd crates/tropical-gemm-python && \
+		unset CONDA_PREFIX && \
+		. .venv/bin/activate && \
+		pip install torch torchvision --quiet 2>/dev/null || true && \
+		maturin develop && \
+		python examples/mnist_tropical.py
+	@echo "MNIST example complete."
+
+example-mnist-gpu:
+	@echo "Running MNIST tropical example (GPU)..."
+	cd crates/tropical-gemm-python && \
+		unset CONDA_PREFIX && \
+		. .venv/bin/activate && \
+		pip install torch torchvision --quiet 2>/dev/null || true && \
+		maturin develop --features cuda && \
+		python examples/mnist_tropical.py --gpu
+	@echo "MNIST example complete."
 
 #==============================================================================
 # Documentation

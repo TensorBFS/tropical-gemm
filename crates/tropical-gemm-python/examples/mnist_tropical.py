@@ -81,46 +81,43 @@ class TropicalLinear(nn.Module):
 
 class TropicalAffine(nn.Module):
     """
-    Tropical MaxPlus affine layer: y = W ⊗ x ⊕ b (in tropical notation).
+    Tropical MaxPlus affine layer: y = W ⊗ log(ReLU(x)) ⊕ b (in tropical notation).
 
-    Computes: y[i] = max(max_k(x[k] + W[k,i]), b[i])
+    Computes: y[i] = max(max_k(log(relu(x[k]) + eps) + W[k,i]), b[i])
 
-    This is the tropical analog of an affine transformation (Ax + b).
-    - The tropical "multiplication" (⊗) is standard addition
-    - The tropical "addition" (⊕) is the max operation
-    - The bias b[i] is combined via max (tropical addition)
-
-    The max operation provides winner-take-all non-linearity, while
-    the bias provides a learned threshold for each output.
+    The input is first transformed to log-space via ReLU + log, because:
+    - Tropical max-plus algebra naturally operates in log-space
+    - log transforms multiplication to addition
+    - max selects the dominant path (like Viterbi algorithm)
 
     Args:
         features: Number of features (input = output dimension)
         use_gpu: If True and GPU available, use CUDA acceleration
+        eps: Small constant to avoid log(0)
     """
 
-    def __init__(self, features: int, use_gpu: bool = True):
+    def __init__(self, features: int, use_gpu: bool = True, eps: float = 1e-6):
         super().__init__()
         self.features = features
         self.use_gpu = use_gpu and GPU_AVAILABLE
 
         # Learnable weight matrix (initialized to near-identity)
-        # 0 on diagonal, -1 off diagonal
-        init_weight = torch.full((features, features), -1.0)
-        init_weight.fill_diagonal_(0.0)
+        self.norm = nn.LayerNorm(features)
+        init_weight = torch.randn((features, features)) * 0.5
         self.weight = nn.Parameter(init_weight)
         # Learnable bias for tropical affine (combined via max)
         self.bias = nn.Parameter(torch.zeros(features))
-        self.norm = nn.LayerNorm(features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Tropical matmul: tmp[i] = max_k(x[k] + W[k,i])
+        out = self.norm(x)
         if self.use_gpu:
-            out = tropical_maxplus_matmul_gpu(x, self.weight)
+            out = tropical_maxplus_matmul_gpu(out, self.weight)
         else:
-            out = tropical_maxplus_matmul(x, self.weight)
+            out = tropical_maxplus_matmul(out, self.weight)
         # Tropical affine: y[i] = max(tmp[i], b[i]) - tropical addition with bias
         out = torch.maximum(out, self.bias)
-        return self.norm(out)
+        return out
 
 
 class HybridTropicalMLP(nn.Module):
