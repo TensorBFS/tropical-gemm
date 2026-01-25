@@ -33,3 +33,5 @@ lcov.info
 
 # Benchmarks
 /benchmarks/bench_c_cuda
+
+data/

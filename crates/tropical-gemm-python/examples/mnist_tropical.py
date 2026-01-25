@@ -83,12 +83,10 @@ class TropicalAffine(nn.Module):
     """
     Tropical MaxPlus affine layer: y = W ⊗ x ⊕ b (in tropical notation).
 
-    Computes: y[i] = max(max_k(x[k] + W[k,i]), b[i])
+    Computes: y[i] = max(max_k(LayerNorm(x)[k] + W[k,i]), b[i])
 
-    This is the tropical analog of an affine transformation (Ax + b).
-    - The tropical "multiplication" (⊗) is standard addition
-    - The tropical "addition" (⊕) is the max operation
-    - The bias b[i] is combined via max (tropical addition)
+    LayerNorm is applied before the tropical matmul to stabilize training,
+    as max operations create sparse gradients (only argmax contributes).
 
     The max operation provides winner-take-all non-linearity, while
     the bias provides a learned threshold for each output.
@@ -103,21 +101,23 @@ class TropicalAffine(nn.Module):
         self.features = features
         self.use_gpu = use_gpu and GPU_AVAILABLE
 
-        # Learnable weight matrix (initialized near identity-like)
-        self.weight = nn.Parameter(torch.randn(features, features) * 0.1)
+        # Learnable weight matrix (initialized to near-identity)
+        self.norm = nn.LayerNorm(features)
+        init_weight = torch.randn((features, features)) * 0.5
+        self.weight = nn.Parameter(init_weight)
         # Learnable bias for tropical affine (combined via max)
         self.bias = nn.Parameter(torch.zeros(features))
-        self.norm = nn.LayerNorm(features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Tropical matmul: tmp[i] = max_k(x[k] + W[k,i])
+        out = self.norm(x)
         if self.use_gpu:
-            out = tropical_maxplus_matmul_gpu(x, self.weight)
+            out = tropical_maxplus_matmul_gpu(out, self.weight)
         else:
-            out = tropical_maxplus_matmul(x, self.weight)
+            out = tropical_maxplus_matmul(out, self.weight)
         # Tropical affine: y[i] = max(tmp[i], b[i]) - tropical addition with bias
         out = torch.maximum(out, self.bias)
-        return self.norm(out)
+        return out
 
 
 class HybridTropicalMLP(nn.Module):
@@ -296,6 +296,11 @@ def main():
 
     # Train Hybrid Tropical MLP
     tropical_model = HybridTropicalMLP(use_gpu=use_gpu)
+
+    # Record initial weights
+    init_w1 = tropical_model.act1.weight.data.clone()
+    init_w2 = tropical_model.act2.weight.data.clone()
+
     tropical_acc = train_model(
         tropical_model,
         train_loader,
@@ -304,6 +309,20 @@ def main():
         lr=lr,
         name="Hybrid Tropical MLP",
     )
+
+    # Check if tropical weights changed
+    final_w1 = tropical_model.act1.weight.data
+    final_w2 = tropical_model.act2.weight.data
+
+    print("\n--- Tropical Weight Analysis ---")
+    print(f"TropicalAffine layer 1 (256x256):")
+    print(f"  Weight change (L2 norm): {(final_w1 - init_w1).norm().item():.4f}")
+    print(f"  Initial diag mean: {init_w1.diag().mean().item():.4f}, off-diag mean: {((init_w1.sum() - init_w1.diag().sum()) / (256*256-256)).item():.4f}")
+    print(f"  Final diag mean:   {final_w1.diag().mean().item():.4f}, off-diag mean: {((final_w1.sum() - final_w1.diag().sum()) / (256*256-256)).item():.4f}")
+    print(f"TropicalAffine layer 2 (128x128):")
+    print(f"  Weight change (L2 norm): {(final_w2 - init_w2).norm().item():.4f}")
+    print(f"  Initial diag mean: {init_w2.diag().mean().item():.4f}, off-diag mean: {((init_w2.sum() - init_w2.diag().sum()) / (128*128-128)).item():.4f}")
+    print(f"  Final diag mean:   {final_w2.diag().mean().item():.4f}, off-diag mean: {((final_w2.sum() - final_w2.diag().sum()) / (128*128-128)).item():.4f}")
 
     # Train Standard MLP for comparison
     standard_model = StandardMLP()
