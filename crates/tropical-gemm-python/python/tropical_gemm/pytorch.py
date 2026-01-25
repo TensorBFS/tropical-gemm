@@ -38,72 +38,87 @@ GPU_AVAILABLE = tropical_gemm.cuda_available()
 
 
 # ===========================================================================
-# Pure PyTorch implementations (zero-copy for GPU tensors)
+# Helper: Use Rust CPU backend as fallback for GPU tensors without DLPack
 # ===========================================================================
 
 
-def _tropical_maxplus_pytorch(
+def _rust_cpu_maxplus_with_argmax(
     a: torch.Tensor, b: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Pure PyTorch implementation of tropical max-plus matmul with argmax.
+    Use optimized Rust CPU backend for tropical max-plus matmul.
 
-    C[i,j] = max_k(A[i,k] + B[k,j])
-
-    This runs entirely on the tensor's device without any CPU copies.
-
-    Args:
-        a: Input tensor of shape (M, K)
-        b: Input tensor of shape (K, N)
-
-    Returns:
-        Tuple of (C, argmax) where C has shape (M, N) and argmax has shape (M, N)
+    This is used as fallback when DLPack is not available. Transfers data
+    to CPU, uses Rust SIMD-optimized backend, then transfers back to device.
     """
-    # A: (M, K) -> (M, K, 1)
-    # B: (K, N) -> (1, K, N)
-    # Sum: (M, K, N)
-    expanded = a.unsqueeze(2) + b.unsqueeze(0)
-    c, argmax = expanded.max(dim=1)
+    m, k = a.shape
+    n = b.shape[1]
+    device = a.device
+    dtype = a.dtype
+
+    a_np = a.detach().cpu().numpy().astype(np.float32)
+    b_np = b.detach().cpu().numpy().astype(np.float32)
+
+    if not a_np.flags["C_CONTIGUOUS"]:
+        a_np = np.ascontiguousarray(a_np)
+    if not b_np.flags["C_CONTIGUOUS"]:
+        b_np = np.ascontiguousarray(b_np)
+
+    c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
+
+    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
+    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
+
     return c, argmax
 
 
-def _tropical_minplus_pytorch(
+def _rust_cpu_minplus_with_argmax(
     a: torch.Tensor, b: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Pure PyTorch implementation of tropical min-plus matmul with argmin.
+    """Use optimized Rust CPU backend for tropical min-plus matmul."""
+    m, k = a.shape
+    n = b.shape[1]
+    device = a.device
+    dtype = a.dtype
 
-    C[i,j] = min_k(A[i,k] + B[k,j])
+    a_np = a.detach().cpu().numpy().astype(np.float32)
+    b_np = b.detach().cpu().numpy().astype(np.float32)
 
-    Args:
-        a: Input tensor of shape (M, K)
-        b: Input tensor of shape (K, N)
+    if not a_np.flags["C_CONTIGUOUS"]:
+        a_np = np.ascontiguousarray(a_np)
+    if not b_np.flags["C_CONTIGUOUS"]:
+        b_np = np.ascontiguousarray(b_np)
 
-    Returns:
-        Tuple of (C, argmin) where C has shape (M, N) and argmin has shape (M, N)
-    """
-    expanded = a.unsqueeze(2) + b.unsqueeze(0)
-    c, argmin = expanded.min(dim=1)
-    return c, argmin
+    c_flat, argmax_flat = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
+
+    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
+    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
+
+    return c, argmax
 
 
-def _tropical_maxmul_pytorch(
+def _rust_cpu_maxmul_with_argmax(
     a: torch.Tensor, b: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Pure PyTorch implementation of tropical max-mul matmul with argmax.
+    """Use optimized Rust CPU backend for tropical max-mul matmul."""
+    m, k = a.shape
+    n = b.shape[1]
+    device = a.device
+    dtype = a.dtype
 
-    C[i,j] = max_k(A[i,k] * B[k,j])
+    a_np = a.detach().cpu().numpy().astype(np.float32)
+    b_np = b.detach().cpu().numpy().astype(np.float32)
 
-    Args:
-        a: Input tensor of shape (M, K)
-        b: Input tensor of shape (K, N)
+    if not a_np.flags["C_CONTIGUOUS"]:
+        a_np = np.ascontiguousarray(a_np)
+    if not b_np.flags["C_CONTIGUOUS"]:
+        b_np = np.ascontiguousarray(b_np)
 
-    Returns:
-        Tuple of (C, argmax) where C has shape (M, N) and argmax has shape (M, N)
-    """
-    expanded = a.unsqueeze(2) * b.unsqueeze(0)
-    c, argmax = expanded.max(dim=1)
+    c_flat, argmax_flat = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
+
+    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
+    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
+
     return c, argmax
 
 
@@ -363,8 +378,8 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
             c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
             argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
         else:
-            # Fallback to pure PyTorch implementation
-            c, argmax = _tropical_maxplus_pytorch(a.detach(), b.detach())
+            # Fallback to optimized Rust CPU backend (still O(M*K + K*N) memory)
+            c, argmax = _rust_cpu_maxplus_with_argmax(a, b)
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -417,8 +432,8 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
             c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
             argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
         else:
-            # Fallback to pure PyTorch implementation
-            c, argmax = _tropical_minplus_pytorch(a.detach(), b.detach())
+            # Fallback to optimized Rust CPU backend
+            c, argmax = _rust_cpu_minplus_with_argmax(a, b)
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -475,8 +490,8 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
             # Save original tensors for multiplicative backward
             ctx.save_for_backward(a.detach(), b.detach(), argmax)
         else:
-            # Fallback to pure PyTorch implementation
-            c, argmax = _tropical_maxmul_pytorch(a.detach(), b.detach())
+            # Fallback to optimized Rust CPU backend
+            c, argmax = _rust_cpu_maxmul_with_argmax(a, b)
             ctx.save_for_backward(a.detach(), b.detach(), argmax)
 
         ctx.k = k
