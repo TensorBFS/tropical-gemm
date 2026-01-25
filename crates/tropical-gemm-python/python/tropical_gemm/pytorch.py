@@ -331,16 +331,20 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
 
 
 # ===========================================================================
-# GPU-Accelerated Autograd Functions (pure PyTorch, zero-copy)
+# GPU-Accelerated Autograd Functions (using Rust CUDA backend via DLPack)
 # ===========================================================================
+
+# Check if DLPack functions are available (CUDA build)
+_DLPACK_AVAILABLE = hasattr(tropical_gemm, "maxplus_matmul_dlpack")
 
 
 class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
     """
     GPU-accelerated MaxPlus tropical matrix multiplication.
 
-    Uses pure PyTorch operations for zero-copy GPU computation.
-    Both forward and backward run entirely on GPU without CPU transfers.
+    Uses the optimized Rust CUDA backend via DLPack for zero-copy GPU tensor exchange.
+    Input tensors stay on GPU; only the forward pass output requires a D2H transfer
+    (Phase 1). The backward pass runs entirely on GPU using PyTorch scatter operations.
     """
 
     @staticmethod
@@ -348,8 +352,19 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        # Pure PyTorch implementation - runs on GPU without copies
-        c, argmax = _tropical_maxplus_pytorch(a.detach(), b.detach())
+        if _DLPACK_AVAILABLE and a.is_cuda:
+            # Use Rust CUDA backend via DLPack (zero-copy for inputs)
+            a_contig = a.detach().contiguous()
+            b_contig = b.detach().contiguous()
+
+            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_contig, b_contig)
+
+            # Reshape results (numpy arrays from Rust)
+            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
+        else:
+            # Fallback to pure PyTorch implementation
+            c, argmax = _tropical_maxplus_pytorch(a.detach(), b.detach())
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -366,20 +381,13 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
         n = ctx.n
 
         # Compute gradients on GPU using scatter operations
-        # grad_a[i, argmax[i,j]] += grad_c[i,j] for all j
-        # grad_b[argmax[i,j], j] += grad_c[i,j] for all i
-
         grad_a = torch.zeros(m, k, device=grad_c.device, dtype=grad_c.dtype)
         grad_b = torch.zeros(k, n, device=grad_c.device, dtype=grad_c.dtype)
 
-        # For grad_a: scatter along k dimension
-        # argmax shape: (m, n), grad_c shape: (m, n)
         grad_a.scatter_add_(1, argmax, grad_c)
 
-        # For grad_b: scatter along k dimension (need to transpose)
-        # We need grad_b[argmax[i,j], j] += grad_c[i,j]
-        argmax_t = argmax.t()  # (n, m)
-        grad_c_t = grad_c.t()  # (n, m)
+        argmax_t = argmax.t()
+        grad_c_t = grad_c.t()
         grad_b_t = torch.zeros(n, k, device=grad_c.device, dtype=grad_c.dtype)
         grad_b_t.scatter_add_(1, argmax_t, grad_c_t)
         grad_b = grad_b_t.t()
@@ -391,7 +399,7 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
     """
     GPU-accelerated MinPlus tropical matrix multiplication.
 
-    Uses pure PyTorch operations for zero-copy GPU computation.
+    Uses the optimized Rust CUDA backend via DLPack for zero-copy GPU tensor exchange.
     """
 
     @staticmethod
@@ -399,10 +407,20 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        # Pure PyTorch implementation - runs on GPU without copies
-        c, argmin = _tropical_minplus_pytorch(a.detach(), b.detach())
+        if _DLPACK_AVAILABLE and a.is_cuda:
+            # Use Rust CUDA backend via DLPack
+            a_contig = a.detach().contiguous()
+            b_contig = b.detach().contiguous()
 
-        ctx.save_for_backward(argmin)
+            c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_contig, b_contig)
+
+            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
+        else:
+            # Fallback to pure PyTorch implementation
+            c, argmax = _tropical_minplus_pytorch(a.detach(), b.detach())
+
+        ctx.save_for_backward(argmax)
         ctx.k = k
         ctx.m = m
         ctx.n = n
@@ -416,7 +434,6 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
         m = ctx.m
         n = ctx.n
 
-        # Same gradient computation as MaxPlus (gradient flows through argmin)
         grad_a = torch.zeros(m, k, device=grad_c.device, dtype=grad_c.dtype)
         grad_b = torch.zeros(k, n, device=grad_c.device, dtype=grad_c.dtype)
 
@@ -437,7 +454,7 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
 
     Forward: C[i,j] = max_k(A[i,k] * B[k,j])
 
-    Uses pure PyTorch operations for zero-copy GPU computation.
+    Uses the optimized Rust CUDA backend via DLPack for zero-copy GPU tensor exchange.
     """
 
     @staticmethod
@@ -445,11 +462,23 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        # Pure PyTorch implementation - runs on GPU without copies
-        c, argmax = _tropical_maxmul_pytorch(a.detach(), b.detach())
+        if _DLPACK_AVAILABLE and a.is_cuda:
+            # Use Rust CUDA backend via DLPack
+            a_contig = a.detach().contiguous()
+            b_contig = b.detach().contiguous()
 
-        # Save inputs and argmax for backward (needed for multiplicative gradient)
-        ctx.save_for_backward(a.detach(), b.detach(), argmax)
+            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_contig, b_contig)
+
+            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
+
+            # Save original tensors for multiplicative backward
+            ctx.save_for_backward(a.detach(), b.detach(), argmax)
+        else:
+            # Fallback to pure PyTorch implementation
+            c, argmax = _tropical_maxmul_pytorch(a.detach(), b.detach())
+            ctx.save_for_backward(a.detach(), b.detach(), argmax)
+
         ctx.k = k
         ctx.m = m
         ctx.n = n
@@ -468,21 +497,17 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
         # grad_b[argmax[i,j], j] += grad_c[i,j] * A[i, argmax[i,j]]
 
         # Get the winning values from B
-        # b_winning[i,j] = B[argmax[i,j], j]
         b_winning = b[argmax, torch.arange(n, device=b.device).unsqueeze(0).expand(m, -1)]
 
         # Get the winning values from A
-        # a_winning[i,j] = A[i, argmax[i,j]]
         a_winning = torch.gather(a, 1, argmax)
 
         # Compute gradients
         grad_a = torch.zeros(m, k_dim, device=grad_c.device, dtype=grad_c.dtype)
         grad_b = torch.zeros(k_dim, n, device=grad_c.device, dtype=grad_c.dtype)
 
-        # grad_a[i, argmax[i,j]] += grad_c[i,j] * b_winning[i,j]
         grad_a.scatter_add_(1, argmax, grad_c * b_winning)
 
-        # grad_b[argmax[i,j], j] += grad_c[i,j] * a_winning[i,j]
         argmax_t = argmax.t()
         grad_c_a_t = (grad_c * a_winning).t()
         grad_b_t = torch.zeros(n, k_dim, device=grad_c.device, dtype=grad_c.dtype)
@@ -608,4 +633,6 @@ __all__ = [
     "tropical_maxmul_matmul_gpu",
     # GPU availability flag
     "GPU_AVAILABLE",
+    # DLPack availability flag
+    "_DLPACK_AVAILABLE",
 ]
