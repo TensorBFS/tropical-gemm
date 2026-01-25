@@ -2,6 +2,7 @@
 
 use crate::context::CudaContext;
 use crate::error::{CudaError, Result};
+use cudarc::driver::sys::CUdeviceptr;
 use cudarc::driver::{CudaSlice, DeviceRepr, ValidAsZeroBits};
 use std::marker::PhantomData;
 
@@ -187,5 +188,107 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     /// Copy the argmax indices back to host in column-major order.
     pub fn argmax_to_host_col_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
         self.argmax.to_host_col_major(ctx)
+    }
+}
+
+// ============================================================================
+// External GPU Memory (DLPack integration)
+// ============================================================================
+
+/// A non-owning reference to GPU memory from an external source (e.g., PyTorch via DLPack).
+///
+/// This struct holds a raw device pointer without ownership. It does NOT free
+/// the memory on drop - the original owner (e.g., PyTorch) remains responsible
+/// for memory management.
+///
+/// # Safety
+///
+/// The caller must ensure that the underlying memory remains valid for the
+/// lifetime of this struct. This is typically guaranteed by holding a reference
+/// to the original tensor (e.g., via DLManagedTensor).
+pub struct ExternalGpuMemory<T> {
+    device_ptr: CUdeviceptr,
+    len: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> ExternalGpuMemory<T> {
+    /// Create a new ExternalGpuMemory from a raw device pointer.
+    ///
+    /// # Safety
+    ///
+    /// - `device_ptr` must point to valid GPU memory containing at least `len` elements of type T
+    /// - The memory must remain valid for the lifetime of this struct
+    /// - The memory must be properly aligned for type T
+    pub unsafe fn from_raw(device_ptr: CUdeviceptr, len: usize) -> Self {
+        Self {
+            device_ptr,
+            len,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Get the raw device pointer.
+    pub fn device_ptr(&self) -> CUdeviceptr {
+        self.device_ptr
+    }
+
+    /// Get the number of elements.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Check if the memory is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// A 2D matrix view into external GPU memory.
+///
+/// This represents a matrix stored in row-major order (as PyTorch tensors are).
+/// The actual data is not copied - we just store metadata and a pointer.
+pub struct ExternalGpuMatrix<T> {
+    memory: ExternalGpuMemory<T>,
+    rows: usize,
+    cols: usize,
+}
+
+impl<T> ExternalGpuMatrix<T> {
+    /// Create a new ExternalGpuMatrix from a raw device pointer.
+    ///
+    /// # Safety
+    ///
+    /// - `device_ptr` must point to valid GPU memory containing at least `rows * cols` elements
+    /// - The memory must be in row-major (C-contiguous) order
+    /// - The memory must remain valid for the lifetime of this struct
+    pub unsafe fn from_raw(device_ptr: CUdeviceptr, rows: usize, cols: usize) -> Self {
+        let memory = ExternalGpuMemory::from_raw(device_ptr, rows * cols);
+        Self { memory, rows, cols }
+    }
+
+    /// Get the raw device pointer.
+    pub fn device_ptr(&self) -> CUdeviceptr {
+        self.memory.device_ptr()
+    }
+
+    /// Get the number of rows.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Get the number of columns.
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// Get the total number of elements.
+    pub fn len(&self) -> usize {
+        self.memory.len()
+    }
+
+    /// Check if the matrix is empty.
+    pub fn is_empty(&self) -> bool {
+        self.memory.is_empty()
     }
 }

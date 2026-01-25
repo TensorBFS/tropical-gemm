@@ -2,7 +2,7 @@
 
 use crate::context::CudaContext;
 use crate::error::Result;
-use crate::memory::{GpuMatrix, GpuMatrixWithArgmax};
+use crate::memory::{ExternalGpuMatrix, GpuMatrix, GpuMatrixWithArgmax};
 use cudarc::driver::{DeviceRepr, LaunchAsync, LaunchConfig, ValidAsZeroBits};
 use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
 
@@ -355,4 +355,117 @@ impl_cuda_kernel_with_argmax_i64! {
     TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn_with_argmax",
     TropicalMinPlus<i64> => "tropical_minplus_i64_nn_with_argmax",
     TropicalMaxMul<i64> => "tropical_maxmul_i64_nn_with_argmax",
+}
+
+// ============================================================================
+// External Pointer Kernel Launch (for DLPack zero-copy)
+// ============================================================================
+
+/// Launch a tropical GEMM kernel using raw external pointers (e.g., from DLPack).
+///
+/// This function enables zero-copy kernel execution with PyTorch GPU tensors.
+///
+/// # Row-Major to Column-Major Trick
+///
+/// PyTorch uses row-major (C-order), while our CUDA kernels use column-major.
+/// Instead of copying/transposing, we use the BLAS trick:
+///
+/// For `C = A ⊗ B` where `C[i,j] = max_k(A[i,k] + B[k,j])`:
+/// - Row-major A (M×K) viewed as column-major = A^T (K×M)
+/// - Row-major B (K×N) viewed as column-major = B^T (N×K)
+/// - Compute `C^T = B^T ⊗ A^T` using existing column-major kernels
+/// - Result C^T column-major (N×M) = C row-major (M×N)
+///
+/// **Implementation: We swap A↔B and M↔N in the kernel call, no kernel changes needed.**
+///
+/// # Safety
+///
+/// - The input pointers must point to valid GPU memory with the specified dimensions
+/// - The memory must remain valid for the duration of the kernel execution
+/// - The pointers must be properly aligned for the element type
+pub unsafe fn launch_gemm_external_with_argmax_f32(
+    ctx: &CudaContext,
+    kernel_name: &'static str,
+    a: &ExternalGpuMatrix<f32>,
+    b: &ExternalGpuMatrix<f32>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<GpuMatrixWithArgmax<f32>> {
+    // Apply row-major → column-major trick: swap inputs and swap M↔N
+    // Original: C[i,j] = A[i,k] ⊗ B[k,j]  with A(M,K), B(K,N), C(M,N)
+    // Swapped:  C^T = B^T ⊗ A^T  which gives us C in row-major
+
+    // Allocate output: kernel computes C^T (N×M col-major) = C (M×N row-major)
+    // But we allocate as (M, N) in col-major and the kernel fills it correctly
+    // when we swap the order and dimensions
+    let mut c = GpuMatrixWithArgmax::<f32>::alloc(ctx, m, n)?;
+
+    let grid = CudaContext::grid_dims_f32(n, m);  // Swapped: (n, m) instead of (m, n)
+    let block = CudaContext::block_dims_f32();
+
+    let kernel = ctx.get_kernel(kernel_name)?;
+    let cfg = LaunchConfig {
+        grid_dim: grid,
+        block_dim: block,
+        shared_mem_bytes: 0,
+    };
+
+    // Swap order: pass B first, then A, and swap M↔N
+    // Kernel signature: (A_ptr, B_ptr, C_ptr, argmax_ptr, M, N, K)
+    // We pass:          (B_ptr, A_ptr, C_ptr, argmax_ptr, N, M, K)
+    kernel.launch(
+        cfg,
+        (
+            b.device_ptr(),  // B becomes "A" in kernel
+            a.device_ptr(),  // A becomes "B" in kernel
+            c.matrix.as_slice_mut(),
+            c.argmax.as_slice_mut(),
+            n as i32,  // Swapped: N becomes "M"
+            m as i32,  // Swapped: M becomes "N"
+            k as i32,
+        ),
+    )?;
+
+    ctx.device().synchronize()?;
+    Ok(c)
+}
+
+/// Launch a tropical GEMM kernel (without argmax) using raw external pointers.
+pub unsafe fn launch_gemm_external_f32(
+    ctx: &CudaContext,
+    kernel_name: &'static str,
+    a: &ExternalGpuMatrix<f32>,
+    b: &ExternalGpuMatrix<f32>,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<GpuMatrix<f32>> {
+    let mut c = GpuMatrix::<f32>::alloc(ctx, m, n)?;
+
+    let grid = CudaContext::grid_dims_f32(n, m);  // Swapped
+    let block = CudaContext::block_dims_f32();
+
+    let kernel = ctx.get_kernel(kernel_name)?;
+    let cfg = LaunchConfig {
+        grid_dim: grid,
+        block_dim: block,
+        shared_mem_bytes: 0,
+    };
+
+    // Swap order and dimensions
+    kernel.launch(
+        cfg,
+        (
+            b.device_ptr(),
+            a.device_ptr(),
+            c.as_slice_mut(),
+            n as i32,
+            m as i32,
+            k as i32,
+        ),
+    )?;
+
+    ctx.device().synchronize()?;
+    Ok(c)
 }

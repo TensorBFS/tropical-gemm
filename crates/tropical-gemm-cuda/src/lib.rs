@@ -87,8 +87,11 @@ pub fn get_global_context() -> Result<&'static CudaContext> {
 pub use context::CudaContext;
 pub use error::{CudaError, Result};
 pub use gpu_mat::{GpuMat, GpuMatWithArgmax};
-pub use kernels::{CudaKernel, CudaKernelWithArgmax};
-pub use memory::{ArgmaxIndex, GpuMatrix, GpuMatrixWithArgmax};
+pub use kernels::{
+    launch_gemm_external_f32, launch_gemm_external_with_argmax_f32, CudaKernel,
+    CudaKernelWithArgmax,
+};
+pub use memory::{ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, GpuMatrix, GpuMatrixWithArgmax};
 
 use cudarc::driver::{DeviceRepr, ValidAsZeroBits};
 

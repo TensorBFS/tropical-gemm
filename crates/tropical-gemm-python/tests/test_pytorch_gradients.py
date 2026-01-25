@@ -577,5 +577,171 @@ def test_main_module_exports():
     assert hasattr(tropical_gemm, "maxplus_matmul_with_argmax")
     assert hasattr(tropical_gemm, "backward_a")
     assert hasattr(tropical_gemm, "backward_b")
+
+
+# ============================================================================
+# DLPack integration tests
+# ============================================================================
+
+
+def test_dlpack_availability_flag():
+    """Test that _DLPACK_AVAILABLE flag is correctly exported."""
+    from tropical_gemm.pytorch import _DLPACK_AVAILABLE
+
+    # Flag should be a boolean
+    assert isinstance(_DLPACK_AVAILABLE, bool)
+
+    # If cuda_available() returns True, DLPack should be available
+    if tropical_gemm.cuda_available():
+        assert _DLPACK_AVAILABLE, "DLPack should be available when CUDA is enabled"
+
+
+def test_dlpack_functions_exist_when_cuda_available():
+    """Test that DLPack functions are exported when CUDA is available."""
+    if not tropical_gemm.cuda_available():
+        pytest.skip("CUDA not available")
+
+    assert hasattr(tropical_gemm, "maxplus_matmul_dlpack")
+    assert hasattr(tropical_gemm, "minplus_matmul_dlpack")
+    assert hasattr(tropical_gemm, "maxmul_matmul_dlpack")
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_maxplus_cpu_tensor():
+    """Test DLPack maxplus with CPU tensors (uses CPU backend)."""
+    torch.manual_seed(42)
+
+    a = torch.randn(10, 20, dtype=torch.float32)
+    b = torch.randn(20, 15, dtype=torch.float32)
+
+    # Call DLPack function with CPU tensors - should fall back to CPU backend
+    c_flat, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
+
+    # Convert to torch tensors
+    c = torch.from_numpy(np.array(c_flat).reshape(10, 15))
+
+    # Verify against reference implementation
+    a_np = a.numpy()
+    b_np = b.numpy()
+    c_ref_flat, argmax_ref_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(10, 15))
+
+    assert torch.allclose(c, c_ref), "DLPack CPU path should match reference"
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_minplus_cpu_tensor():
+    """Test DLPack minplus with CPU tensors."""
+    torch.manual_seed(42)
+
+    a = torch.randn(10, 20, dtype=torch.float32)
+    b = torch.randn(20, 15, dtype=torch.float32)
+
+    c_flat, _ = tropical_gemm.minplus_matmul_dlpack(a, b)
+    c = torch.from_numpy(np.array(c_flat).reshape(10, 15))
+
+    # Verify against reference
+    a_np = a.numpy()
+    b_np = b.numpy()
+    c_ref_flat, _ = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(10, 15))
+
+    assert torch.allclose(c, c_ref), "DLPack minplus CPU path should match reference"
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_maxmul_cpu_tensor():
+    """Test DLPack maxmul with CPU tensors."""
+    torch.manual_seed(42)
+
+    a = torch.randn(10, 20, dtype=torch.float32).abs() + 0.1  # Positive values for maxmul
+    b = torch.randn(20, 15, dtype=torch.float32).abs() + 0.1
+
+    c_flat, _ = tropical_gemm.maxmul_matmul_dlpack(a, b)
+    c = torch.from_numpy(np.array(c_flat).reshape(10, 15))
+
+    # Verify against reference
+    a_np = a.numpy()
+    b_np = b.numpy()
+    c_ref_flat, _ = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(10, 15))
+
+    assert torch.allclose(c, c_ref), "DLPack maxmul CPU path should match reference"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_dlpack_gpu_tensor_zero_copy():
+    """Test that DLPack with GPU tensors uses the Rust CUDA backend."""
+    torch.manual_seed(42)
+
+    a = torch.randn(100, 50, dtype=torch.float32, device='cuda')
+    b = torch.randn(50, 80, dtype=torch.float32, device='cuda')
+
+    # This should use the zero-copy DLPack path with Rust CUDA backend
+    c_flat, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
+    c = torch.from_numpy(np.array(c_flat).reshape(100, 80))
+
+    # Verify result matches CPU reference
+    a_cpu = a.cpu()
+    b_cpu = b.cpu()
+    c_ref_flat, _ = tropical_gemm.maxplus_matmul_with_argmax(a_cpu.numpy(), b_cpu.numpy())
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(100, 80))
+
+    assert torch.allclose(c, c_ref, atol=1e-5), "GPU DLPack path should match CPU reference"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_autograd_uses_dlpack():
+    """Test that GPU autograd functions use DLPack when available."""
+    from tropical_gemm.pytorch import _DLPACK_AVAILABLE
+
+    if not _DLPACK_AVAILABLE:
+        pytest.skip("DLPack not available")
+
+    torch.manual_seed(42)
+
+    a = torch.randn(50, 30, dtype=torch.float32, device='cuda', requires_grad=True)
+    b = torch.randn(30, 40, dtype=torch.float32, device='cuda', requires_grad=True)
+
+    # Forward pass should use DLPack + Rust CUDA backend
+    c = tropical_maxplus_matmul_gpu(a, b)
+
+    # Result should be on the same device
+    assert c.device == a.device, "Output should be on same device as input"
+
+    # Backward should work
+    loss = c.sum()
+    loss.backward()
+
+    assert a.grad is not None, "grad_a should be computed"
+    assert b.grad is not None, "grad_b should be computed"
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_contiguity_check():
+    """Test that DLPack functions require contiguous tensors."""
+    a = torch.randn(10, 20, dtype=torch.float32)
+    b = torch.randn(20, 15, dtype=torch.float32)
+
+    # Create non-contiguous tensor (stride != 1)
+    a_noncontig = a[:, ::2]
+
+    # Should raise an error for non-contiguous tensors
+    with pytest.raises(Exception):  # Could be ValueError or RuntimeError
+        tropical_gemm.maxplus_matmul_dlpack(a_noncontig, b[:20//2, :])
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_dtype_check():
+    """Test that DLPack functions only accept f32 tensors."""
+    a = torch.randn(10, 20, dtype=torch.float64)  # f64, not f32
+    b = torch.randn(20, 15, dtype=torch.float64)
+
+    with pytest.raises(Exception):  # Should raise error for non-f32
+        tropical_gemm.maxplus_matmul_dlpack(a, b)
+
+
+def test_tropical_gemm_has_metadata():
+    """Basic sanity checks on tropical_gemm module attributes."""
     assert hasattr(tropical_gemm, "cuda_available")
     assert hasattr(tropical_gemm, "__version__")
