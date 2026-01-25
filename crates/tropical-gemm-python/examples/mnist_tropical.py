@@ -81,22 +81,22 @@ class TropicalLinear(nn.Module):
 
 class TropicalAffine(nn.Module):
     """
-    Tropical MaxPlus affine layer: y = W ⊗ log(ReLU(x)) ⊕ b (in tropical notation).
+    Tropical MaxPlus affine layer: y = W ⊗ x ⊕ b (in tropical notation).
 
-    Computes: y[i] = max(max_k(log(relu(x[k]) + eps) + W[k,i]), b[i])
+    Computes: y[i] = max(max_k(LayerNorm(x)[k] + W[k,i]), b[i])
 
-    The input is first transformed to log-space via ReLU + log, because:
-    - Tropical max-plus algebra naturally operates in log-space
-    - log transforms multiplication to addition
-    - max selects the dominant path (like Viterbi algorithm)
+    LayerNorm is applied before the tropical matmul to stabilize training,
+    as max operations create sparse gradients (only argmax contributes).
+
+    The max operation provides winner-take-all non-linearity, while
+    the bias provides a learned threshold for each output.
 
     Args:
         features: Number of features (input = output dimension)
         use_gpu: If True and GPU available, use CUDA acceleration
-        eps: Small constant to avoid log(0)
     """
 
-    def __init__(self, features: int, use_gpu: bool = True, eps: float = 1e-6):
+    def __init__(self, features: int, use_gpu: bool = True):
         super().__init__()
         self.features = features
         self.use_gpu = use_gpu and GPU_AVAILABLE
@@ -317,12 +317,12 @@ def main():
     print("\n--- Tropical Weight Analysis ---")
     print(f"TropicalAffine layer 1 (256x256):")
     print(f"  Weight change (L2 norm): {(final_w1 - init_w1).norm().item():.4f}")
-    print(f"  Initial diag mean: {init_w1.diag().mean().item():.4f}, off-diag mean: {(init_w1.sum() - init_w1.diag().sum()).item() / (256*256-256):.4f}")
-    print(f"  Final diag mean:   {final_w1.diag().mean().item():.4f}, off-diag mean: {(final_w1.sum() - final_w1.diag().sum()).item() / (256*256-256):.4f}")
+    print(f"  Initial diag mean: {init_w1.diag().mean().item():.4f}, off-diag mean: {((init_w1.sum() - init_w1.diag().sum()) / (256*256-256)).item():.4f}")
+    print(f"  Final diag mean:   {final_w1.diag().mean().item():.4f}, off-diag mean: {((final_w1.sum() - final_w1.diag().sum()) / (256*256-256)).item():.4f}")
     print(f"TropicalAffine layer 2 (128x128):")
     print(f"  Weight change (L2 norm): {(final_w2 - init_w2).norm().item():.4f}")
-    print(f"  Initial diag mean: {init_w2.diag().mean().item():.4f}, off-diag mean: {(init_w2.sum() - init_w2.diag().sum()).item() / (128*128-128):.4f}")
-    print(f"  Final diag mean:   {final_w2.diag().mean().item():.4f}, off-diag mean: {(final_w2.sum() - final_w2.diag().sum()).item() / (128*128-128):.4f}")
+    print(f"  Initial diag mean: {init_w2.diag().mean().item():.4f}, off-diag mean: {((init_w2.sum() - init_w2.diag().sum()) / (128*128-128)).item():.4f}")
+    print(f"  Final diag mean:   {final_w2.diag().mean().item():.4f}, off-diag mean: {((final_w2.sum() - final_w2.diag().sum()) / (128*128-128)).item():.4f}")
 
     # Train Standard MLP for comparison
     standard_model = StandardMLP()
