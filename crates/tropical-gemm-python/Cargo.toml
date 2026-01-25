@@ -19,5 +19,5 @@ cuda = ["tropical-gemm-cuda"]
 [dependencies]
 tropical-gemm.workspace = true
 tropical-gemm-cuda = { workspace = true, optional = true }
-pyo3 = { version = "0.23", features = ["extension-module"] }
-numpy = "0.23"
+pyo3 = { version = "0.25", features = ["extension-module"] }
+numpy = "0.25"

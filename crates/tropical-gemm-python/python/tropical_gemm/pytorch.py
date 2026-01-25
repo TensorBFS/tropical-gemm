@@ -37,6 +37,81 @@ import tropical_gemm
 GPU_AVAILABLE = tropical_gemm.cuda_available()
 
 
+# ===========================================================================
+# Pure PyTorch implementations (zero-copy for GPU tensors)
+# ===========================================================================
+
+
+def _tropical_maxplus_pytorch(
+    a: torch.Tensor, b: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Pure PyTorch implementation of tropical max-plus matmul with argmax.
+
+    C[i,j] = max_k(A[i,k] + B[k,j])
+
+    This runs entirely on the tensor's device without any CPU copies.
+
+    Args:
+        a: Input tensor of shape (M, K)
+        b: Input tensor of shape (K, N)
+
+    Returns:
+        Tuple of (C, argmax) where C has shape (M, N) and argmax has shape (M, N)
+    """
+    # A: (M, K) -> (M, K, 1)
+    # B: (K, N) -> (1, K, N)
+    # Sum: (M, K, N)
+    expanded = a.unsqueeze(2) + b.unsqueeze(0)
+    c, argmax = expanded.max(dim=1)
+    return c, argmax
+
+
+def _tropical_minplus_pytorch(
+    a: torch.Tensor, b: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Pure PyTorch implementation of tropical min-plus matmul with argmin.
+
+    C[i,j] = min_k(A[i,k] + B[k,j])
+
+    Args:
+        a: Input tensor of shape (M, K)
+        b: Input tensor of shape (K, N)
+
+    Returns:
+        Tuple of (C, argmin) where C has shape (M, N) and argmin has shape (M, N)
+    """
+    expanded = a.unsqueeze(2) + b.unsqueeze(0)
+    c, argmin = expanded.min(dim=1)
+    return c, argmin
+
+
+def _tropical_maxmul_pytorch(
+    a: torch.Tensor, b: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Pure PyTorch implementation of tropical max-mul matmul with argmax.
+
+    C[i,j] = max_k(A[i,k] * B[k,j])
+
+    Args:
+        a: Input tensor of shape (M, K)
+        b: Input tensor of shape (K, N)
+
+    Returns:
+        Tuple of (C, argmax) where C has shape (M, N) and argmax has shape (M, N)
+    """
+    expanded = a.unsqueeze(2) * b.unsqueeze(0)
+    c, argmax = expanded.max(dim=1)
+    return c, argmax
+
+
+# ===========================================================================
+# CPU Autograd Functions (using optimized Rust SIMD backend)
+# ===========================================================================
+
+
 class TropicalMaxPlusMatmul(torch.autograd.Function):
     """
     Custom autograd function for MaxPlus tropical matrix multiplication.
@@ -256,7 +331,7 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
 
 
 # ===========================================================================
-# GPU-Accelerated Autograd Functions (requires CUDA feature)
+# GPU-Accelerated Autograd Functions (pure PyTorch, zero-copy)
 # ===========================================================================
 
 
@@ -264,43 +339,24 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
     """
     GPU-accelerated MaxPlus tropical matrix multiplication.
 
-    Uses CUDA kernels for the forward pass. The backward pass uses CPU
-    since the argmax indices are already computed.
-
-    Note: Creates a new CUDA context for each call. For repeated operations,
-    consider batching computations.
+    Uses pure PyTorch operations for zero-copy GPU computation.
+    Both forward and backward run entirely on GPU without CPU transfers.
     """
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if not GPU_AVAILABLE:
-            raise RuntimeError(
-                "CUDA GPU support not available. Rebuild with --features cuda"
-            )
-
         m, k = a.shape
         n = b.shape[1]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Pure PyTorch implementation - runs on GPU without copies
+        c, argmax = _tropical_maxplus_pytorch(a.detach(), b.detach())
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
-
-        # Use GPU implementation
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_gpu_with_argmax(a_np, b_np)
-
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
-
-        ctx.save_for_backward(torch.from_numpy(argmax_np))
+        ctx.save_for_backward(argmax)
         ctx.k = k
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return c
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
@@ -309,20 +365,24 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
         m = ctx.m
         n = ctx.n
 
-        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
-        argmax_np = argmax.numpy().astype(np.int32)
+        # Compute gradients on GPU using scatter operations
+        # grad_a[i, argmax[i,j]] += grad_c[i,j] for all j
+        # grad_b[argmax[i,j], j] += grad_c[i,j] for all i
 
-        if not grad_c_np.flags["C_CONTIGUOUS"]:
-            grad_c_np = np.ascontiguousarray(grad_c_np)
-        if not argmax_np.flags["C_CONTIGUOUS"]:
-            argmax_np = np.ascontiguousarray(argmax_np)
+        grad_a = torch.zeros(m, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b = torch.zeros(k, n, device=grad_c.device, dtype=grad_c.dtype)
 
-        # CPU backward (GPU backward not yet exposed to Python)
-        grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
-        grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
+        # For grad_a: scatter along k dimension
+        # argmax shape: (m, n), grad_c shape: (m, n)
+        grad_a.scatter_add_(1, argmax, grad_c)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        # For grad_b: scatter along k dimension (need to transpose)
+        # We need grad_b[argmax[i,j], j] += grad_c[i,j]
+        argmax_t = argmax.t()  # (n, m)
+        grad_c_t = grad_c.t()  # (n, m)
+        grad_b_t = torch.zeros(n, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(1, argmax_t, grad_c_t)
+        grad_b = grad_b_t.t()
 
         return grad_a, grad_b
 
@@ -330,58 +390,43 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
 class TropicalMinPlusMatmulGPU(torch.autograd.Function):
     """
     GPU-accelerated MinPlus tropical matrix multiplication.
+
+    Uses pure PyTorch operations for zero-copy GPU computation.
     """
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if not GPU_AVAILABLE:
-            raise RuntimeError(
-                "CUDA GPU support not available. Rebuild with --features cuda"
-            )
-
         m, k = a.shape
         n = b.shape[1]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Pure PyTorch implementation - runs on GPU without copies
+        c, argmin = _tropical_minplus_pytorch(a.detach(), b.detach())
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
-
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_gpu_with_argmax(a_np, b_np)
-
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
-
-        ctx.save_for_backward(torch.from_numpy(argmax_np))
+        ctx.save_for_backward(argmin)
         ctx.k = k
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return c
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
-        (argmax,) = ctx.saved_tensors
+        (argmin,) = ctx.saved_tensors
         k = ctx.k
         m = ctx.m
         n = ctx.n
 
-        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
-        argmax_np = argmax.numpy().astype(np.int32)
+        # Same gradient computation as MaxPlus (gradient flows through argmin)
+        grad_a = torch.zeros(m, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b = torch.zeros(k, n, device=grad_c.device, dtype=grad_c.dtype)
 
-        if not grad_c_np.flags["C_CONTIGUOUS"]:
-            grad_c_np = np.ascontiguousarray(grad_c_np)
-        if not argmax_np.flags["C_CONTIGUOUS"]:
-            argmax_np = np.ascontiguousarray(argmax_np)
+        grad_a.scatter_add_(1, argmin, grad_c)
 
-        grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
-        grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
-
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        argmin_t = argmin.t()
+        grad_c_t = grad_c.t()
+        grad_b_t = torch.zeros(n, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(1, argmin_t, grad_c_t)
+        grad_b = grad_b_t.t()
 
         return grad_a, grad_b
 
@@ -392,45 +437,24 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
 
     Forward: C[i,j] = max_k(A[i,k] * B[k,j])
 
-    Uses CUDA kernels for the forward pass. The backward pass uses CPU
-    with the multiplicative gradient rule.
+    Uses pure PyTorch operations for zero-copy GPU computation.
     """
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if not GPU_AVAILABLE:
-            raise RuntimeError(
-                "CUDA GPU support not available. Rebuild with --features cuda"
-            )
-
         m, k = a.shape
         n = b.shape[1]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
-
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
-
-        # Use GPU implementation
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_gpu_with_argmax(a_np, b_np)
-
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        # Pure PyTorch implementation - runs on GPU without copies
+        c, argmax = _tropical_maxmul_pytorch(a.detach(), b.detach())
 
         # Save inputs and argmax for backward (needed for multiplicative gradient)
-        ctx.save_for_backward(
-            torch.from_numpy(a_np),
-            torch.from_numpy(b_np),
-            torch.from_numpy(argmax_np),
-        )
+        ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.k = k
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return c
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
@@ -439,26 +463,31 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
         m = ctx.m
         n = ctx.n
 
-        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
-        argmax_np = argmax.numpy().astype(np.int32)
-        a_np = a.numpy().astype(np.float32)
-        b_np = b.numpy().astype(np.float32)
+        # For maxmul: C[i,j] = A[i, argmax[i,j]] * B[argmax[i,j], j]
+        # grad_a[i, argmax[i,j]] += grad_c[i,j] * B[argmax[i,j], j]
+        # grad_b[argmax[i,j], j] += grad_c[i,j] * A[i, argmax[i,j]]
 
-        if not grad_c_np.flags["C_CONTIGUOUS"]:
-            grad_c_np = np.ascontiguousarray(grad_c_np)
-        if not argmax_np.flags["C_CONTIGUOUS"]:
-            argmax_np = np.ascontiguousarray(argmax_np)
+        # Get the winning values from B
+        # b_winning[i,j] = B[argmax[i,j], j]
+        b_winning = b[argmax, torch.arange(n, device=b.device).unsqueeze(0).expand(m, -1)]
 
-        # Use multiplicative backward rule
-        grad_a_flat = tropical_gemm.maxmul_backward_a(grad_c_np, argmax_np, b_np)
-        grad_b_flat = tropical_gemm.maxmul_backward_b(grad_c_np, argmax_np, a_np)
+        # Get the winning values from A
+        # a_winning[i,j] = A[i, argmax[i,j]]
+        a_winning = torch.gather(a, 1, argmax)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k_dim)).to(
-            grad_c.device
-        )
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k_dim, n)).to(
-            grad_c.device
-        )
+        # Compute gradients
+        grad_a = torch.zeros(m, k_dim, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b = torch.zeros(k_dim, n, device=grad_c.device, dtype=grad_c.dtype)
+
+        # grad_a[i, argmax[i,j]] += grad_c[i,j] * b_winning[i,j]
+        grad_a.scatter_add_(1, argmax, grad_c * b_winning)
+
+        # grad_b[argmax[i,j], j] += grad_c[i,j] * a_winning[i,j]
+        argmax_t = argmax.t()
+        grad_c_a_t = (grad_c * a_winning).t()
+        grad_b_t = torch.zeros(n, k_dim, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(1, argmax_t, grad_c_a_t)
+        grad_b = grad_b_t.t()
 
         return grad_a, grad_b
 
