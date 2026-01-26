@@ -37,7 +37,9 @@ from torchvision import datasets, transforms
 
 from tropical_gemm.pytorch import (
     tropical_maxplus_matmul,
+    tropical_minplus_matmul,
     tropical_maxplus_matmul_gpu,
+    tropical_minplus_matmul_gpu,
     GPU_AVAILABLE,
 )
 
@@ -184,7 +186,7 @@ class StandardMLP(nn.Module):
         return self.fc3(x)
 
 
-def train_epoch(model, train_loader, optimizer, criterion):
+def train_epoch(model, train_loader, optimizer, criterion, device):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -192,6 +194,7 @@ def train_epoch(model, train_loader, optimizer, criterion):
     total = 0
 
     for data, target in train_loader:
+        data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
         loss = criterion(output, target)
@@ -206,7 +209,7 @@ def train_epoch(model, train_loader, optimizer, criterion):
     return total_loss / len(train_loader), 100.0 * correct / total
 
 
-def evaluate(model, test_loader, criterion):
+def evaluate(model, test_loader, criterion, device):
     """Evaluate on test set."""
     model.eval()
     total_loss = 0
@@ -215,6 +218,7 @@ def evaluate(model, test_loader, criterion):
 
     with torch.no_grad():
         for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
             output = model(data)
             total_loss += criterion(output, target).item()
             pred = output.argmax(dim=1)
@@ -224,8 +228,9 @@ def evaluate(model, test_loader, criterion):
     return total_loss / len(test_loader), 100.0 * correct / total
 
 
-def train_model(model, train_loader, test_loader, epochs=10, lr=0.001, name="Model"):
+def train_model(model, train_loader, test_loader, device, epochs=10, lr=0.001, name="Model"):
     """Train a model and return final test accuracy."""
+    model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
@@ -235,8 +240,8 @@ def train_model(model, train_loader, test_loader, epochs=10, lr=0.001, name="Mod
     start_time = time.time()
 
     for epoch in range(1, epochs + 1):
-        train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion)
-        test_loss, test_acc = evaluate(model, test_loader, criterion)
+        train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion, device)
+        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
 
         print(
             f"Epoch {epoch:2d}/{epochs}: "
@@ -260,13 +265,15 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
     args = parser.parse_args()
 
-    use_gpu = args.gpu and GPU_AVAILABLE
+    use_gpu = args.gpu and GPU_AVAILABLE and torch.cuda.is_available()
+    device = torch.device("cuda" if use_gpu else "cpu")
 
     print("=" * 60)
     print("MNIST Classification: Tropical vs ReLU Networks")
     print("=" * 60)
     print(f"\nTropical GPU Available: {GPU_AVAILABLE}")
-    print(f"Using GPU for tropical layers: {use_gpu}")
+    print(f"PyTorch CUDA Available: {torch.cuda.is_available()}")
+    print(f"Using device: {device}")
     if not use_gpu:
         print("(Use --gpu to enable GPU mode)")
 
@@ -297,7 +304,7 @@ def main():
     # Train Hybrid Tropical MLP
     tropical_model = HybridTropicalMLP(use_gpu=use_gpu)
 
-    # Record initial weights
+    # Record initial weights (clone before moving to GPU)
     init_w1 = tropical_model.act1.weight.data.clone()
     init_w2 = tropical_model.act2.weight.data.clone()
 
@@ -305,14 +312,15 @@ def main():
         tropical_model,
         train_loader,
         test_loader,
+        device,
         epochs=epochs,
         lr=lr,
         name="Hybrid Tropical MLP",
     )
 
-    # Check if tropical weights changed
-    final_w1 = tropical_model.act1.weight.data
-    final_w2 = tropical_model.act2.weight.data
+    # Check if tropical weights changed (move back to CPU for comparison)
+    final_w1 = tropical_model.act1.weight.data.cpu()
+    final_w2 = tropical_model.act2.weight.data.cpu()
 
     print("\n--- Tropical Weight Analysis ---")
     print(f"TropicalAffine layer 1 (256x256):")
@@ -330,6 +338,7 @@ def main():
         standard_model,
         train_loader,
         test_loader,
+        device,
         epochs=epochs,
         lr=lr,
         name="Standard MLP (ReLU)",

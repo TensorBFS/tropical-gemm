@@ -1282,11 +1282,11 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
-                // Download results to host (Phase 1: output is numpy array)
-                let c_data = result.matrix_to_host_row_major(ctx).map_err(|e| {
+                // Download results to host (column-major layout)
+                let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
-                let argmax_data = result.argmax_to_host_row_major(ctx).map_err(|e| {
+                let argmax_data = result.argmax_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
 
@@ -1426,10 +1426,10 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
-                let c_data = result.matrix_to_host_row_major(ctx).map_err(|e| {
+                let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
-                let argmax_data = result.argmax_to_host_row_major(ctx).map_err(|e| {
+                let argmax_data = result.argmax_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
 
@@ -1566,10 +1566,10 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
-                let c_data = result.matrix_to_host_row_major(ctx).map_err(|e| {
+                let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
-                let argmax_data = result.argmax_to_host_row_major(ctx).map_err(|e| {
+                let argmax_data = result.argmax_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
 
