@@ -49,8 +49,8 @@ impl<S: TropicalSemiring> Mat<S> {
     pub fn identity(n: usize) -> Self {
         let mut mat = Self::zeros(n, n);
         for i in 0..n {
-            // Column-major: diagonal at j * nrows + i where i == j
-            mat.data[i * n + i] = S::tropical_one();
+            // Column-major: diagonal element (i, i) at index i + i * n
+            mat.data[i + i * n] = S::tropical_one();
         }
         mat
     }

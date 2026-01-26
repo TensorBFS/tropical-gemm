@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 authors = ["Leo"]
@@ -15,8 +15,8 @@ repository = "https://github.com/TensorBFS/tropical-gemm"
 
 [workspace.dependencies]
 # Internal crates
-tropical-gemm-cuda = { version = "0.1.0", path = "crates/tropical-gemm-cuda" }
-tropical-gemm = { version = "0.1.0", path = "crates/tropical-gemm" }
+tropical-gemm-cuda = { version = "0.2.0", path = "crates/tropical-gemm-cuda" }
+tropical-gemm = { version = "0.2.0", path = "crates/tropical-gemm" }
 
 # External dependencies
 num-traits = "0.2"
