@@ -401,7 +401,7 @@ pub unsafe fn launch_gemm_external_with_argmax_f32(
     // when we swap the order and dimensions
     let mut c = GpuMatrixWithArgmax::<f32>::alloc(ctx, m, n)?;
 
-    let grid = CudaContext::grid_dims_f32(n, m);  // Swapped: (n, m) instead of (m, n)
+    let grid = CudaContext::grid_dims_f32(n, m); // Swapped: (n, m) instead of (m, n)
     let block = CudaContext::block_dims_f32();
 
     let kernel = ctx.get_kernel(kernel_name)?;
@@ -417,12 +417,12 @@ pub unsafe fn launch_gemm_external_with_argmax_f32(
     kernel.launch(
         cfg,
         (
-            b.device_ptr(),  // B becomes "A" in kernel
-            a.device_ptr(),  // A becomes "B" in kernel
+            b.device_ptr(), // B becomes "A" in kernel
+            a.device_ptr(), // A becomes "B" in kernel
             c.matrix.as_slice_mut(),
             c.argmax.as_slice_mut(),
-            n as i32,  // Swapped: N becomes "M"
-            m as i32,  // Swapped: M becomes "N"
+            n as i32, // Swapped: N becomes "M"
+            m as i32, // Swapped: M becomes "N"
             k as i32,
         ),
     )?;
@@ -443,7 +443,7 @@ pub unsafe fn launch_gemm_external_f32(
 ) -> Result<GpuMatrix<f32>> {
     let mut c = GpuMatrix::<f32>::alloc(ctx, m, n)?;
 
-    let grid = CudaContext::grid_dims_f32(n, m);  // Swapped
+    let grid = CudaContext::grid_dims_f32(n, m); // Swapped
     let block = CudaContext::block_dims_f32();
 
     let kernel = ctx.get_kernel(kernel_name)?;

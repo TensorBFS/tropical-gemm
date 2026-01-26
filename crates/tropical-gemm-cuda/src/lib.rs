@@ -1,6 +1,7 @@
 //! CUDA backend for tropical matrix multiplication.
 //!
 //! This crate provides GPU-accelerated tropical GEMM operations using CUDA.
+//! All matrices use **column-major** storage (matching tropical-gemm's Mat type).
 //!
 //! # Quick Start
 //!
@@ -9,6 +10,7 @@
 //! use tropical_gemm::types::TropicalMaxPlus;
 //!
 //! // Simple one-shot API (uses cached global context for performance)
+//! // Data should be in column-major order
 //! let a = vec![1.0f32; 1024 * 1024];
 //! let b = vec![1.0f32; 1024 * 1024];
 //! let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 1024, 1024, &b, 1024)?;
@@ -24,13 +26,14 @@
 //!
 //! let ctx = CudaContext::new()?;
 //!
-//! let a_gpu = GpuMatrix::from_host_row_major(&ctx, &a, m, k)?;
-//! let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n)?;
+//! // Data in column-major order (zero-copy upload)
+//! let a_gpu = GpuMatrix::from_host(&ctx, &a, m, k)?;
+//! let b_gpu = GpuMatrix::from_host(&ctx, &b, k, n)?;
 //! let mut c_gpu = GpuMatrix::alloc(&ctx, m, n)?;
 //!
 //! tropical_gemm_gpu::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 //!
-//! let c = c_gpu.to_host_row_major(&ctx)?;
+//! let c = c_gpu.to_host(&ctx)?;  // Column-major result
 //! ```
 //!
 //! # Performance
@@ -91,50 +94,17 @@ pub use kernels::{
     launch_gemm_external_f32, launch_gemm_external_with_argmax_f32, CudaKernel,
     CudaKernelWithArgmax,
 };
-pub use memory::{ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, GpuMatrix, GpuMatrixWithArgmax};
+pub use memory::{
+    ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, GpuMatrix, GpuMatrixWithArgmax,
+};
 
 use cudarc::driver::{DeviceRepr, ValidAsZeroBits};
 
-/// One-shot tropical matrix multiplication on GPU.
-///
-/// This function handles all GPU memory management automatically.
-/// For repeated operations, use `tropical_gemm_gpu` with a persistent context.
-///
-/// # Arguments
-///
-/// * `a` - Matrix A in row-major order, dimensions m×k
-/// * `m` - Number of rows in A
-/// * `k` - Number of columns in A / rows in B
-/// * `b` - Matrix B in row-major order, dimensions k×n
-/// * `n` - Number of columns in B
-///
-/// # Returns
-///
-/// Result matrix C in row-major order, dimensions m×n
-///
-/// # Example
-///
-/// ```ignore
-/// use tropical_gemm_cuda::tropical_matmul_gpu;
-/// use tropical_gemm::types::TropicalMaxPlus;
-///
-/// let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
-/// let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
-///
-/// let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2)?;
-/// // c is 2x2, row-major
-/// ```
-pub fn tropical_matmul_gpu<T>(
-    a: &[T::Scalar],
-    m: usize,
-    k: usize,
-    b: &[T::Scalar],
-    n: usize,
-) -> Result<Vec<T::Scalar>>
-where
-    T: CudaKernel,
-    T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
-{
+// ============================================================================
+// Helper: validate GEMM dimensions
+// ============================================================================
+
+fn validate_gemm_input<T>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Result<()> {
     if a.len() != m * k {
         return Err(CudaError::DimensionMismatch(format!(
             "A: expected {} elements, got {}",
@@ -149,17 +119,61 @@ where
             b.len()
         )));
     }
+    Ok(())
+}
 
-    // Use global cached context to avoid NVRTC recompilation
+/// One-shot tropical matrix multiplication on GPU.
+///
+/// This function handles all GPU memory management automatically.
+/// For repeated operations, use `tropical_gemm_gpu` with a persistent context.
+///
+/// # Arguments
+///
+/// * `a` - Matrix A in **column-major** order, dimensions m×k
+/// * `m` - Number of rows in A
+/// * `k` - Number of columns in A / rows in B
+/// * `b` - Matrix B in **column-major** order, dimensions k×n
+/// * `n` - Number of columns in B
+///
+/// # Returns
+///
+/// Result matrix C in **column-major** order, dimensions m×n
+///
+/// # Example
+///
+/// ```ignore
+/// use tropical_gemm_cuda::tropical_matmul_gpu;
+/// use tropical_gemm::types::TropicalMaxPlus;
+///
+/// // Column-major data
+/// let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0]; // 2x3 col-major
+/// let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0]; // 3x2 col-major
+///
+/// let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2)?;
+/// // c is 2x2, column-major
+/// ```
+pub fn tropical_matmul_gpu<T>(
+    a: &[T::Scalar],
+    m: usize,
+    k: usize,
+    b: &[T::Scalar],
+    n: usize,
+) -> Result<Vec<T::Scalar>>
+where
+    T: CudaKernel,
+    T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
+{
+    validate_gemm_input(a, b, m, k, n)?;
+
     let ctx = get_global_context()?;
 
-    let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-    let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+    let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+    let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
     let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
     T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-    c_gpu.to_host_row_major(ctx)
+    c_gpu.to_host(ctx)
 }
 
 /// Tropical matrix multiplication with persistent context.
@@ -240,16 +254,16 @@ where
 ///
 /// # Arguments
 ///
-/// * `a` - Matrix A in row-major order, dimensions m×k
+/// * `a` - Matrix A in **column-major** order, dimensions m×k
 /// * `m` - Number of rows in A
 /// * `k` - Number of columns in A / rows in B
-/// * `b` - Matrix B in row-major order, dimensions k×n
+/// * `b` - Matrix B in **column-major** order, dimensions k×n
 /// * `n` - Number of columns in B
 ///
 /// # Returns
 ///
 /// A tuple of (C, argmax) where:
-/// - C is the result matrix in row-major order, dimensions m×n
+/// - C is the result matrix in **column-major** order, dimensions m×n
 /// - argmax[i,j] is the k-index such that C[i,j] = A[i,k] ⊗ B[k,j]
 ///
 /// # Example
@@ -258,11 +272,12 @@ where
 /// use tropical_gemm_cuda::tropical_matmul_gpu_with_argmax;
 /// use tropical_gemm::types::TropicalMaxPlus;
 ///
-/// let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
-/// let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
+/// // Column-major data
+/// let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0]; // 2x3 col-major
+/// let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0]; // 3x2 col-major
 ///
 /// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2)?;
-/// // c is 2x2, argmax is 2x2 with k-indices
+/// // c is 2x2 column-major, argmax is 2x2 column-major with k-indices
 /// ```
 pub fn tropical_matmul_gpu_with_argmax<T>(
     a: &[T::Scalar],
@@ -275,32 +290,18 @@ where
     T: CudaKernelWithArgmax,
     T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
 {
-    if a.len() != m * k {
-        return Err(CudaError::DimensionMismatch(format!(
-            "A: expected {} elements, got {}",
-            m * k,
-            a.len()
-        )));
-    }
-    if b.len() != k * n {
-        return Err(CudaError::DimensionMismatch(format!(
-            "B: expected {} elements, got {}",
-            k * n,
-            b.len()
-        )));
-    }
+    validate_gemm_input(a, b, m, k, n)?;
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
 
-    let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-    let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+    let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+    let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
     let mut c_gpu = GpuMatrixWithArgmax::alloc(ctx, m, n)?;
 
     T::launch_gemm_with_argmax(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-    let c = c_gpu.matrix_to_host_row_major(ctx)?;
-    let argmax = c_gpu.argmax_to_host_row_major(ctx)?;
+    let c = c_gpu.matrix_to_host(ctx)?;
+    let argmax = c_gpu.argmax_to_host(ctx)?;
 
     Ok((c, argmax))
 }
@@ -454,18 +455,17 @@ where
         }
     }
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
     let mut results = Vec::with_capacity(batch_size);
 
     for (a, b) in a_batch.iter().zip(b_batch.iter()) {
-        let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+        let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
         let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
         T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        results.push(c_gpu.to_host_row_major(ctx)?);
+        results.push(c_gpu.to_host(ctx)?);
     }
 
     Ok(results)
@@ -523,7 +523,6 @@ where
         return Ok(Vec::new());
     }
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
     let mut c = vec![T::Scalar::default(); batch_size * c_stride];
 
@@ -531,13 +530,13 @@ where
         let a_slice = &a[i * a_stride..(i + 1) * a_stride];
         let b_slice = &b[i * b_stride..(i + 1) * b_stride];
 
-        let a_gpu = GpuMatrix::from_host_row_major(ctx, a_slice, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(ctx, b_slice, k, n)?;
+        let a_gpu = GpuMatrix::from_host(ctx, a_slice, m, k)?;
+        let b_gpu = GpuMatrix::from_host(ctx, b_slice, k, n)?;
         let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
         T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        let c_result = c_gpu.to_host_row_major(ctx)?;
+        let c_result = c_gpu.to_host(ctx)?;
         c[i * c_stride..(i + 1) * c_stride].copy_from_slice(&c_result);
     }
 
@@ -554,17 +553,19 @@ where
 /// a forward pass with `tropical_matmul_gpu_with_argmax`) and computes the gradient
 /// for backpropagation.
 ///
+/// All matrices are in **column-major** order.
+///
 /// # Arguments
 ///
-/// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
-/// * `argmax` - Argmax indices from forward pass (k-index that produced each C[i,j])
+/// * `grad_c` - Gradient of the loss with respect to C (column-major), dimensions m×n
+/// * `argmax` - Argmax indices from forward pass (column-major), k-index that produced each C[i,j]
 /// * `m` - Number of rows in A and C
 /// * `k` - Number of columns in A / rows in B
 /// * `n` - Number of columns in B and C
 ///
 /// # Returns
 ///
-/// Gradient of the loss with respect to A, dimensions m×k
+/// Gradient of the loss with respect to A (column-major), dimensions m×k
 ///
 /// # Example
 ///
@@ -572,10 +573,10 @@ where
 /// use tropical_gemm_cuda::{tropical_matmul_gpu_with_argmax, tropical_backward_a_gpu};
 /// use tropical_gemm::TropicalMaxPlus;
 ///
-/// // Forward pass
+/// // Forward pass (column-major data)
 /// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
 ///
-/// // Backward pass (given grad_c from upstream)
+/// // Backward pass (given grad_c from upstream, column-major)
 /// let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
 /// ```
 pub fn tropical_backward_a_gpu<T>(
@@ -593,11 +594,14 @@ where
 
     let mut grad_a = vec![T::default(); m * k];
 
-    for i in 0..m {
-        for j in 0..n {
-            let idx = argmax[i * n + j] as usize;
-            if idx < k {
-                grad_a[i * k + idx] += grad_c[i * n + j];
+    // Column-major indexing: element (i,j) is at index i + j*m
+    for j in 0..n {
+        for i in 0..m {
+            let col_idx = i + j * m;
+            let kk = argmax[col_idx] as usize;
+            if kk < k {
+                // grad_a[i, kk] += grad_c[i, j]
+                grad_a[i + kk * m] += grad_c[col_idx];
             }
         }
     }
@@ -607,17 +611,19 @@ where
 
 /// Compute gradient with respect to matrix B from GPU argmax indices.
 ///
+/// All matrices are in **column-major** order.
+///
 /// # Arguments
 ///
-/// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
-/// * `argmax` - Argmax indices from forward pass (k-index that produced each C[i,j])
+/// * `grad_c` - Gradient of the loss with respect to C (column-major), dimensions m×n
+/// * `argmax` - Argmax indices from forward pass (column-major), k-index that produced each C[i,j]
 /// * `m` - Number of rows in A and C
 /// * `k` - Number of columns in A / rows in B
 /// * `n` - Number of columns in B and C
 ///
 /// # Returns
 ///
-/// Gradient of the loss with respect to B, dimensions k×n
+/// Gradient of the loss with respect to B (column-major), dimensions k×n
 ///
 /// # Example
 ///
@@ -625,10 +631,10 @@ where
 /// use tropical_gemm_cuda::{tropical_matmul_gpu_with_argmax, tropical_backward_b_gpu};
 /// use tropical_gemm::TropicalMaxPlus;
 ///
-/// // Forward pass
+/// // Forward pass (column-major data)
 /// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
 ///
-/// // Backward pass (given grad_c from upstream)
+/// // Backward pass (given grad_c from upstream, column-major)
 /// let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
 /// ```
 pub fn tropical_backward_b_gpu<T>(
@@ -646,11 +652,14 @@ where
 
     let mut grad_b = vec![T::default(); k * n];
 
-    for i in 0..m {
-        for j in 0..n {
-            let idx = argmax[i * n + j] as usize;
-            if idx < k {
-                grad_b[idx * n + j] += grad_c[i * n + j];
+    // Column-major indexing: element (i,j) is at index i + j*m
+    for j in 0..n {
+        for i in 0..m {
+            let col_idx = i + j * m;
+            let kk = argmax[col_idx] as usize;
+            if kk < k {
+                // grad_b[kk, j] += grad_c[i, j]
+                grad_b[kk + j * k] += grad_c[col_idx];
             }
         }
     }
@@ -864,6 +873,8 @@ pub fn tropical_backward_b_gpu_kernel(
 ///
 /// Uploads grad_c and argmax to GPU, computes gradient, downloads result.
 /// For best performance, use `tropical_backward_a_gpu_kernel` with data already on GPU.
+///
+/// All matrices are in **column-major** order.
 pub fn tropical_backward_a_gpu_cuda(
     ctx: &CudaContext,
     grad_c: &[f32],
@@ -875,31 +886,25 @@ pub fn tropical_backward_a_gpu_cuda(
     assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
     assert_eq!(argmax.len(), m * n, "argmax size mismatch");
 
-    // Upload to GPU (column-major conversion)
-    let grad_c_gpu = GpuMatrix::from_host_row_major(ctx, grad_c, m, n)?;
+    // Upload to GPU (already column-major)
+    let grad_c_gpu = GpuMatrix::from_host(ctx, grad_c, m, n)?;
 
-    // Convert argmax to i32 and upload
-    let argmax_i32: Vec<i32> = argmax.iter().map(|&x| x as i32).collect();
-    // Convert to column-major for GPU
-    let mut argmax_col_major = vec![0i32; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            argmax_col_major[i + j * m] = argmax_i32[i * n + j];
-        }
-    }
-    let argmax_gpu = ctx.device().htod_sync_copy(&argmax_col_major)?;
+    // Upload argmax directly (already column-major)
+    let argmax_gpu = ctx.device().htod_sync_copy(argmax)?;
 
     // Run kernel
     let grad_a_gpu = tropical_backward_a_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
 
-    // Download result
-    grad_a_gpu.to_host_row_major(ctx)
+    // Download result (column-major)
+    grad_a_gpu.to_host(ctx)
 }
 
 /// High-level GPU backward pass for gradient w.r.t. B.
 ///
 /// Uploads grad_c and argmax to GPU, computes gradient, downloads result.
 /// For best performance, use `tropical_backward_b_gpu_kernel` with data already on GPU.
+///
+/// All matrices are in **column-major** order.
 pub fn tropical_backward_b_gpu_cuda(
     ctx: &CudaContext,
     grad_c: &[f32],
@@ -911,25 +916,17 @@ pub fn tropical_backward_b_gpu_cuda(
     assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
     assert_eq!(argmax.len(), m * n, "argmax size mismatch");
 
-    // Upload to GPU (column-major conversion)
-    let grad_c_gpu = GpuMatrix::from_host_row_major(ctx, grad_c, m, n)?;
+    // Upload to GPU (already column-major)
+    let grad_c_gpu = GpuMatrix::from_host(ctx, grad_c, m, n)?;
 
-    // Convert argmax to i32 and upload
-    let argmax_i32: Vec<i32> = argmax.iter().map(|&x| x as i32).collect();
-    // Convert to column-major for GPU
-    let mut argmax_col_major = vec![0i32; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            argmax_col_major[i + j * m] = argmax_i32[i * n + j];
-        }
-    }
-    let argmax_gpu = ctx.device().htod_sync_copy(&argmax_col_major)?;
+    // Upload argmax directly (already column-major)
+    let argmax_gpu = ctx.device().htod_sync_copy(argmax)?;
 
     // Run kernel
     let grad_b_gpu = tropical_backward_b_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
 
-    // Download result
-    grad_b_gpu.to_host_row_major(ctx)
+    // Download result (column-major)
+    grad_b_gpu.to_host(ctx)
 }
 
 /// Batched tropical matrix multiplication with argmax tracking on GPU.
@@ -979,19 +976,18 @@ where
         }
     }
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
     let mut results = Vec::with_capacity(batch_size);
 
     for (a, b) in a_batch.iter().zip(b_batch.iter()) {
-        let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+        let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
         let mut c_gpu = GpuMatrixWithArgmax::alloc(ctx, m, n)?;
 
         T::launch_gemm_with_argmax(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        let c_values = c_gpu.matrix_to_host_row_major(ctx)?;
-        let c_argmax = c_gpu.argmax_to_host_row_major(ctx)?;
+        let c_values = c_gpu.matrix_to_host(ctx)?;
+        let c_argmax = c_gpu.argmax_to_host(ctx)?;
         results.push((c_values, c_argmax));
     }
 
@@ -1025,19 +1021,25 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // 2x3 matrix A (column-major)
+        // A = [[1, 2, 3],
+        //      [4, 5, 6]]
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
+        // B = [[1, 2],
+        //      [3, 4],
+        //      [5, 6]]
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(1+1, 2+3, 3+5) = 8
         assert!((c[0] - 8.0).abs() < 1e-5, "C[0,0] = {}, expected 8", c[0]);
-        // C[0,1] = max(1+2, 2+4, 3+6) = 9
-        assert!((c[1] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[1]);
         // C[1,0] = max(4+1, 5+3, 6+5) = 11
-        assert!((c[2] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[2]);
+        assert!((c[1] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[1]);
+        // C[0,1] = max(1+2, 2+4, 3+6) = 9
+        assert!((c[2] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[2]);
         // C[1,1] = max(4+2, 5+4, 6+6) = 12
         assert!((c[3] - 12.0).abs() < 1e-5, "C[1,1] = {}, expected 12", c[3]);
     }
@@ -1048,30 +1050,31 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A (row-major)
+        // 2x3 matrix A (column-major)
         // A = [[1, 2, 3],
         //      [4, 5, 6]]
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B (row-major)
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
         // B = [[1, 2],
         //      [3, 4],
         //      [5, 6]]
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(1+1=2, 2+3=5, 3+5=8) = 8, argmax=2
         assert!((c[0] - 8.0).abs() < 1e-5, "C[0,0] = {}, expected 8", c[0]);
         assert_eq!(argmax[0], 2, "argmax[0,0] = {}, expected 2", argmax[0]);
 
-        // C[0,1] = max(1+2=3, 2+4=6, 3+6=9) = 9, argmax=2
-        assert!((c[1] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[1]);
-        assert_eq!(argmax[1], 2, "argmax[0,1] = {}, expected 2", argmax[1]);
-
         // C[1,0] = max(4+1=5, 5+3=8, 6+5=11) = 11, argmax=2
-        assert!((c[2] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[2]);
-        assert_eq!(argmax[2], 2, "argmax[1,0] = {}, expected 2", argmax[2]);
+        assert!((c[1] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[1]);
+        assert_eq!(argmax[1], 2, "argmax[1,0] = {}, expected 2", argmax[1]);
+
+        // C[0,1] = max(1+2=3, 2+4=6, 3+6=9) = 9, argmax=2
+        assert!((c[2] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[2]);
+        assert_eq!(argmax[2], 2, "argmax[0,1] = {}, expected 2", argmax[2]);
 
         // C[1,1] = max(4+2=6, 5+4=9, 6+6=12) = 12, argmax=2
         assert!((c[3] - 12.0).abs() < 1e-5, "C[1,1] = {}, expected 12", c[3]);
@@ -1084,30 +1087,31 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A (row-major)
+        // 2x3 matrix A (column-major)
         // A = [[1, 2, 3],
         //      [4, 5, 6]]
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B (row-major)
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
         // B = [[1, 2],
         //      [3, 4],
         //      [5, 6]]
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMinPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = min(1+1=2, 2+3=5, 3+5=8) = 2, argmax=0
         assert!((c[0] - 2.0).abs() < 1e-5, "C[0,0] = {}, expected 2", c[0]);
         assert_eq!(argmax[0], 0, "argmax[0,0] = {}, expected 0", argmax[0]);
 
-        // C[0,1] = min(1+2=3, 2+4=6, 3+6=9) = 3, argmax=0
-        assert!((c[1] - 3.0).abs() < 1e-5, "C[0,1] = {}, expected 3", c[1]);
-        assert_eq!(argmax[1], 0, "argmax[0,1] = {}, expected 0", argmax[1]);
-
         // C[1,0] = min(4+1=5, 5+3=8, 6+5=11) = 5, argmax=0
-        assert!((c[2] - 5.0).abs() < 1e-5, "C[1,0] = {}, expected 5", c[2]);
-        assert_eq!(argmax[2], 0, "argmax[1,0] = {}, expected 0", argmax[2]);
+        assert!((c[1] - 5.0).abs() < 1e-5, "C[1,0] = {}, expected 5", c[1]);
+        assert_eq!(argmax[1], 0, "argmax[1,0] = {}, expected 0", argmax[1]);
+
+        // C[0,1] = min(1+2=3, 2+4=6, 3+6=9) = 3, argmax=0
+        assert!((c[2] - 3.0).abs() < 1e-5, "C[0,1] = {}, expected 3", c[2]);
+        assert_eq!(argmax[2], 0, "argmax[0,1] = {}, expected 0", argmax[2]);
 
         // C[1,1] = min(4+2=6, 5+4=9, 6+6=12) = 6, argmax=0
         assert!((c[3] - 6.0).abs() < 1e-5, "C[1,1] = {}, expected 6", c[3]);
@@ -1123,27 +1127,30 @@ mod tests {
         // Design a matrix where different k-indices win for different output elements
         // A = [[10, 1, 1],
         //      [1, 10, 1]]
-        let a = vec![10.0f32, 1.0, 1.0, 1.0, 10.0, 1.0];
+        // Column-major: [10, 1, 1, 10, 1, 1]
+        let a = vec![10.0f32, 1.0, 1.0, 10.0, 1.0, 1.0];
         // B = [[1, 1],
         //      [1, 1],
         //      [10, 10]]
-        let b = vec![1.0f32, 1.0, 1.0, 1.0, 10.0, 10.0];
+        // Column-major: [1, 1, 10, 1, 1, 10]
+        let b = vec![1.0f32, 1.0, 10.0, 1.0, 1.0, 10.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(10+1=11, 1+1=2, 1+10=11) = 11
         // First occurrence wins (k=0), as we use > not >=
         assert!((c[0] - 11.0).abs() < 1e-5, "C[0,0] = {}, expected 11", c[0]);
         assert_eq!(argmax[0], 0, "argmax[0,0] = {}, expected 0", argmax[0]);
 
-        // C[0,1] = max(10+1=11, 1+1=2, 1+10=11) = 11, first k=0 wins
-        assert!((c[1] - 11.0).abs() < 1e-5, "C[0,1] = {}, expected 11", c[1]);
-        assert_eq!(argmax[1], 0, "argmax[0,1] = {}, expected 0", argmax[1]);
-
         // C[1,0] = max(1+1=2, 10+1=11, 1+10=11) = 11, first k=1 wins
-        assert!((c[2] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[2]);
-        assert_eq!(argmax[2], 1, "argmax[1,0] = {}, expected 1", argmax[2]);
+        assert!((c[1] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[1]);
+        assert_eq!(argmax[1], 1, "argmax[1,0] = {}, expected 1", argmax[1]);
+
+        // C[0,1] = max(10+1=11, 1+1=2, 1+10=11) = 11, first k=0 wins
+        assert!((c[2] - 11.0).abs() < 1e-5, "C[0,1] = {}, expected 11", c[2]);
+        assert_eq!(argmax[2], 0, "argmax[0,1] = {}, expected 0", argmax[2]);
 
         // C[1,1] = max(1+1=2, 10+1=11, 1+10=11) = 11, first k=1 wins
         assert!((c[3] - 11.0).abs() < 1e-5, "C[1,1] = {}, expected 11", c[3]);
@@ -1156,14 +1163,20 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A (row-major)
-        let a = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B (row-major)
-        let b = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // 2x3 matrix A (column-major)
+        // A = [[1, 2, 3],
+        //      [4, 5, 6]]
+        let a = vec![1.0f64, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
+        // B = [[1, 2],
+        //      [3, 4],
+        //      [5, 6]]
+        let b = vec![1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f64>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(1+1=2, 2+3=5, 3+5=8) = 8, argmax=2
         assert!((c[0] - 8.0).abs() < 1e-10, "C[0,0] = {}, expected 8", c[0]);
         assert_eq!(argmax[0], 2, "argmax[0,0] = {}, expected 2", argmax[0]);
@@ -1186,11 +1199,24 @@ mod tests {
         let m = 4;
         let k = 5;
         let n = 3;
-        let epsilon = 1e-3f32; // Larger epsilon for better numerical stability
+        let epsilon = 1e-3f32;
 
-        // Random-ish matrices with distinct values to avoid ties
-        let mut a: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.7 - 3.0).collect();
-        let b: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.5 - 2.0).collect();
+        // Generate column-major matrices with distinct values to avoid ties
+        // A is m x k, B is k x n
+        let mut a: Vec<f32> = (0..m * k)
+            .map(|idx| {
+                let i = idx % m;
+                let kk = idx / m;
+                ((i * k + kk) as f32) * 0.7 - 3.0
+            })
+            .collect();
+        let b: Vec<f32> = (0..k * n)
+            .map(|idx| {
+                let kk = idx % k;
+                let j = idx / k;
+                ((kk * n + j) as f32) * 0.5 - 2.0
+            })
+            .collect();
 
         // Compute C and argmax
         let (c, argmax) =
@@ -1199,8 +1225,8 @@ mod tests {
         // Test finite difference for each element of A
         for i in 0..m {
             for kk in 0..k {
-                // Perturb A[i, kk]
-                let a_idx = i * k + kk;
+                // Perturb A[i, kk] (column-major: index = i + kk * m)
+                let a_idx = i + kk * m;
                 a[a_idx] += epsilon;
 
                 // Recompute C with perturbed A
@@ -1211,9 +1237,9 @@ mod tests {
                 // Restore A
                 a[a_idx] -= epsilon;
 
-                // Check gradient for each C[i, j]
+                // Check gradient for each C[i, j] (column-major: index = i + j * m)
                 for j in 0..n {
-                    let c_idx = i * n + j;
+                    let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
                     let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
 
@@ -1247,11 +1273,23 @@ mod tests {
         let m = 4;
         let k = 5;
         let n = 3;
-        let epsilon = 1e-3f32; // Larger epsilon for better numerical stability
+        let epsilon = 1e-3f32;
 
-        // Random-ish matrices with distinct values to avoid ties
-        let mut a: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.7 - 3.0).collect();
-        let b: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.5 - 2.0).collect();
+        // Generate column-major matrices with distinct values to avoid ties
+        let mut a: Vec<f32> = (0..m * k)
+            .map(|idx| {
+                let i = idx % m;
+                let kk = idx / m;
+                ((i * k + kk) as f32) * 0.7 - 3.0
+            })
+            .collect();
+        let b: Vec<f32> = (0..k * n)
+            .map(|idx| {
+                let kk = idx % k;
+                let j = idx / k;
+                ((kk * n + j) as f32) * 0.5 - 2.0
+            })
+            .collect();
 
         // Compute C and argmax (argmin for MinPlus)
         let (c, argmax) =
@@ -1260,8 +1298,8 @@ mod tests {
         // Test finite difference for each element of A
         for i in 0..m {
             for kk in 0..k {
-                // Perturb A[i, kk]
-                let a_idx = i * k + kk;
+                // Perturb A[i, kk] (column-major: index = i + kk * m)
+                let a_idx = i + kk * m;
                 a[a_idx] += epsilon;
 
                 // Recompute C with perturbed A
@@ -1272,9 +1310,9 @@ mod tests {
                 // Restore A
                 a[a_idx] -= epsilon;
 
-                // Check gradient for each C[i, j]
+                // Check gradient for each C[i, j] (column-major: index = i + j * m)
                 for j in 0..n {
-                    let c_idx = i * n + j;
+                    let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
                     let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
 
@@ -1308,11 +1346,23 @@ mod tests {
         let m = 3;
         let k = 4;
         let n = 5;
-        let epsilon = 1e-3f32; // Larger epsilon for better numerical stability
+        let epsilon = 1e-3f32;
 
-        // Random-ish matrices with distinct values
-        let a: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.6 - 2.0).collect();
-        let mut b: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.4 - 1.5).collect();
+        // Generate column-major matrices with distinct values
+        let a: Vec<f32> = (0..m * k)
+            .map(|idx| {
+                let i = idx % m;
+                let kk = idx / m;
+                ((i * k + kk) as f32) * 0.6 - 2.0
+            })
+            .collect();
+        let mut b: Vec<f32> = (0..k * n)
+            .map(|idx| {
+                let kk = idx % k;
+                let j = idx / k;
+                ((kk * n + j) as f32) * 0.4 - 1.5
+            })
+            .collect();
 
         // Compute C and argmax
         let (c, argmax) =
@@ -1321,8 +1371,8 @@ mod tests {
         // Test finite difference for each element of B
         for kk in 0..k {
             for j in 0..n {
-                // Perturb B[kk, j]
-                let b_idx = kk * n + j;
+                // Perturb B[kk, j] (column-major: index = kk + j * k)
+                let b_idx = kk + j * k;
                 b[b_idx] += epsilon;
 
                 // Recompute C with perturbed B
@@ -1333,9 +1383,9 @@ mod tests {
                 // Restore B
                 b[b_idx] -= epsilon;
 
-                // Check gradient for each C[i, j]
+                // Check gradient for each C[i, j] (column-major: index = i + j * m)
                 for i in 0..m {
-                    let c_idx = i * n + j;
+                    let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
                     let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
 
@@ -1370,14 +1420,14 @@ mod tests {
             return;
         }
 
-        // Batch of 2 matrices, each 2x2
+        // Batch of 2 matrices, each 2x2 (column-major)
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0], // A[0]: [[1,2],[3,4]]
-            vec![5.0f32, 6.0, 7.0, 8.0], // A[1]: [[5,6],[7,8]]
+            vec![1.0f32, 3.0, 2.0, 4.0], // A[0]: [[1,2],[3,4]] col-major
+            vec![5.0f32, 7.0, 6.0, 8.0], // A[1]: [[5,6],[7,8]] col-major
         ];
         let b_batch = vec![
-            vec![1.0f32, 0.0, 0.0, 1.0], // B[0]: [[1,0],[0,1]] (identity-ish)
-            vec![1.0f32, 2.0, 3.0, 4.0], // B[1]: [[1,2],[3,4]]
+            vec![1.0f32, 0.0, 0.0, 1.0], // B[0]: [[1,0],[0,1]] col-major (symmetric)
+            vec![1.0f32, 3.0, 2.0, 4.0], // B[1]: [[1,2],[3,4]] col-major
         ];
 
         let c_batch =
@@ -1388,22 +1438,24 @@ mod tests {
 
         // C[0] = A[0] * B[0] (MaxPlus)
         // C[0,0] = max(1+1, 2+0) = 2
-        // C[0,1] = max(1+0, 2+1) = 3
         // C[1,0] = max(3+1, 4+0) = 4
+        // C[0,1] = max(1+0, 2+1) = 3
         // C[1,1] = max(3+0, 4+1) = 5
+        // Column-major result: [C[0,0], C[1,0], C[0,1], C[1,1]] = [2, 4, 3, 5]
         assert!((c_batch[0][0] - 2.0).abs() < 1e-5);
-        assert!((c_batch[0][1] - 3.0).abs() < 1e-5);
-        assert!((c_batch[0][2] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][1] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][2] - 3.0).abs() < 1e-5);
         assert!((c_batch[0][3] - 5.0).abs() < 1e-5);
 
         // C[1] = A[1] * B[1] (MaxPlus)
         // C[0,0] = max(5+1, 6+3) = 9
-        // C[0,1] = max(5+2, 6+4) = 10
         // C[1,0] = max(7+1, 8+3) = 11
+        // C[0,1] = max(5+2, 6+4) = 10
         // C[1,1] = max(7+2, 8+4) = 12
+        // Column-major result: [C[0,0], C[1,0], C[0,1], C[1,1]] = [9, 11, 10, 12]
         assert!((c_batch[1][0] - 9.0).abs() < 1e-5);
-        assert!((c_batch[1][1] - 10.0).abs() < 1e-5);
-        assert!((c_batch[1][2] - 11.0).abs() < 1e-5);
+        assert!((c_batch[1][1] - 11.0).abs() < 1e-5);
+        assert!((c_batch[1][2] - 10.0).abs() < 1e-5);
         assert!((c_batch[1][3] - 12.0).abs() < 1e-5);
     }
 
@@ -1446,16 +1498,18 @@ mod tests {
             return;
         }
 
-        // 2 batches of 2x2 matrices, stored contiguously
+        // 2 batches of 2x2 matrices, stored contiguously (column-major)
         let a = vec![
-            // Batch 0: [[1,2],[3,4]]
-            1.0f32, 2.0, 3.0, 4.0, // Batch 1: [[5,6],[7,8]]
-            5.0, 6.0, 7.0, 8.0,
+            // Batch 0: [[1,2],[3,4]] col-major: [1,3,2,4]
+            1.0f32, 3.0, 2.0, 4.0,
+            // Batch 1: [[5,6],[7,8]] col-major: [5,7,6,8]
+            5.0, 7.0, 6.0, 8.0,
         ];
         let b = vec![
-            // Batch 0: [[1,0],[0,1]]
-            1.0f32, 0.0, 0.0, 1.0, // Batch 1: [[1,2],[3,4]]
-            1.0, 2.0, 3.0, 4.0,
+            // Batch 0: [[1,0],[0,1]] col-major: [1,0,0,1]
+            1.0f32, 0.0, 0.0, 1.0,
+            // Batch 1: [[1,2],[3,4]] col-major: [1,3,2,4]
+            1.0, 3.0, 2.0, 4.0,
         ];
 
         let c = tropical_matmul_gpu_strided_batched::<TropicalMaxPlus<f32>>(&a, &b, 2, 2, 2, 2)
@@ -1464,16 +1518,16 @@ mod tests {
         // Should have 2 * 2 * 2 = 8 elements
         assert_eq!(c.len(), 8);
 
-        // Batch 0 results (same as above test)
+        // Batch 0 results (column-major: [C[0,0], C[1,0], C[0,1], C[1,1]] = [2, 4, 3, 5])
         assert!((c[0] - 2.0).abs() < 1e-5);
-        assert!((c[1] - 3.0).abs() < 1e-5);
-        assert!((c[2] - 4.0).abs() < 1e-5);
+        assert!((c[1] - 4.0).abs() < 1e-5);
+        assert!((c[2] - 3.0).abs() < 1e-5);
         assert!((c[3] - 5.0).abs() < 1e-5);
 
-        // Batch 1 results
+        // Batch 1 results (column-major: [C[0,0], C[1,0], C[0,1], C[1,1]] = [9, 11, 10, 12])
         assert!((c[4] - 9.0).abs() < 1e-5);
-        assert!((c[5] - 10.0).abs() < 1e-5);
-        assert!((c[6] - 11.0).abs() < 1e-5);
+        assert!((c[5] - 11.0).abs() < 1e-5);
+        assert!((c[6] - 10.0).abs() < 1e-5);
         assert!((c[7] - 12.0).abs() < 1e-5);
     }
 
@@ -1498,14 +1552,17 @@ mod tests {
             return;
         }
 
-        // Batch of 2 matrices
+        // Batch of 2 matrices (column-major)
+        // A[0]: 2x3 = [[1, 2, 3], [4, 5, 6]] col-major: [1, 4, 2, 5, 3, 6]
+        // A[1]: 2x3 = [[6, 5, 4], [3, 2, 1]] col-major: [6, 3, 5, 2, 4, 1]
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // A[0]: 2x3
-            vec![6.0f32, 5.0, 4.0, 3.0, 2.0, 1.0], // A[1]: 2x3 (reversed)
+            vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0], // A[0]: 2x3 col-major
+            vec![6.0f32, 3.0, 5.0, 2.0, 4.0, 1.0], // A[1]: 2x3 col-major (reversed)
         ];
+        // B: 3x2 = [[1, 2], [3, 4], [5, 6]] col-major: [1, 3, 5, 2, 4, 6]
         let b_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[0]: 3x2
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[1]: 3x2
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[0]: 3x2 col-major
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[1]: 3x2 col-major
         ];
 
         let results = tropical_matmul_gpu_batched_with_argmax::<TropicalMaxPlus<f32>>(
@@ -1515,9 +1572,10 @@ mod tests {
 
         assert_eq!(results.len(), 2);
 
-        // Batch 0: same as single matrix test
+        // Batch 0: C is column-major [C[0,0], C[1,0], C[0,1], C[1,1]]
+        // C[0,0] = max(1+1, 2+3, 3+5) = 8, argmax=2
         let (c0, argmax0) = &results[0];
-        assert!((c0[0] - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5) = 8
+        assert!((c0[0] - 8.0).abs() < 1e-5);
         assert_eq!(argmax0[0], 2);
 
         // Batch 1: A[1] has reversed values
@@ -1533,11 +1591,13 @@ mod tests {
             return;
         }
 
+        // A: 2x2 = [[1, 2], [3, 4]] col-major: [1, 3, 2, 4]
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0], // 2x2
+            vec![1.0f32, 3.0, 2.0, 4.0], // 2x2 col-major
         ];
+        // B: 2x2 = [[1, 2], [3, 4]] col-major: [1, 3, 2, 4]
         let b_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0], // 2x2
+            vec![1.0f32, 3.0, 2.0, 4.0], // 2x2 col-major
         ];
 
         let c_batch =
@@ -1546,12 +1606,13 @@ mod tests {
 
         // MinPlus: C[i,j] = min_k(A[i,k] + B[k,j])
         // C[0,0] = min(1+1, 2+3) = min(2, 5) = 2
-        // C[0,1] = min(1+2, 2+4) = min(3, 6) = 3
         // C[1,0] = min(3+1, 4+3) = min(4, 7) = 4
+        // C[0,1] = min(1+2, 2+4) = min(3, 6) = 3
         // C[1,1] = min(3+2, 4+4) = min(5, 8) = 5
+        // Column-major result: [2, 4, 3, 5]
         assert!((c_batch[0][0] - 2.0).abs() < 1e-5);
-        assert!((c_batch[0][1] - 3.0).abs() < 1e-5);
-        assert!((c_batch[0][2] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][1] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][2] - 3.0).abs() < 1e-5);
         assert!((c_batch[0][3] - 5.0).abs() < 1e-5);
     }
 
@@ -1561,7 +1622,7 @@ mod tests {
 
     #[test]
     fn test_tropical_backward_a_gpu() {
-        // Test backward pass for A
+        // Test backward pass for A (column-major)
         // C[i,j] = A[i,argmax[i,j]] + B[argmax[i,j],j]
         // dL/dA[i,k] = sum_j { dL/dC[i,j] if argmax[i,j] == k }
 
@@ -1569,61 +1630,65 @@ mod tests {
         let k = 3;
         let n = 2;
 
-        // Gradient from upstream (all ones for simplicity)
+        // Gradient from upstream (all ones for simplicity), column-major
         let grad_c = vec![1.0f32; m * n];
 
-        // Argmax: row-major, for each C[i,j] which k produced it
-        // Let's say argmax = [[0, 2], [1, 2]]
-        let argmax: Vec<ArgmaxIndex> = vec![0, 2, 1, 2];
+        // Argmax: column-major, for each C[i,j] which k produced it
+        // Logical matrix = [[0, 2], [1, 2]] in row notation
+        // Column-major storage: [argmax[0,0], argmax[1,0], argmax[0,1], argmax[1,1]] = [0, 1, 2, 2]
+        let argmax: Vec<ArgmaxIndex> = vec![0, 1, 2, 2];
 
         let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
 
-        // Expected grad_a (2x3):
+        // Expected grad_a (2x3) column-major:
         // grad_a[0,0] = grad_c[0,0] because argmax[0,0]=0 -> 1.0
-        // grad_a[0,1] = 0 (no argmax points here)
-        // grad_a[0,2] = grad_c[0,1] because argmax[0,1]=2 -> 1.0
         // grad_a[1,0] = 0
+        // grad_a[0,1] = 0
         // grad_a[1,1] = grad_c[1,0] because argmax[1,0]=1 -> 1.0
+        // grad_a[0,2] = grad_c[0,1] because argmax[0,1]=2 -> 1.0
         // grad_a[1,2] = grad_c[1,1] because argmax[1,1]=2 -> 1.0
+        // Column-major grad_a: [[1,0,1],[0,1,1]] -> [1, 0, 0, 1, 1, 1]
         assert_eq!(grad_a.len(), m * k);
         assert!((grad_a[0] - 1.0).abs() < 1e-5); // [0,0]
-        assert!((grad_a[1] - 0.0).abs() < 1e-5); // [0,1]
-        assert!((grad_a[2] - 1.0).abs() < 1e-5); // [0,2]
-        assert!((grad_a[3] - 0.0).abs() < 1e-5); // [1,0]
-        assert!((grad_a[4] - 1.0).abs() < 1e-5); // [1,1]
+        assert!((grad_a[1] - 0.0).abs() < 1e-5); // [1,0]
+        assert!((grad_a[2] - 0.0).abs() < 1e-5); // [0,1]
+        assert!((grad_a[3] - 1.0).abs() < 1e-5); // [1,1]
+        assert!((grad_a[4] - 1.0).abs() < 1e-5); // [0,2]
         assert!((grad_a[5] - 1.0).abs() < 1e-5); // [1,2]
     }
 
     #[test]
     fn test_tropical_backward_b_gpu() {
-        // Test backward pass for B
+        // Test backward pass for B (column-major)
         // dL/dB[k,j] = sum_i { dL/dC[i,j] if argmax[i,j] == k }
 
         let m = 2;
         let k = 3;
         let n = 2;
 
-        // Gradient from upstream (all ones)
+        // Gradient from upstream (all ones), column-major
         let grad_c = vec![1.0f32; m * n];
 
-        // Argmax: [[0, 2], [1, 2]]
-        let argmax: Vec<ArgmaxIndex> = vec![0, 2, 1, 2];
+        // Argmax: column-major [argmax[0,0], argmax[1,0], argmax[0,1], argmax[1,1]] = [0, 1, 2, 2]
+        // Logical: [[0, 2], [1, 2]]
+        let argmax: Vec<ArgmaxIndex> = vec![0, 1, 2, 2];
 
         let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
 
-        // Expected grad_b (3x2):
+        // Expected grad_b (3x2) column-major:
         // grad_b[0,0] = grad_c[0,0] because argmax[0,0]=0 -> 1.0
-        // grad_b[0,1] = 0
         // grad_b[1,0] = grad_c[1,0] because argmax[1,0]=1 -> 1.0
-        // grad_b[1,1] = 0
         // grad_b[2,0] = 0
+        // grad_b[0,1] = 0
+        // grad_b[1,1] = 0
         // grad_b[2,1] = grad_c[0,1] + grad_c[1,1] because argmax[0,1]=2 and argmax[1,1]=2 -> 2.0
+        // Column-major grad_b: [[1,0],[1,0],[0,2]] -> [1, 1, 0, 0, 0, 2]
         assert_eq!(grad_b.len(), k * n);
         assert!((grad_b[0] - 1.0).abs() < 1e-5); // [0,0]
-        assert!((grad_b[1] - 0.0).abs() < 1e-5); // [0,1]
-        assert!((grad_b[2] - 1.0).abs() < 1e-5); // [1,0]
-        assert!((grad_b[3] - 0.0).abs() < 1e-5); // [1,1]
-        assert!((grad_b[4] - 0.0).abs() < 1e-5); // [2,0]
+        assert!((grad_b[1] - 1.0).abs() < 1e-5); // [1,0]
+        assert!((grad_b[2] - 0.0).abs() < 1e-5); // [2,0]
+        assert!((grad_b[3] - 0.0).abs() < 1e-5); // [0,1]
+        assert!((grad_b[4] - 0.0).abs() < 1e-5); // [1,1]
         assert!((grad_b[5] - 2.0).abs() < 1e-5); // [2,1]
     }
 
@@ -1633,9 +1698,11 @@ mod tests {
             return;
         }
 
-        // Full integration test: forward pass on GPU, backward pass
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
+        // Full integration test: forward pass on GPU, backward pass (column-major)
+        // A: 2x3 = [[1, 2, 3], [4, 5, 6]] col-major: [1, 4, 2, 5, 3, 6]
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // B: 3x2 = [[1, 2], [3, 4], [5, 6]] col-major: [1, 3, 5, 2, 4, 6]
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let m = 2;
         let k = 3;
@@ -1645,8 +1712,8 @@ mod tests {
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n).unwrap();
 
-        // Verify forward pass
-        assert!((c[0] - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5)
+        // Verify forward pass (C is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]])
+        assert!((c[0] - 8.0).abs() < 1e-5); // C[0,0] = max(1+1, 2+3, 3+5) = 8
 
         // Backward pass with unit gradients
         let grad_c = vec![1.0f32; m * n];
@@ -1657,13 +1724,15 @@ mod tests {
         // So grad_a[i,2] should be n (sum over j) and others 0
         // grad_a[0,2] = 2 (from C[0,0] and C[0,1])
         // grad_a[1,2] = 2 (from C[1,0] and C[1,1])
+        // Column-major: A[0,2] at index 0+2*2=4, A[1,2] at index 1+2*2=5
         assert_eq!(grad_a.len(), m * k);
-        assert!((grad_a[2] - 2.0).abs() < 1e-5); // A[0,2]
+        assert!((grad_a[4] - 2.0).abs() < 1e-5); // A[0,2]
         assert!((grad_a[5] - 2.0).abs() < 1e-5); // A[1,2]
 
         // grad_b[2,j] = m (sum over i) for each j
+        // Column-major: B[2,0] at index 2+0*3=2, B[2,1] at index 2+1*3=5
         assert_eq!(grad_b.len(), k * n);
-        assert!((grad_b[4] - 2.0).abs() < 1e-5); // B[2,0]
+        assert!((grad_b[2] - 2.0).abs() < 1e-5); // B[2,0]
         assert!((grad_b[5] - 2.0).abs() < 1e-5); // B[2,1]
     }
 
@@ -1677,14 +1746,16 @@ mod tests {
         let k = 3;
         let n = 2;
 
-        // Batch of 2 forward passes
+        // Batch of 2 forward passes (column-major)
+        // A: 2x3 = [[1, 2, 3], [4, 5, 6]] col-major: [1, 4, 2, 5, 3, 6]
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // A[0]
-            vec![6.0f32, 5.0, 4.0, 3.0, 2.0, 1.0], // A[1] (reversed)
+            vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0], // A[0] col-major
+            vec![6.0f32, 3.0, 5.0, 2.0, 4.0, 1.0], // A[1] col-major (reversed)
         ];
+        // B: 3x2 = [[1, 2], [3, 4], [5, 6]] col-major: [1, 3, 5, 2, 4, 6]
         let b_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[0]
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[1]
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[0] col-major
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[1] col-major
         ];
 
         // Forward pass

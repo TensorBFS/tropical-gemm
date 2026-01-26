@@ -57,8 +57,10 @@ where
     S::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
 {
     /// Create a GPU matrix from a CPU MatRef.
+    ///
+    /// The MatRef data is expected to be in column-major order.
     pub fn from_matref(ctx: &CudaContext, mat: &MatRef<S>) -> Result<Self> {
-        let inner = GpuMatrix::from_host_row_major(ctx, mat.as_slice(), mat.nrows(), mat.ncols())?;
+        let inner = GpuMatrix::from_host(ctx, mat.as_slice(), mat.nrows(), mat.ncols())?;
         Ok(Self {
             inner,
             _phantom: PhantomData,
@@ -66,13 +68,15 @@ where
     }
 
     /// Create a GPU matrix from raw scalar data.
+    ///
+    /// Data should be in column-major order.
     pub fn from_slice(
         ctx: &CudaContext,
         data: &[S::Scalar],
         nrows: usize,
         ncols: usize,
     ) -> Result<Self> {
-        let inner = GpuMatrix::from_host_row_major(ctx, data, nrows, ncols)?;
+        let inner = GpuMatrix::from_host(ctx, data, nrows, ncols)?;
         Ok(Self {
             inner,
             _phantom: PhantomData,
@@ -109,12 +113,14 @@ where
     }
 
     /// Convert to a CPU Mat.
+    ///
+    /// Returns data in column-major order.
     pub fn to_mat(&self, ctx: &CudaContext) -> Result<Mat<S>>
     where
         S::Scalar: Copy,
     {
-        let data = self.inner.to_host_row_major(ctx)?;
-        Ok(Mat::from_row_major(&data, self.nrows(), self.ncols()))
+        let data = self.inner.to_host(ctx)?;
+        Ok(Mat::from_col_major(&data, self.nrows(), self.ncols()))
     }
 }
 
@@ -389,32 +395,36 @@ where
     }
 
     /// Convert to CPU MatWithArgmax.
+    ///
+    /// Returns data in column-major order.
     pub fn to_mat_with_argmax(&self, ctx: &CudaContext) -> Result<MatWithArgmax<S>>
     where
         S: tropical_gemm::TropicalWithArgmax<Index = u32>,
         S::Scalar: Copy,
     {
-        let values_data = self.inner.matrix_to_host_row_major(ctx)?;
-        let argmax_data = self.inner.argmax_to_host_row_major(ctx)?;
+        let values_data = self.inner.matrix_to_host(ctx)?;
+        let argmax_data = self.inner.argmax_to_host(ctx)?;
 
-        let values = Mat::from_row_major(&values_data, self.nrows(), self.ncols());
+        let values = Mat::from_col_major(&values_data, self.nrows(), self.ncols());
         let argmax: Vec<u32> = argmax_data.into_iter().map(|x| x as u32).collect();
 
         Ok(MatWithArgmax { values, argmax })
     }
 
     /// Get just the result matrix as CPU Mat.
+    ///
+    /// Returns data in column-major order.
     pub fn to_mat(&self, ctx: &CudaContext) -> Result<Mat<S>>
     where
         S::Scalar: Copy,
     {
-        let data = self.inner.matrix_to_host_row_major(ctx)?;
-        Ok(Mat::from_row_major(&data, self.nrows(), self.ncols()))
+        let data = self.inner.matrix_to_host(ctx)?;
+        Ok(Mat::from_col_major(&data, self.nrows(), self.ncols()))
     }
 
-    /// Get just the argmax indices.
+    /// Get just the argmax indices (column-major order).
     pub fn to_argmax(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
-        self.inner.argmax_to_host_row_major(ctx)
+        self.inner.argmax_to_host(ctx)
     }
 
     /// Compute gradient with respect to matrix A.
@@ -424,6 +434,8 @@ where
     ///
     /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
     /// dL/dA[i,k] = Σ_j { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// All matrices are in column-major order.
     ///
     /// # Arguments
     ///
@@ -462,21 +474,24 @@ where
         assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
         assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
 
-        // Download argmax to host
-        let argmax = self.inner.argmax_to_host_row_major(ctx)?;
+        // Download argmax to host (column-major)
+        let argmax = self.inner.argmax_to_host(ctx)?;
 
         let mut grad_a_data = vec![G::Scalar::default(); m * k];
 
-        for i in 0..m {
-            for j in 0..n {
-                let idx = argmax[i * n + j] as usize;
-                if idx < k {
-                    grad_a_data[i * k + idx] += grad_c[(i, j)].value();
+        // Column-major indexing: element (i,j) is at index i + j*m
+        for j in 0..n {
+            for i in 0..m {
+                let col_idx = i + j * m;
+                let kk = argmax[col_idx] as usize;
+                if kk < k {
+                    // grad_a[i, kk] += grad_c[i, j]
+                    grad_a_data[i + kk * m] += grad_c[(i, j)].value();
                 }
             }
         }
 
-        Ok(Mat::from_row_major(&grad_a_data, m, k))
+        Ok(Mat::from_col_major(&grad_a_data, m, k))
     }
 
     /// Compute gradient with respect to matrix B.
@@ -486,6 +501,8 @@ where
     ///
     /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
     /// dL/dB[k,j] = Σ_i { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// All matrices are in column-major order.
     ///
     /// # Arguments
     ///
@@ -524,21 +541,24 @@ where
         assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
         assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
 
-        // Download argmax to host
-        let argmax = self.inner.argmax_to_host_row_major(ctx)?;
+        // Download argmax to host (column-major)
+        let argmax = self.inner.argmax_to_host(ctx)?;
 
         let mut grad_b_data = vec![G::Scalar::default(); k * n];
 
-        for i in 0..m {
-            for j in 0..n {
-                let idx = argmax[i * n + j] as usize;
-                if idx < k {
-                    grad_b_data[idx * n + j] += grad_c[(i, j)].value();
+        // Column-major indexing: element (i,j) is at index i + j*m
+        for j in 0..n {
+            for i in 0..m {
+                let col_idx = i + j * m;
+                let kk = argmax[col_idx] as usize;
+                if kk < k {
+                    // grad_b[kk, j] += grad_c[i, j]
+                    grad_b_data[kk + j * k] += grad_c[(i, j)].value();
                 }
             }
         }
 
-        Ok(Mat::from_row_major(&grad_b_data, k, n))
+        Ok(Mat::from_col_major(&grad_b_data, k, n))
     }
 }
 

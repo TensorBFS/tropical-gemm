@@ -9,10 +9,25 @@ use std::marker::PhantomData;
 /// Type alias for argmax indices (k-index that produced each C[i,j]).
 pub type ArgmaxIndex = i32;
 
+// ============================================================================
+// Helper: validate dimensions
+// ============================================================================
+
+fn validate_dims<T>(data: &[T], rows: usize, cols: usize) -> Result<()> {
+    if data.len() != rows * cols {
+        return Err(CudaError::DimensionMismatch(format!(
+            "Expected {} elements, got {}",
+            rows * cols,
+            data.len()
+        )));
+    }
+    Ok(())
+}
+
 /// A matrix stored in GPU memory.
 ///
-/// Data is stored in column-major order (Fortran order) for compatibility
-/// with BLAS conventions.
+/// Data is stored in column-major order (Fortran/BLAS convention).
+/// This matches the tropical-gemm crate's Mat type.
 pub struct GpuMatrix<T: DeviceRepr> {
     data: CudaSlice<T>,
     rows: usize,
@@ -21,34 +36,41 @@ pub struct GpuMatrix<T: DeviceRepr> {
 }
 
 impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
-    /// Create a GPU matrix from host data.
+    /// Create a GPU matrix from column-major host data (zero-copy upload).
     ///
-    /// The input data should be in row-major order. It will be transposed
-    /// to column-major for GPU storage.
+    /// This is the primary upload method since tropical-gemm uses column-major storage.
+    pub fn from_host(ctx: &CudaContext, data: &[T], rows: usize, cols: usize) -> Result<Self> {
+        validate_dims(data, rows, cols)?;
+        let gpu_data = ctx.device().htod_sync_copy(data)?;
+        Ok(Self {
+            data: gpu_data,
+            rows,
+            cols,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Create a GPU matrix from row-major host data (transposes during upload).
+    ///
+    /// Use this when interfacing with row-major data sources (e.g., C arrays).
+    /// For column-major data, use `from_host` instead for better performance.
+    #[deprecated(since = "0.4.0", note = "use from_host with column-major data instead")]
     pub fn from_host_row_major(
         ctx: &CudaContext,
         data: &[T],
         rows: usize,
         cols: usize,
     ) -> Result<Self> {
-        if data.len() != rows * cols {
-            return Err(CudaError::DimensionMismatch(format!(
-                "Expected {} elements, got {}",
-                rows * cols,
-                data.len()
-            )));
-        }
-
+        validate_dims(data, rows, cols)?;
         // Transpose to column-major
-        let mut col_major = vec![T::default(); rows * cols];
-        for i in 0..rows {
-            for j in 0..cols {
-                col_major[j * rows + i] = data[i * cols + j].clone();
-            }
-        }
-
+        let col_major: Vec<T> = (0..rows * cols)
+            .map(|idx| {
+                let i = idx % rows;
+                let j = idx / rows;
+                data[i * cols + j].clone()
+            })
+            .collect();
         let gpu_data = ctx.device().htod_sync_copy(&col_major)?;
-
         Ok(Self {
             data: gpu_data,
             rows,
@@ -57,35 +79,20 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
         })
     }
 
-    /// Create a GPU matrix from column-major host data (no transpose).
+    /// Alias for `from_host` (column-major).
+    #[inline]
     pub fn from_host_col_major(
         ctx: &CudaContext,
         data: &[T],
         rows: usize,
         cols: usize,
     ) -> Result<Self> {
-        if data.len() != rows * cols {
-            return Err(CudaError::DimensionMismatch(format!(
-                "Expected {} elements, got {}",
-                rows * cols,
-                data.len()
-            )));
-        }
-
-        let gpu_data = ctx.device().htod_sync_copy(data)?;
-
-        Ok(Self {
-            data: gpu_data,
-            rows,
-            cols,
-            _marker: PhantomData,
-        })
+        Self::from_host(ctx, data, rows, cols)
     }
 
     /// Allocate a zeroed GPU matrix.
     pub fn alloc(ctx: &CudaContext, rows: usize, cols: usize) -> Result<Self> {
         let gpu_data = ctx.device().alloc_zeros::<T>(rows * cols)?;
-
         Ok(Self {
             data: gpu_data,
             rows,
@@ -94,24 +101,35 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
         })
     }
 
-    /// Copy GPU data back to host in row-major order.
+    /// Copy GPU data back to host in column-major order (zero-copy download).
+    ///
+    /// This is the primary download method since tropical-gemm uses column-major storage.
+    pub fn to_host(&self, ctx: &CudaContext) -> Result<Vec<T>> {
+        Ok(ctx.device().dtoh_sync_copy(&self.data)?)
+    }
+
+    /// Copy GPU data back to host in row-major order (transposes during download).
+    ///
+    /// Use this when interfacing with row-major data consumers.
+    /// For column-major data, use `to_host` instead for better performance.
+    #[deprecated(since = "0.4.0", note = "use to_host for column-major data instead")]
     pub fn to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
         let col_major = ctx.device().dtoh_sync_copy(&self.data)?;
-
         // Transpose from column-major to row-major
-        let mut row_major = vec![T::default(); self.rows * self.cols];
-        for i in 0..self.rows {
-            for j in 0..self.cols {
-                row_major[i * self.cols + j] = col_major[j * self.rows + i].clone();
-            }
-        }
-
+        let row_major: Vec<T> = (0..self.rows * self.cols)
+            .map(|idx| {
+                let i = idx / self.cols;
+                let j = idx % self.cols;
+                col_major[j * self.rows + i].clone()
+            })
+            .collect();
         Ok(row_major)
     }
 
-    /// Copy GPU data back to host in column-major order.
+    /// Alias for `to_host` (column-major).
+    #[inline]
     pub fn to_host_col_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
-        Ok(ctx.device().dtoh_sync_copy(&self.data)?)
+        self.to_host(ctx)
     }
 
     /// Get the number of rows.
@@ -170,24 +188,40 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
         self.matrix.cols()
     }
 
-    /// Copy the result matrix back to host in row-major order.
+    /// Copy the result matrix back to host (column-major).
+    pub fn matrix_to_host(&self, ctx: &CudaContext) -> Result<Vec<T>> {
+        self.matrix.to_host(ctx)
+    }
+
+    /// Copy the argmax indices back to host (column-major).
+    pub fn argmax_to_host(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
+        self.argmax.to_host(ctx)
+    }
+
+    /// Copy the result matrix back to host in row-major order (deprecated).
+    #[deprecated(since = "0.4.0", note = "use matrix_to_host for column-major data instead")]
     pub fn matrix_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
+        #[allow(deprecated)]
         self.matrix.to_host_row_major(ctx)
     }
 
-    /// Copy the argmax indices back to host in row-major order.
+    /// Copy the argmax indices back to host in row-major order (deprecated).
+    #[deprecated(since = "0.4.0", note = "use argmax_to_host for column-major data instead")]
     pub fn argmax_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
+        #[allow(deprecated)]
         self.argmax.to_host_row_major(ctx)
     }
 
-    /// Copy the result matrix back to host in column-major order.
+    /// Alias for `matrix_to_host` (column-major).
+    #[inline]
     pub fn matrix_to_host_col_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
-        self.matrix.to_host_col_major(ctx)
+        self.matrix_to_host(ctx)
     }
 
-    /// Copy the argmax indices back to host in column-major order.
+    /// Alias for `argmax_to_host` (column-major).
+    #[inline]
     pub fn argmax_to_host_col_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
-        self.argmax.to_host_col_major(ctx)
+        self.argmax_to_host(ctx)
     }
 }
 

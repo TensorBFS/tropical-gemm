@@ -77,8 +77,9 @@ mod tests {
 
     #[test]
     fn test_matref_mul_matref() {
-        let a_data = [1.0f64, 2.0, 3.0, 4.0];
-        let b_data = [1.0f64, 2.0, 3.0, 4.0];
+        // Column-major: 2×2 matrix [[1,2],[3,4]] stored as [1,3,2,4]
+        let a_data = [1.0f64, 3.0, 2.0, 4.0];
+        let b_data = [1.0f64, 3.0, 2.0, 4.0];
 
         let a = MatRef::<TropicalMaxPlus<f64>>::from_slice(&a_data, 2, 2);
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 2, 2);
@@ -91,8 +92,9 @@ mod tests {
 
     #[test]
     fn test_matref_mul_matref_by_value() {
-        let a_data = [1.0f64, 2.0, 3.0, 4.0];
-        let b_data = [1.0f64, 2.0, 3.0, 4.0];
+        // Column-major: 2×2 matrix [[1,2],[3,4]] stored as [1,3,2,4]
+        let a_data = [1.0f64, 3.0, 2.0, 4.0];
+        let b_data = [1.0f64, 3.0, 2.0, 4.0];
 
         let a = MatRef::<TropicalMaxPlus<f64>>::from_slice(&a_data, 2, 2);
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 2, 2);
@@ -106,7 +108,8 @@ mod tests {
     #[test]
     fn test_mat_ref_mul_matref() {
         let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let b_data = [1.0f64, 2.0, 3.0, 4.0];
+        // Column-major: 2×2 matrix [[1,2],[3,4]] stored as [1,3,2,4]
+        let b_data = [1.0f64, 3.0, 2.0, 4.0];
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 2, 2);
 
         let c = &a * &b;

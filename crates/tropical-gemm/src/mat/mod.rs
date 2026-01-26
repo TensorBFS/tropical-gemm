@@ -60,7 +60,8 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
 
     /// Get the argmax index at position (i, j).
     pub fn get_argmax(&self, i: usize, j: usize) -> u32 {
-        self.argmax[i * self.values.ncols() + j]
+        // Column-major indexing
+        self.argmax[j * self.values.nrows() + i]
     }
 
     /// Number of rows.
@@ -126,18 +127,21 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
         assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
         assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
 
+        // Output is m×k in column-major
         let mut grad_a_data = vec![G::Scalar::default(); m * k];
 
-        for i in 0..m {
-            for j in 0..n {
-                let idx = self.argmax[i * n + j] as usize;
+        for j in 0..n {
+            for i in 0..m {
+                // Column-major indexing for argmax
+                let idx = self.argmax[j * m + i] as usize;
                 if idx < k {
-                    grad_a_data[i * k + idx] += grad_c[(i, j)].value();
+                    // Column-major indexing for grad_a: element (i, idx) at idx * m + i
+                    grad_a_data[idx * m + i] += grad_c[(i, j)].value();
                 }
             }
         }
 
-        Mat::from_row_major(&grad_a_data, m, k)
+        Mat::from_col_major(&grad_a_data, m, k)
     }
 
     /// Compute gradient with respect to matrix B.
@@ -185,18 +189,21 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
         assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
         assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
 
+        // Output is k×n in column-major
         let mut grad_b_data = vec![G::Scalar::default(); k * n];
 
-        for i in 0..m {
-            for j in 0..n {
-                let idx = self.argmax[i * n + j] as usize;
+        for j in 0..n {
+            for i in 0..m {
+                // Column-major indexing for argmax
+                let idx = self.argmax[j * m + i] as usize;
                 if idx < k {
-                    grad_b_data[idx * n + j] += grad_c[(i, j)].value();
+                    // Column-major indexing for grad_b: element (idx, j) at j * k + idx
+                    grad_b_data[j * k + idx] += grad_c[(i, j)].value();
                 }
             }
         }
 
-        Mat::from_row_major(&grad_b_data, k, n)
+        Mat::from_col_major(&grad_b_data, k, n)
     }
 }
 
@@ -236,7 +243,8 @@ mod tests {
 
     #[test]
     fn test_matref_from_slice() {
-        let data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Column-major data: 2×3 matrix [[1,2,3],[4,5,6]] stored as [1,4,2,5,3,6]
+        let data = [1.0f64, 4.0, 2.0, 5.0, 3.0, 6.0];
         let m = MatRef::<TropicalMaxPlus<f64>>::from_slice(&data, 2, 3);
         assert_eq!(m.nrows(), 2);
         assert_eq!(m.ncols(), 3);
@@ -246,8 +254,11 @@ mod tests {
 
     #[test]
     fn test_matmul() {
-        let a_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let b_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Column-major data:
+        // A: 2×3 matrix [[1,2,3],[4,5,6]] stored as [1,4,2,5,3,6]
+        // B: 3×2 matrix [[1,2],[3,4],[5,6]] stored as [1,3,5,2,4,6]
+        let a_data = [1.0f64, 4.0, 2.0, 5.0, 3.0, 6.0];
+        let b_data = [1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let a = MatRef::<TropicalMaxPlus<f64>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
@@ -266,8 +277,9 @@ mod tests {
 
     #[test]
     fn test_matmul_operator() {
-        let a_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let b_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Column-major data
+        let a_data = [1.0f64, 4.0, 2.0, 5.0, 3.0, 6.0];
+        let b_data = [1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let a = MatRef::<TropicalMaxPlus<f64>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
@@ -280,8 +292,9 @@ mod tests {
 
     #[test]
     fn test_matmul_argmax() {
-        let a_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let b_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Column-major data
+        let a_data = [1.0f64, 4.0, 2.0, 5.0, 3.0, 6.0];
+        let b_data = [1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let a = MatRef::<TropicalMaxPlus<f64>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
@@ -296,8 +309,9 @@ mod tests {
     fn test_minplus_matmul() {
         use crate::TropicalMinPlus;
 
-        let a_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let b_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Column-major data
+        let a_data = [1.0f64, 4.0, 2.0, 5.0, 3.0, 6.0];
+        let b_data = [1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let a = MatRef::<TropicalMinPlus<f64>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<TropicalMinPlus<f64>>::from_slice(&b_data, 3, 2);
@@ -425,7 +439,8 @@ mod tests {
     #[test]
     fn test_mat_matmul_ref() {
         let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // Column-major data for B: 3×2 matrix [[1,2],[3,4],[5,6]] stored as [1,3,5,2,4,6]
+        let b_data = [1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
 
         let c = a.matmul_ref(&b);

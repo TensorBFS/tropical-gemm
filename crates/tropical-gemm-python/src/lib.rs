@@ -16,7 +16,6 @@ use ::tropical_gemm::{
     TropicalMinPlus, TropicalSemiring,
 };
 
-
 /// Tropical MaxPlus matrix multiplication: C[i,j] = max_k(A[i,k] + B[k,j])
 ///
 /// Args:
@@ -1038,7 +1037,9 @@ mod gpu {
 
         let (c_data, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(a_data, m, k, b_data, n)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e)))?;
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                })?;
 
         let argmax_i32: Vec<i32> = argmax.into_iter().map(|x| x as i32).collect();
 
@@ -1070,7 +1071,9 @@ mod gpu {
 
         let (c_data, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMinPlus<f32>>(a_data, m, k, b_data, n)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e)))?;
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                })?;
 
         let argmax_i32: Vec<i32> = argmax.into_iter().map(|x| x as i32).collect();
 
@@ -1131,7 +1134,9 @@ mod gpu {
 
         let (c_data, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxMul<f32>>(a_data, m, k, b_data, n)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e)))?;
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                })?;
 
         let argmax_i32: Vec<i32> = argmax.into_iter().map(|x| x as i32).collect();
 
