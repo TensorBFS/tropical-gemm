@@ -338,8 +338,8 @@ def test_maxplus_batched_gpu_backward():
     batch_size = 4
     m, k, n = 8, 16, 8
 
-    a = torch.randn(batch_size, m, k, requires_grad=True).cuda()
-    b = torch.randn(batch_size, k, n, requires_grad=True).cuda()
+    a = torch.randn(batch_size, m, k, device="cuda", requires_grad=True)
+    b = torch.randn(batch_size, k, n, device="cuda", requires_grad=True)
 
     c = tropical_maxplus_matmul_batched_gpu(a, b)
     loss = c.sum()
@@ -357,8 +357,8 @@ def test_minplus_batched_gpu():
     batch_size = 4
     m, k, n = 8, 16, 8
 
-    a = torch.randn(batch_size, m, k, requires_grad=True).cuda()
-    b = torch.randn(batch_size, k, n, requires_grad=True).cuda()
+    a = torch.randn(batch_size, m, k, device="cuda", requires_grad=True)
+    b = torch.randn(batch_size, k, n, device="cuda", requires_grad=True)
 
     c = tropical_minplus_matmul_batched_gpu(a, b)
     c.sum().backward()
