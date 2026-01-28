@@ -680,7 +680,7 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # GPU batched kernel uses row-major, no transpose trick needed
+        # Rust binding returns flattened row-major buffers (it transposes on download).
         a_np = _to_contiguous_numpy_3d(a)
         b_np = _to_contiguous_numpy_3d(b)
 
@@ -733,7 +733,7 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # GPU batched kernel uses row-major, no transpose trick needed
+        # Rust binding returns flattened row-major buffers (it transposes on download).
         a_np = _to_contiguous_numpy_3d(a)
         b_np = _to_contiguous_numpy_3d(b)
 
@@ -782,7 +782,7 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # GPU batched kernel uses row-major, no transpose trick needed
+        # Rust binding returns flattened row-major buffers (it transposes on download).
         a_np = _to_contiguous_numpy_3d(a)
         b_np = _to_contiguous_numpy_3d(b)
 

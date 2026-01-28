@@ -2105,6 +2105,11 @@ mod gpu {
     ///
     /// Returns:
     ///     Tuple of (C, argmax) as flattened arrays of shape (batch * M * N,)
+    ///
+    /// Notes:
+    ///     - The returned buffers are flattened in row-major order (reshape to (batch, M, N)).
+    ///     - Internally, the CUDA backend stores results in column-major; we transpose on download
+    ///       to match Python/NumPy expectations.
     #[pyfunction]
     pub fn maxplus_matmul_gpu_strided_batched_with_argmax<'py>(
         py: Python<'py>,
@@ -2153,8 +2158,19 @@ mod gpu {
                         pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
                     })?;
 
-            c_all.extend(c_data);
-            argmax_all.extend(argmax.into_iter().map(|x| x as i32));
+            // The CUDA backend stores and downloads matrices in column-major order.
+            // Python/NumPy callers expect row-major flattening, so transpose the
+            // downloaded buffers from (m×n) col-major to (m×n) row-major.
+            for i in 0..m {
+                for j in 0..n {
+                    let col_major_idx = j * m + i;
+                    let row_major_idx = i * n + j;
+                    debug_assert!(col_major_idx < c_data.len());
+                    debug_assert!(row_major_idx < c_stride);
+                    c_all.push(c_data[col_major_idx]);
+                    argmax_all.push(argmax[col_major_idx] as i32);
+                }
+            }
         }
 
         Ok((c_all.into_pyarray(py), argmax_all.into_pyarray(py)))
@@ -2209,8 +2225,13 @@ mod gpu {
                         pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
                     })?;
 
-            c_all.extend(c_data);
-            argmax_all.extend(argmax.into_iter().map(|x| x as i32));
+            for i in 0..m {
+                for j in 0..n {
+                    let col_major_idx = j * m + i;
+                    c_all.push(c_data[col_major_idx]);
+                    argmax_all.push(argmax[col_major_idx] as i32);
+                }
+            }
         }
 
         Ok((c_all.into_pyarray(py), argmax_all.into_pyarray(py)))
@@ -2265,8 +2286,13 @@ mod gpu {
                         pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
                     })?;
 
-            c_all.extend(c_data);
-            argmax_all.extend(argmax.into_iter().map(|x| x as i32));
+            for i in 0..m {
+                for j in 0..n {
+                    let col_major_idx = j * m + i;
+                    c_all.push(c_data[col_major_idx]);
+                    argmax_all.push(argmax[col_major_idx] as i32);
+                }
+            }
         }
 
         Ok((c_all.into_pyarray(py), argmax_all.into_pyarray(py)))
