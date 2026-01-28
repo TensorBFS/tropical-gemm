@@ -567,3 +567,249 @@ def test_larger_matrix():
         for j in range(min(3, n)):
             expected = np.max(a[i, :] + b[:, j])
             np.testing.assert_almost_equal(c[i, j], expected, decimal=5)
+
+
+# ============================================================================
+# Strided batched operations tests
+# ============================================================================
+
+
+def test_maxplus_matmul_strided_batched():
+    """Test batched MaxPlus matmul."""
+    from tropical_gemm import maxplus_matmul_strided_batched
+
+    batch_size = 2
+    m, k, n = 2, 3, 2
+
+    # Create batched input: (batch, m, k) and (batch, k, n)
+    a = np.array([
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],  # batch 0
+        [[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]],  # batch 1
+    ], dtype=np.float32)
+
+    b = np.array([
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],  # batch 0
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],  # batch 1
+    ], dtype=np.float32)
+
+    c_flat = maxplus_matmul_strided_batched(a, b)
+    c = c_flat.reshape(batch_size, m, n)
+
+    # Batch 0: same as single matrix test
+    # C[0,0] = max(1+1, 2+3, 3+5) = 8
+    assert c[0, 0, 0] == 8.0
+    # C[0,1] = max(4+2, 5+4, 6+6) = 12
+    assert c[0, 1, 1] == 12.0
+
+    # Batch 1: shifted by 1
+    # C[0,0] = max(2+1, 3+3, 4+5) = 9
+    assert c[1, 0, 0] == 9.0
+
+
+def test_minplus_matmul_strided_batched():
+    """Test batched MinPlus matmul."""
+    from tropical_gemm import minplus_matmul_strided_batched
+
+    batch_size = 2
+    m, k, n = 2, 3, 2
+
+    a = np.array([
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+        [[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]],
+    ], dtype=np.float32)
+
+    b = np.array([
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+    ], dtype=np.float32)
+
+    c_flat = minplus_matmul_strided_batched(a, b)
+    c = c_flat.reshape(batch_size, m, n)
+
+    # Batch 0:
+    # C[0,0] = min(1+1, 2+3, 3+5) = 2
+    assert c[0, 0, 0] == 2.0
+
+    # Batch 1:
+    # C[0,0] = min(2+1, 3+3, 4+5) = 3
+    assert c[1, 0, 0] == 3.0
+
+
+def test_maxmul_matmul_strided_batched():
+    """Test batched MaxMul matmul."""
+    from tropical_gemm import maxmul_matmul_strided_batched
+
+    batch_size = 2
+    m, k, n = 2, 2, 2
+
+    a = np.array([
+        [[2.0, 3.0], [4.0, 5.0]],
+        [[1.0, 2.0], [3.0, 4.0]],
+    ], dtype=np.float32)
+
+    b = np.array([
+        [[1.0, 2.0], [3.0, 4.0]],
+        [[1.0, 2.0], [3.0, 4.0]],
+    ], dtype=np.float32)
+
+    c_flat = maxmul_matmul_strided_batched(a, b)
+    c = c_flat.reshape(batch_size, m, n)
+
+    # Batch 0:
+    # C[0,0] = max(2*1, 3*3) = max(2, 9) = 9
+    assert c[0, 0, 0] == 9.0
+    # C[0,1] = max(2*2, 3*4) = max(4, 12) = 12
+    assert c[0, 0, 1] == 12.0
+
+
+def test_maxplus_matmul_strided_batched_with_argmax():
+    """Test batched MaxPlus matmul with argmax tracking."""
+    from tropical_gemm import maxplus_matmul_strided_batched_with_argmax
+
+    batch_size = 2
+    m, k, n = 2, 3, 2
+
+    a = np.array([
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+        [[1.0, 2.0, 10.0], [4.0, 5.0, 6.0]],  # batch 1 has k=2 winning for [0,0]
+    ], dtype=np.float32)
+
+    b = np.array([
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+    ], dtype=np.float32)
+
+    c_flat, argmax_flat = maxplus_matmul_strided_batched_with_argmax(a, b)
+    c = c_flat.reshape(batch_size, m, n)
+    argmax = argmax_flat.reshape(batch_size, m, n)
+
+    # Batch 0: all argmax should be 2 (k=2 wins for all)
+    assert argmax[0, 0, 0] == 2
+    assert argmax[0, 1, 1] == 2
+
+    # Batch 1: with a[0,2]=10, C[0,0] = max(1+1, 2+3, 10+5) = 15, argmax=2
+    assert c[1, 0, 0] == 15.0
+    assert argmax[1, 0, 0] == 2
+
+
+def test_backward_a_strided_batched():
+    """Test batched backward pass for gradient w.r.t. A."""
+    from tropical_gemm import backward_a_strided_batched
+
+    batch_size = 2
+    m, k, n = 2, 3, 2
+
+    grad_c = np.array([
+        [[1.0, 2.0], [3.0, 4.0]],
+        [[1.0, 1.0], [1.0, 1.0]],
+    ], dtype=np.float32)
+
+    # All argmax are k=2
+    argmax = np.array([
+        [[2, 2], [2, 2]],
+        [[2, 2], [2, 2]],
+    ], dtype=np.int32)
+
+    grad_a_flat = backward_a_strided_batched(grad_c, argmax, k)
+    grad_a = grad_a_flat.reshape(batch_size, m, k)
+
+    # Batch 0:
+    # grad_a[0,0,2] = grad_c[0,0,0] + grad_c[0,0,1] = 1 + 2 = 3
+    # grad_a[0,1,2] = grad_c[0,1,0] + grad_c[0,1,1] = 3 + 4 = 7
+    assert grad_a[0, 0, 2] == 3.0
+    assert grad_a[0, 1, 2] == 7.0
+    assert grad_a[0, 0, 0] == 0.0
+    assert grad_a[0, 0, 1] == 0.0
+
+    # Batch 1:
+    # grad_a[1,0,2] = 1 + 1 = 2
+    # grad_a[1,1,2] = 1 + 1 = 2
+    assert grad_a[1, 0, 2] == 2.0
+    assert grad_a[1, 1, 2] == 2.0
+
+
+def test_backward_b_strided_batched():
+    """Test batched backward pass for gradient w.r.t. B."""
+    from tropical_gemm import backward_b_strided_batched
+
+    batch_size = 2
+    m, k, n = 2, 3, 2
+
+    grad_c = np.array([
+        [[1.0, 2.0], [3.0, 4.0]],
+        [[1.0, 1.0], [1.0, 1.0]],
+    ], dtype=np.float32)
+
+    argmax = np.array([
+        [[2, 2], [2, 2]],
+        [[2, 2], [2, 2]],
+    ], dtype=np.int32)
+
+    grad_b_flat = backward_b_strided_batched(grad_c, argmax, k)
+    grad_b = grad_b_flat.reshape(batch_size, k, n)
+
+    # Batch 0:
+    # grad_b[0,2,0] = grad_c[0,0,0] + grad_c[0,1,0] = 1 + 3 = 4
+    # grad_b[0,2,1] = grad_c[0,0,1] + grad_c[0,1,1] = 2 + 4 = 6
+    assert grad_b[0, 2, 0] == 4.0
+    assert grad_b[0, 2, 1] == 6.0
+    assert grad_b[0, 0, 0] == 0.0
+    assert grad_b[0, 1, 0] == 0.0
+
+
+def test_maxmul_backward_strided_batched():
+    """Test batched MaxMul backward pass."""
+    from tropical_gemm import (
+        maxmul_backward_a_strided_batched,
+        maxmul_backward_b_strided_batched,
+    )
+
+    batch_size = 2
+    m, k, n = 2, 3, 2
+
+    a = np.array([
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+    ], dtype=np.float32)
+
+    b = np.array([
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+    ], dtype=np.float32)
+
+    grad_c = np.array([
+        [[1.0, 1.0], [1.0, 1.0]],
+        [[1.0, 1.0], [1.0, 1.0]],
+    ], dtype=np.float32)
+
+    # All argmax are k=2
+    argmax = np.array([
+        [[2, 2], [2, 2]],
+        [[2, 2], [2, 2]],
+    ], dtype=np.int32)
+
+    grad_a_flat = maxmul_backward_a_strided_batched(grad_c, argmax, b)
+    grad_b_flat = maxmul_backward_b_strided_batched(grad_c, argmax, a)
+
+    grad_a = grad_a_flat.reshape(batch_size, m, k)
+    grad_b = grad_b_flat.reshape(batch_size, k, n)
+
+    # Batch 0:
+    # grad_A[0,0,2] = grad_C[0,0,0]*B[0,2,0] + grad_C[0,0,1]*B[0,2,1] = 1*5 + 1*6 = 11
+    assert grad_a[0, 0, 2] == 11.0
+    assert grad_a[0, 1, 2] == 11.0
+
+    # grad_B[0,2,0] = grad_C[0,0,0]*A[0,0,2] + grad_C[0,1,0]*A[0,1,2] = 1*3 + 1*6 = 9
+    assert grad_b[0, 2, 0] == 9.0
+    assert grad_b[0, 2, 1] == 9.0
+
+
+def test_strided_batched_dimension_mismatch():
+    """Test that dimension mismatch raises error."""
+    from tropical_gemm import maxplus_matmul_strided_batched
+
+    a = np.random.randn(2, 3, 4).astype(np.float32)  # batch=2, m=3, k=4
+    b = np.random.randn(3, 5, 2).astype(np.float32)  # batch=3 (mismatch!)
+
+    with pytest.raises(ValueError, match="Batch size mismatch"):
+        maxplus_matmul_strided_batched(a, b)

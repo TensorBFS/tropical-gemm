@@ -7,13 +7,13 @@
 //!
 //! - `cuda`: Enable GPU acceleration via CUDA
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 // Use fully qualified path to avoid naming conflict with the pymodule
 use ::tropical_gemm::{
-    tropical_matmul, tropical_matmul_with_argmax, GemmWithArgmax, TropicalMaxMul, TropicalMaxPlus,
-    TropicalMinPlus, TropicalSemiring,
+    tropical_matmul, tropical_matmul_strided_batched, tropical_matmul_with_argmax, GemmWithArgmax,
+    TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring,
 };
 
 /// Tropical MaxPlus matrix multiplication: C[i,j] = max_k(A[i,k] + B[k,j])
@@ -908,6 +908,483 @@ fn maxmul_matmul_i64<'py>(
 }
 
 // ============================================================================
+// Strided batched operations (for PyTorch 3D tensors)
+// ============================================================================
+
+/// Tropical MaxPlus strided batched matmul: C[b,i,j] = max_k(A[b,i,k] + B[b,k,j])
+///
+/// Args:
+///     a: Input tensor A of shape (batch, M, K)
+///     b: Input tensor B of shape (batch, K, N)
+///
+/// Returns:
+///     Result tensor C of shape (batch * M * N,) as flattened array
+#[pyfunction]
+fn maxplus_matmul_strided_batched<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+
+    let batch_size = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch_size != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch_size, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let c_data = tropical_matmul_strided_batched::<TropicalMaxPlus<f32>>(
+        a_data, b_data, batch_size, m, k, n,
+    );
+
+    let c_scalars: Vec<f32> = c_data.iter().map(|x| x.value()).collect();
+    Ok(c_scalars.into_pyarray(py))
+}
+
+/// Tropical MinPlus strided batched matmul: C[b,i,j] = min_k(A[b,i,k] + B[b,k,j])
+#[pyfunction]
+fn minplus_matmul_strided_batched<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+
+    let batch_size = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch_size != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch_size, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let c_data = tropical_matmul_strided_batched::<TropicalMinPlus<f32>>(
+        a_data, b_data, batch_size, m, k, n,
+    );
+
+    let c_scalars: Vec<f32> = c_data.iter().map(|x| x.value()).collect();
+    Ok(c_scalars.into_pyarray(py))
+}
+
+/// Tropical MaxMul strided batched matmul: C[b,i,j] = max_k(A[b,i,k] * B[b,k,j])
+#[pyfunction]
+fn maxmul_matmul_strided_batched<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+
+    let batch_size = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch_size != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch_size, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let c_data = tropical_matmul_strided_batched::<TropicalMaxMul<f32>>(
+        a_data, b_data, batch_size, m, k, n,
+    );
+
+    let c_scalars: Vec<f32> = c_data.iter().map(|x| x.value()).collect();
+    Ok(c_scalars.into_pyarray(py))
+}
+
+/// Tropical MaxPlus strided batched matmul with argmax tracking.
+///
+/// Args:
+///     a: Input tensor A of shape (batch, M, K)
+///     b: Input tensor B of shape (batch, K, N)
+///
+/// Returns:
+///     Tuple of (C, argmax) where both are flattened arrays of shape (batch * M * N,)
+#[pyfunction]
+fn maxplus_matmul_strided_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+
+    let batch_size = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch_size != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch_size, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let a_stride = m * k;
+    let b_stride = k * n;
+    let c_stride = m * n;
+
+    let mut c_scalars = Vec::with_capacity(batch_size * c_stride);
+    let mut argmax_all = Vec::with_capacity(batch_size * c_stride);
+
+    for batch_idx in 0..batch_size {
+        let a_slice = &a_data[batch_idx * a_stride..(batch_idx + 1) * a_stride];
+        let b_slice = &b_data[batch_idx * b_stride..(batch_idx + 1) * b_stride];
+
+        let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
+            tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(a_slice, m, k, b_slice, n);
+
+        c_scalars.extend(result.values.iter().map(|x| x.value()));
+        argmax_all.extend(result.argmax.iter().map(|&x| x as i32));
+    }
+
+    Ok((c_scalars.into_pyarray(py), argmax_all.into_pyarray(py)))
+}
+
+/// Tropical MinPlus strided batched matmul with argmax tracking.
+#[pyfunction]
+fn minplus_matmul_strided_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+
+    let batch_size = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch_size != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch_size, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let a_stride = m * k;
+    let b_stride = k * n;
+    let c_stride = m * n;
+
+    let mut c_scalars = Vec::with_capacity(batch_size * c_stride);
+    let mut argmax_all = Vec::with_capacity(batch_size * c_stride);
+
+    for batch_idx in 0..batch_size {
+        let a_slice = &a_data[batch_idx * a_stride..(batch_idx + 1) * a_stride];
+        let b_slice = &b_data[batch_idx * b_stride..(batch_idx + 1) * b_stride];
+
+        let result: GemmWithArgmax<TropicalMinPlus<f32>> =
+            tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(a_slice, m, k, b_slice, n);
+
+        c_scalars.extend(result.values.iter().map(|x| x.value()));
+        argmax_all.extend(result.argmax.iter().map(|&x| x as i32));
+    }
+
+    Ok((c_scalars.into_pyarray(py), argmax_all.into_pyarray(py)))
+}
+
+/// Tropical MaxMul strided batched matmul with argmax tracking.
+#[pyfunction]
+fn maxmul_matmul_strided_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+
+    let batch_size = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch_size != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch_size, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let a_stride = m * k;
+    let b_stride = k * n;
+    let c_stride = m * n;
+
+    let mut c_scalars = Vec::with_capacity(batch_size * c_stride);
+    let mut argmax_all = Vec::with_capacity(batch_size * c_stride);
+
+    for batch_idx in 0..batch_size {
+        let a_slice = &a_data[batch_idx * a_stride..(batch_idx + 1) * a_stride];
+        let b_slice = &b_data[batch_idx * b_stride..(batch_idx + 1) * b_stride];
+
+        let result: GemmWithArgmax<TropicalMaxMul<f32>> =
+            tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(a_slice, m, k, b_slice, n);
+
+        c_scalars.extend(result.values.iter().map(|x| x.value()));
+        argmax_all.extend(result.argmax.iter().map(|&x| x as i32));
+    }
+
+    Ok((c_scalars.into_pyarray(py), argmax_all.into_pyarray(py)))
+}
+
+/// Batched backward pass for gradient w.r.t. A (MaxPlus/MinPlus).
+///
+/// Args:
+///     grad_c: Gradient tensor of shape (batch, M, N)
+///     argmax: Argmax indices of shape (batch, M, N)
+///     k: Inner dimension (columns in A)
+///
+/// Returns:
+///     Gradient w.r.t. A of shape (batch * M * K,) as flattened array
+#[pyfunction]
+fn backward_a_strided_batched<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray3<'py, f32>,
+    argmax: PyReadonlyArray3<'py, i32>,
+    k: usize,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let shape = grad_c.shape();
+    let batch_size = shape[0];
+    let m = shape[1];
+    let n = shape[2];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+
+    let c_stride = m * n;
+    let a_stride = m * k;
+
+    let mut grad_a = vec![0.0f32; batch_size * a_stride];
+
+    for batch_idx in 0..batch_size {
+        for i in 0..m {
+            for j in 0..n {
+                let c_idx = batch_idx * c_stride + i * n + j;
+                let k_idx = argmax_data[c_idx] as usize;
+                if k_idx < k {
+                    grad_a[batch_idx * a_stride + i * k + k_idx] += grad_c_data[c_idx];
+                }
+            }
+        }
+    }
+
+    Ok(grad_a.into_pyarray(py))
+}
+
+/// Batched backward pass for gradient w.r.t. B (MaxPlus/MinPlus).
+///
+/// Args:
+///     grad_c: Gradient tensor of shape (batch, M, N)
+///     argmax: Argmax indices of shape (batch, M, N)
+///     k: Inner dimension (rows in B)
+///
+/// Returns:
+///     Gradient w.r.t. B of shape (batch * K * N,) as flattened array
+#[pyfunction]
+fn backward_b_strided_batched<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray3<'py, f32>,
+    argmax: PyReadonlyArray3<'py, i32>,
+    k: usize,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let shape = grad_c.shape();
+    let batch_size = shape[0];
+    let m = shape[1];
+    let n = shape[2];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+
+    let c_stride = m * n;
+    let b_stride = k * n;
+
+    let mut grad_b = vec![0.0f32; batch_size * b_stride];
+
+    for batch_idx in 0..batch_size {
+        for i in 0..m {
+            for j in 0..n {
+                let c_idx = batch_idx * c_stride + i * n + j;
+                let k_idx = argmax_data[c_idx] as usize;
+                if k_idx < k {
+                    grad_b[batch_idx * b_stride + k_idx * n + j] += grad_c_data[c_idx];
+                }
+            }
+        }
+    }
+
+    Ok(grad_b.into_pyarray(py))
+}
+
+/// Batched MaxMul backward pass for gradient w.r.t. A.
+///
+/// For MaxMul: C[b,i,j] = max_k(A[b,i,k] * B[b,k,j])
+/// grad_A[b,i,k] = sum_j { grad_C[b,i,j] * B[b,k,j] if argmax[b,i,j] == k }
+#[pyfunction]
+fn maxmul_backward_a_strided_batched<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray3<'py, f32>,
+    argmax: PyReadonlyArray3<'py, i32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let shape = grad_c.shape();
+    let b_shape = b.shape();
+
+    let batch_size = shape[0];
+    let m = shape[1];
+    let n = shape[2];
+    let k = b_shape[1];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let c_stride = m * n;
+    let a_stride = m * k;
+    let b_stride = k * n;
+
+    let mut grad_a = vec![0.0f32; batch_size * a_stride];
+
+    for batch_idx in 0..batch_size {
+        for i in 0..m {
+            for j in 0..n {
+                let c_idx = batch_idx * c_stride + i * n + j;
+                let k_idx = argmax_data[c_idx] as usize;
+                if k_idx < k {
+                    // grad_A[b,i,k] += grad_C[b,i,j] * B[b,k,j]
+                    grad_a[batch_idx * a_stride + i * k + k_idx] +=
+                        grad_c_data[c_idx] * b_data[batch_idx * b_stride + k_idx * n + j];
+                }
+            }
+        }
+    }
+
+    Ok(grad_a.into_pyarray(py))
+}
+
+/// Batched MaxMul backward pass for gradient w.r.t. B.
+///
+/// For MaxMul: C[b,i,j] = max_k(A[b,i,k] * B[b,k,j])
+/// grad_B[b,k,j] = sum_i { grad_C[b,i,j] * A[b,i,k] if argmax[b,i,j] == k }
+#[pyfunction]
+fn maxmul_backward_b_strided_batched<'py>(
+    py: Python<'py>,
+    grad_c: PyReadonlyArray3<'py, f32>,
+    argmax: PyReadonlyArray3<'py, i32>,
+    a: PyReadonlyArray3<'py, f32>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let shape = grad_c.shape();
+    let a_shape = a.shape();
+
+    let batch_size = shape[0];
+    let m = shape[1];
+    let n = shape[2];
+    let k = a_shape[2];
+
+    let grad_c_data = grad_c.as_slice()?;
+    let argmax_data = argmax.as_slice()?;
+    let a_data = a.as_slice()?;
+
+    let c_stride = m * n;
+    let a_stride = m * k;
+    let b_stride = k * n;
+
+    let mut grad_b = vec![0.0f32; batch_size * b_stride];
+
+    for batch_idx in 0..batch_size {
+        for i in 0..m {
+            for j in 0..n {
+                let c_idx = batch_idx * c_stride + i * n + j;
+                let k_idx = argmax_data[c_idx] as usize;
+                if k_idx < k {
+                    // grad_B[b,k,j] += grad_C[b,i,j] * A[b,i,k]
+                    grad_b[batch_idx * b_stride + k_idx * n + j] +=
+                        grad_c_data[c_idx] * a_data[batch_idx * a_stride + i * k + k_idx];
+                }
+            }
+        }
+    }
+
+    Ok(grad_b.into_pyarray(py))
+}
+
+// ============================================================================
 // CUDA GPU operations (optional, requires "cuda" feature)
 // ============================================================================
 
@@ -1599,6 +2076,185 @@ mod gpu {
         }
     }
 
+    // ========================================================================
+    // GPU batched operations
+    // ========================================================================
+
+    /// GPU-accelerated MaxPlus strided batched matmul with argmax.
+    ///
+    /// Args:
+    ///     a: Input tensor A of shape (batch, M, K)
+    ///     b: Input tensor B of shape (batch, K, N)
+    ///
+    /// Returns:
+    ///     Tuple of (C, argmax) as flattened arrays of shape (batch * M * N,)
+    #[pyfunction]
+    pub fn maxplus_matmul_gpu_strided_batched_with_argmax<'py>(
+        py: Python<'py>,
+        a: PyReadonlyArray3<'py, f32>,
+        b: PyReadonlyArray3<'py, f32>,
+    ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+        let a_shape = a.shape();
+        let b_shape = b.shape();
+
+        let batch_size = a_shape[0];
+        let m = a_shape[1];
+        let k = a_shape[2];
+        let n = b_shape[2];
+
+        if batch_size != b_shape[0] {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Batch size mismatch: A has batch {}, B has batch {}",
+                batch_size, b_shape[0]
+            )));
+        }
+
+        if k != b_shape[1] {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+                m, k, b_shape[1], n
+            )));
+        }
+
+        let a_data = a.as_slice()?;
+        let b_data = b.as_slice()?;
+
+        let a_stride = m * k;
+        let b_stride = k * n;
+        let c_stride = m * n;
+
+        let mut c_all = Vec::with_capacity(batch_size * c_stride);
+        let mut argmax_all = Vec::with_capacity(batch_size * c_stride);
+
+        for batch_idx in 0..batch_size {
+            let a_slice = &a_data[batch_idx * a_stride..(batch_idx + 1) * a_stride];
+            let b_slice = &b_data[batch_idx * b_stride..(batch_idx + 1) * b_stride];
+
+            let (c_data, argmax) =
+                tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(a_slice, m, k, b_slice, n)
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                    })?;
+
+            c_all.extend(c_data);
+            argmax_all.extend(argmax.into_iter().map(|x| x as i32));
+        }
+
+        Ok((c_all.into_pyarray(py), argmax_all.into_pyarray(py)))
+    }
+
+    /// GPU-accelerated MinPlus strided batched matmul with argmax.
+    #[pyfunction]
+    pub fn minplus_matmul_gpu_strided_batched_with_argmax<'py>(
+        py: Python<'py>,
+        a: PyReadonlyArray3<'py, f32>,
+        b: PyReadonlyArray3<'py, f32>,
+    ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+        let a_shape = a.shape();
+        let b_shape = b.shape();
+
+        let batch_size = a_shape[0];
+        let m = a_shape[1];
+        let k = a_shape[2];
+        let n = b_shape[2];
+
+        if batch_size != b_shape[0] {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Batch size mismatch: A has batch {}, B has batch {}",
+                batch_size, b_shape[0]
+            )));
+        }
+
+        if k != b_shape[1] {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+                m, k, b_shape[1], n
+            )));
+        }
+
+        let a_data = a.as_slice()?;
+        let b_data = b.as_slice()?;
+
+        let a_stride = m * k;
+        let b_stride = k * n;
+        let c_stride = m * n;
+
+        let mut c_all = Vec::with_capacity(batch_size * c_stride);
+        let mut argmax_all = Vec::with_capacity(batch_size * c_stride);
+
+        for batch_idx in 0..batch_size {
+            let a_slice = &a_data[batch_idx * a_stride..(batch_idx + 1) * a_stride];
+            let b_slice = &b_data[batch_idx * b_stride..(batch_idx + 1) * b_stride];
+
+            let (c_data, argmax) =
+                tropical_matmul_gpu_with_argmax::<TropicalMinPlus<f32>>(a_slice, m, k, b_slice, n)
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                    })?;
+
+            c_all.extend(c_data);
+            argmax_all.extend(argmax.into_iter().map(|x| x as i32));
+        }
+
+        Ok((c_all.into_pyarray(py), argmax_all.into_pyarray(py)))
+    }
+
+    /// GPU-accelerated MaxMul strided batched matmul with argmax.
+    #[pyfunction]
+    pub fn maxmul_matmul_gpu_strided_batched_with_argmax<'py>(
+        py: Python<'py>,
+        a: PyReadonlyArray3<'py, f32>,
+        b: PyReadonlyArray3<'py, f32>,
+    ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+        let a_shape = a.shape();
+        let b_shape = b.shape();
+
+        let batch_size = a_shape[0];
+        let m = a_shape[1];
+        let k = a_shape[2];
+        let n = b_shape[2];
+
+        if batch_size != b_shape[0] {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Batch size mismatch: A has batch {}, B has batch {}",
+                batch_size, b_shape[0]
+            )));
+        }
+
+        if k != b_shape[1] {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Dimension mismatch: A[b] is {}x{}, B[b] is {}x{}",
+                m, k, b_shape[1], n
+            )));
+        }
+
+        let a_data = a.as_slice()?;
+        let b_data = b.as_slice()?;
+
+        let a_stride = m * k;
+        let b_stride = k * n;
+        let c_stride = m * n;
+
+        let mut c_all = Vec::with_capacity(batch_size * c_stride);
+        let mut argmax_all = Vec::with_capacity(batch_size * c_stride);
+
+        for batch_idx in 0..batch_size {
+            let a_slice = &a_data[batch_idx * a_stride..(batch_idx + 1) * a_stride];
+            let b_slice = &b_data[batch_idx * b_stride..(batch_idx + 1) * b_stride];
+
+            let (c_data, argmax) =
+                tropical_matmul_gpu_with_argmax::<TropicalMaxMul<f32>>(a_slice, m, k, b_slice, n)
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                    })?;
+
+            c_all.extend(c_data);
+            argmax_all.extend(argmax.into_iter().map(|x| x as i32));
+        }
+
+        Ok((c_all.into_pyarray(py), argmax_all.into_pyarray(py)))
+    }
+
     /// Check if CUDA is available.
     #[pyfunction]
     pub fn cuda_available() -> bool {
@@ -1613,6 +2269,10 @@ mod gpu {
         m.add_function(wrap_pyfunction!(maxplus_matmul_gpu_with_argmax, m)?)?;
         m.add_function(wrap_pyfunction!(minplus_matmul_gpu_with_argmax, m)?)?;
         m.add_function(wrap_pyfunction!(maxmul_matmul_gpu_with_argmax, m)?)?;
+        // GPU batched operations
+        m.add_function(wrap_pyfunction!(maxplus_matmul_gpu_strided_batched_with_argmax, m)?)?;
+        m.add_function(wrap_pyfunction!(minplus_matmul_gpu_strided_batched_with_argmax, m)?)?;
+        m.add_function(wrap_pyfunction!(maxmul_matmul_gpu_strided_batched_with_argmax, m)?)?;
         // DLPack zero-copy functions
         m.add_function(wrap_pyfunction!(maxplus_matmul_dlpack, m)?)?;
         m.add_function(wrap_pyfunction!(minplus_matmul_dlpack, m)?)?;
@@ -1675,6 +2335,18 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(maxplus_matmul_i64, m)?)?;
     m.add_function(wrap_pyfunction!(minplus_matmul_i64, m)?)?;
     m.add_function(wrap_pyfunction!(maxmul_matmul_i64, m)?)?;
+
+    // Strided batched operations (for 3D tensors)
+    m.add_function(wrap_pyfunction!(maxplus_matmul_strided_batched, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_strided_batched, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_strided_batched, m)?)?;
+    m.add_function(wrap_pyfunction!(maxplus_matmul_strided_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_strided_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_strided_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(backward_a_strided_batched, m)?)?;
+    m.add_function(wrap_pyfunction!(backward_b_strided_batched, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_backward_a_strided_batched, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_backward_b_strided_batched, m)?)?;
 
     // GPU operations (if available)
     gpu::register(m)?;

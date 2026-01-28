@@ -58,6 +58,17 @@ from tropical_gemm._core import (
     maxplus_matmul_i64,
     minplus_matmul_i64,
     maxmul_matmul_i64,
+    # Strided batched operations
+    maxplus_matmul_strided_batched,
+    minplus_matmul_strided_batched,
+    maxmul_matmul_strided_batched,
+    maxplus_matmul_strided_batched_with_argmax,
+    minplus_matmul_strided_batched_with_argmax,
+    maxmul_matmul_strided_batched_with_argmax,
+    backward_a_strided_batched,
+    backward_b_strided_batched,
+    maxmul_backward_a_strided_batched,
+    maxmul_backward_b_strided_batched,
     # CUDA availability
     cuda_available,
 )
@@ -71,6 +82,10 @@ if cuda_available():
         maxplus_matmul_gpu_with_argmax,
         minplus_matmul_gpu_with_argmax,
         maxmul_matmul_gpu_with_argmax,
+        # GPU batched operations
+        maxplus_matmul_gpu_strided_batched_with_argmax,
+        minplus_matmul_gpu_strided_batched_with_argmax,
+        maxmul_matmul_gpu_strided_batched_with_argmax,
     )
 
 __version__ = "0.1.0"
@@ -107,6 +122,17 @@ __all__ = [
     "maxplus_matmul_i64",
     "minplus_matmul_i64",
     "maxmul_matmul_i64",
+    # Strided batched operations
+    "maxplus_matmul_strided_batched",
+    "minplus_matmul_strided_batched",
+    "maxmul_matmul_strided_batched",
+    "maxplus_matmul_strided_batched_with_argmax",
+    "minplus_matmul_strided_batched_with_argmax",
+    "maxmul_matmul_strided_batched_with_argmax",
+    "backward_a_strided_batched",
+    "backward_b_strided_batched",
+    "maxmul_backward_a_strided_batched",
+    "maxmul_backward_b_strided_batched",
     # CUDA
     "cuda_available",
 ]
@@ -120,4 +146,8 @@ if cuda_available():
         "maxplus_matmul_gpu_with_argmax",
         "minplus_matmul_gpu_with_argmax",
         "maxmul_matmul_gpu_with_argmax",
+        # GPU batched operations
+        "maxplus_matmul_gpu_strided_batched_with_argmax",
+        "minplus_matmul_gpu_strided_batched_with_argmax",
+        "maxmul_matmul_gpu_strided_batched_with_argmax",
     ])

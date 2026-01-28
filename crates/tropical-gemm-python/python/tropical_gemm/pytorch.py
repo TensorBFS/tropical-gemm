@@ -527,6 +527,467 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
 
 
 # ===========================================================================
+# Batched CPU Autograd Functions
+# ===========================================================================
+
+
+class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
+    """
+    Batched MaxPlus tropical matrix multiplication.
+
+    Forward: C[b,i,j] = max_k(A[b,i,k] + B[b,k,j])
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch_size, m, k = a.shape
+        n = b.shape[2]
+
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_strided_batched_with_argmax(
+            a_np, b_np
+        )
+
+        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(
+            a.device
+        )
+
+        ctx.save_for_backward(argmax)
+        ctx.batch_size = batch_size
+        ctx.k = k
+        ctx.m = m
+        ctx.n = n
+
+        return c
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        (argmax,) = ctx.saved_tensors
+        batch_size = ctx.batch_size
+        k = ctx.k
+        m = ctx.m
+        n = ctx.n
+
+        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        argmax_np = argmax.cpu().numpy().astype(np.int32)
+
+        if not grad_c_np.flags["C_CONTIGUOUS"]:
+            grad_c_np = np.ascontiguousarray(grad_c_np)
+        if not argmax_np.flags["C_CONTIGUOUS"]:
+            argmax_np = np.ascontiguousarray(argmax_np)
+
+        grad_a_flat = tropical_gemm.backward_a_strided_batched(grad_c_np, argmax_np, k)
+        grad_b_flat = tropical_gemm.backward_b_strided_batched(grad_c_np, argmax_np, k)
+
+        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(batch_size, m, k)).to(
+            grad_c.device
+        )
+        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(batch_size, k, n)).to(
+            grad_c.device
+        )
+
+        return grad_a, grad_b
+
+
+class TropicalMinPlusMatmulBatched(torch.autograd.Function):
+    """
+    Batched MinPlus tropical matrix multiplication.
+
+    Forward: C[b,i,j] = min_k(A[b,i,k] + B[b,k,j])
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch_size, m, k = a.shape
+        n = b.shape[2]
+
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_strided_batched_with_argmax(
+            a_np, b_np
+        )
+
+        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(
+            a.device
+        )
+
+        ctx.save_for_backward(argmax)
+        ctx.batch_size = batch_size
+        ctx.k = k
+        ctx.m = m
+        ctx.n = n
+
+        return c
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        (argmax,) = ctx.saved_tensors
+        batch_size = ctx.batch_size
+        k = ctx.k
+        m = ctx.m
+        n = ctx.n
+
+        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        argmax_np = argmax.cpu().numpy().astype(np.int32)
+
+        if not grad_c_np.flags["C_CONTIGUOUS"]:
+            grad_c_np = np.ascontiguousarray(grad_c_np)
+        if not argmax_np.flags["C_CONTIGUOUS"]:
+            argmax_np = np.ascontiguousarray(argmax_np)
+
+        grad_a_flat = tropical_gemm.backward_a_strided_batched(grad_c_np, argmax_np, k)
+        grad_b_flat = tropical_gemm.backward_b_strided_batched(grad_c_np, argmax_np, k)
+
+        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(batch_size, m, k)).to(
+            grad_c.device
+        )
+        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(batch_size, k, n)).to(
+            grad_c.device
+        )
+
+        return grad_a, grad_b
+
+
+class TropicalMaxMulMatmulBatched(torch.autograd.Function):
+    """
+    Batched MaxMul tropical matrix multiplication.
+
+    Forward: C[b,i,j] = max_k(A[b,i,k] * B[b,k,j])
+
+    Uses multiplicative gradient rule in backward pass.
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch_size, m, k = a.shape
+        n = b.shape[2]
+
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_strided_batched_with_argmax(
+            a_np, b_np
+        )
+
+        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(
+            a.device
+        )
+
+        # Save inputs and argmax for multiplicative gradient
+        ctx.save_for_backward(
+            torch.from_numpy(a_np), torch.from_numpy(b_np), argmax
+        )
+        ctx.batch_size = batch_size
+        ctx.k = k
+        ctx.m = m
+        ctx.n = n
+
+        return c
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        a, b, argmax = ctx.saved_tensors
+        batch_size = ctx.batch_size
+        k_dim = ctx.k
+        m = ctx.m
+        n = ctx.n
+
+        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        argmax_np = argmax.numpy().astype(np.int32)
+        a_np = a.numpy().astype(np.float32)
+        b_np = b.numpy().astype(np.float32)
+
+        if not grad_c_np.flags["C_CONTIGUOUS"]:
+            grad_c_np = np.ascontiguousarray(grad_c_np)
+        if not argmax_np.flags["C_CONTIGUOUS"]:
+            argmax_np = np.ascontiguousarray(argmax_np)
+
+        grad_a_flat = tropical_gemm.maxmul_backward_a_strided_batched(
+            grad_c_np, argmax_np, b_np
+        )
+        grad_b_flat = tropical_gemm.maxmul_backward_b_strided_batched(
+            grad_c_np, argmax_np, a_np
+        )
+
+        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(batch_size, m, k_dim)).to(
+            grad_c.device
+        )
+        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(batch_size, k_dim, n)).to(
+            grad_c.device
+        )
+
+        return grad_a, grad_b
+
+
+# ===========================================================================
+# Batched GPU Autograd Functions
+# ===========================================================================
+
+# Check if GPU batched functions are available
+_GPU_BATCHED_AVAILABLE = hasattr(tropical_gemm, "maxplus_matmul_gpu_strided_batched_with_argmax")
+
+
+class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
+    """
+    GPU-accelerated batched MaxPlus tropical matrix multiplication.
+
+    Uses optimized Rust CUDA backend via the batched GPU functions.
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch_size, m, k = a.shape
+        n = b.shape[2]
+
+        if _GPU_BATCHED_AVAILABLE and a.is_cuda:
+            # Use Rust CUDA batched backend
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
+
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
+
+            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_gpu_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+        else:
+            # Fallback to CPU batched backend
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
+
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
+
+            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+
+        ctx.save_for_backward(argmax)
+        ctx.batch_size = batch_size
+        ctx.k = k
+        ctx.m = m
+        ctx.n = n
+
+        return c
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        (argmax,) = ctx.saved_tensors
+        batch_size = ctx.batch_size
+        k = ctx.k
+        m = ctx.m
+        n = ctx.n
+
+        # Use GPU scatter operations for backward
+        grad_a = torch.zeros(batch_size, m, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_a.scatter_add_(2, argmax, grad_c)
+
+        # For grad_b: need to accumulate over rows
+        grad_b = torch.zeros(batch_size, k, n, device=grad_c.device, dtype=grad_c.dtype)
+        # Transpose to accumulate correctly
+        argmax_t = argmax.transpose(1, 2)  # (batch, n, m)
+        grad_c_t = grad_c.transpose(1, 2)  # (batch, n, m)
+        grad_b_t = torch.zeros(batch_size, n, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(2, argmax_t, grad_c_t)
+        grad_b = grad_b_t.transpose(1, 2)
+
+        return grad_a, grad_b
+
+
+class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
+    """
+    GPU-accelerated batched MinPlus tropical matrix multiplication.
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch_size, m, k = a.shape
+        n = b.shape[2]
+
+        if _GPU_BATCHED_AVAILABLE and a.is_cuda:
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
+
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
+
+            c_flat, argmax_flat = tropical_gemm.minplus_matmul_gpu_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+        else:
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
+
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
+
+            c_flat, argmax_flat = tropical_gemm.minplus_matmul_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+
+        ctx.save_for_backward(argmax)
+        ctx.batch_size = batch_size
+        ctx.k = k
+        ctx.m = m
+        ctx.n = n
+
+        return c
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        (argmax,) = ctx.saved_tensors
+        batch_size = ctx.batch_size
+        k = ctx.k
+        m = ctx.m
+        n = ctx.n
+
+        grad_a = torch.zeros(batch_size, m, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_a.scatter_add_(2, argmax, grad_c)
+
+        argmax_t = argmax.transpose(1, 2)
+        grad_c_t = grad_c.transpose(1, 2)
+        grad_b_t = torch.zeros(batch_size, n, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(2, argmax_t, grad_c_t)
+        grad_b = grad_b_t.transpose(1, 2)
+
+        return grad_a, grad_b
+
+
+class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
+    """
+    GPU-accelerated batched MaxMul tropical matrix multiplication.
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch_size, m, k = a.shape
+        n = b.shape[2]
+
+        if _GPU_BATCHED_AVAILABLE and a.is_cuda:
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
+
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
+
+            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_gpu_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+        else:
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
+
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
+
+            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+
+        ctx.save_for_backward(a.detach(), b.detach(), argmax)
+        ctx.batch_size = batch_size
+        ctx.k = k
+        ctx.m = m
+        ctx.n = n
+
+        return c
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        a, b, argmax = ctx.saved_tensors
+        batch_size = ctx.batch_size
+        k_dim = ctx.k
+        m = ctx.m
+        n = ctx.n
+
+        # For maxmul: C[b,i,j] = A[b,i,argmax[b,i,j]] * B[b,argmax[b,i,j],j]
+        # grad_a[b,i,argmax[b,i,j]] += grad_c[b,i,j] * B[b,argmax[b,i,j],j]
+        # grad_b[b,argmax[b,i,j],j] += grad_c[b,i,j] * A[b,i,argmax[b,i,j]]
+
+        # Get the winning values from B: B[b, argmax[b,i,j], j]
+        # argmax is (batch, m, n), need B[b, argmax[b,i,j], j]
+        argmax_expanded = argmax.unsqueeze(-1).expand(-1, -1, -1, n)  # (batch, m, n, n)
+        b_expanded = b.unsqueeze(1).expand(-1, m, -1, -1)  # (batch, m, k, n)
+        # This is getting complex, let's use simpler approach with gather
+        # b_winning[b,i,j] = b[b, argmax[b,i,j], j]
+        b_winning = torch.gather(b, 1, argmax)  # (batch, m, n) gathering along k axis
+
+        # a_winning[b,i,j] = a[b, i, argmax[b,i,j]]
+        a_winning = torch.gather(a, 2, argmax)  # (batch, m, n) gathering along k axis
+
+        # grad_a
+        grad_a = torch.zeros(batch_size, m, k_dim, device=grad_c.device, dtype=grad_c.dtype)
+        grad_a.scatter_add_(2, argmax, grad_c * b_winning)
+
+        # grad_b
+        argmax_t = argmax.transpose(1, 2)  # (batch, n, m)
+        grad_c_a_t = (grad_c * a_winning).transpose(1, 2)  # (batch, n, m)
+        grad_b_t = torch.zeros(batch_size, n, k_dim, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(2, argmax_t, grad_c_a_t)
+        grad_b = grad_b_t.transpose(1, 2)
+
+        return grad_a, grad_b
+
+
+# ===========================================================================
 # Convenience functions
 # ===========================================================================
 
@@ -624,6 +1085,95 @@ def tropical_maxmul_matmul_gpu(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor
     return TropicalMaxMulMatmulGPU.apply(a, b)
 
 
+# ===========================================================================
+# Batched convenience functions
+# ===========================================================================
+
+
+def tropical_maxplus_matmul_batched(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Batched MaxPlus tropical matrix multiplication: C[b,i,j] = max_k(A[b,i,k] + B[b,k,j])
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMaxPlusMatmulBatched.apply(a, b)
+
+
+def tropical_minplus_matmul_batched(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Batched MinPlus tropical matrix multiplication: C[b,i,j] = min_k(A[b,i,k] + B[b,k,j])
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMinPlusMatmulBatched.apply(a, b)
+
+
+def tropical_maxmul_matmul_batched(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Batched MaxMul tropical matrix multiplication: C[b,i,j] = max_k(A[b,i,k] * B[b,k,j])
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMaxMulMatmulBatched.apply(a, b)
+
+
+def tropical_maxplus_matmul_batched_gpu(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    GPU-accelerated batched MaxPlus tropical matrix multiplication.
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMaxPlusMatmulBatchedGPU.apply(a, b)
+
+
+def tropical_minplus_matmul_batched_gpu(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    GPU-accelerated batched MinPlus tropical matrix multiplication.
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMinPlusMatmulBatchedGPU.apply(a, b)
+
+
+def tropical_maxmul_matmul_batched_gpu(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    GPU-accelerated batched MaxMul tropical matrix multiplication.
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMaxMulMatmulBatchedGPU.apply(a, b)
+
+
 __all__ = [
     # CPU autograd functions
     "TropicalMaxPlusMatmul",
@@ -633,6 +1183,14 @@ __all__ = [
     "TropicalMaxPlusMatmulGPU",
     "TropicalMinPlusMatmulGPU",
     "TropicalMaxMulMatmulGPU",
+    # Batched CPU autograd functions
+    "TropicalMaxPlusMatmulBatched",
+    "TropicalMinPlusMatmulBatched",
+    "TropicalMaxMulMatmulBatched",
+    # Batched GPU autograd functions
+    "TropicalMaxPlusMatmulBatchedGPU",
+    "TropicalMinPlusMatmulBatchedGPU",
+    "TropicalMaxMulMatmulBatchedGPU",
     # Convenience functions
     "tropical_maxplus_matmul",
     "tropical_minplus_matmul",
@@ -640,8 +1198,17 @@ __all__ = [
     "tropical_maxplus_matmul_gpu",
     "tropical_minplus_matmul_gpu",
     "tropical_maxmul_matmul_gpu",
+    # Batched convenience functions
+    "tropical_maxplus_matmul_batched",
+    "tropical_minplus_matmul_batched",
+    "tropical_maxmul_matmul_batched",
+    "tropical_maxplus_matmul_batched_gpu",
+    "tropical_minplus_matmul_batched_gpu",
+    "tropical_maxmul_matmul_batched_gpu",
     # GPU availability flag
     "GPU_AVAILABLE",
     # DLPack availability flag
     "_DLPACK_AVAILABLE",
+    # GPU batched availability flag
+    "_GPU_BATCHED_AVAILABLE",
 ]
