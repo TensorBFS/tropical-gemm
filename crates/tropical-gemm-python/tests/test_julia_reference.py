@@ -418,3 +418,135 @@ class TestFixtureIntegrity:
             else:
                 assert len(data["a"]) == m, f"m dimension mismatch in {path}"
                 assert len(data["a"][0]) == k, f"k dimension mismatch in {path}"
+
+
+# ============================================================================
+# GPU Tests Against Julia Reference
+# ============================================================================
+
+# Check if CUDA is available for GPU tests
+CUDA_AVAILABLE = torch.cuda.is_available() and tropical_gemm.cuda_available()
+
+
+@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
+@pytest.mark.skipif(not BATCHED_AVAILABLE, reason="Batched functions not available")
+class TestGPUBatchedMatmul:
+    """Test GPU batched matmul against Julia reference."""
+
+    @pytest.mark.parametrize("algebra,scalar,fixture_name", BATCHED_TEST_PARAMS)
+    def test_gpu_batched_matmul_correctness(self, algebra: str, scalar: str, fixture_name: str):
+        """Test that GPU batched matmul produces correct results."""
+        if scalar != "f32":
+            pytest.skip("Batched PyTorch tests only support f32")
+
+        data = load_fixture(algebra, scalar, fixture_name)
+
+        a = torch.tensor(data["a"], dtype=torch.float32, device="cuda")
+        b = torch.tensor(data["b"], dtype=torch.float32, device="cuda")
+        c_expected = torch.tensor(data["c_expected"], dtype=torch.float32, device="cuda")
+
+        fn = get_batched_matmul_fn(algebra)
+        if fn is None:
+            pytest.skip(f"No batched matmul function for {algebra}")
+
+        c = fn(a, b)
+
+        torch.testing.assert_close(
+            c, c_expected, rtol=1e-4, atol=1e-5,
+            msg=f"GPU batched matmul mismatch for {algebra}/{fixture_name}"
+        )
+
+    @pytest.mark.parametrize("algebra,scalar,fixture_name", BATCHED_TEST_PARAMS)
+    def test_gpu_batched_gradient_correctness(self, algebra: str, scalar: str, fixture_name: str):
+        """Test that GPU batched matmul gradients work correctly."""
+        if scalar != "f32":
+            pytest.skip("Batched PyTorch tests only support f32")
+
+        data = load_fixture(algebra, scalar, fixture_name)
+
+        a = torch.tensor(data["a"], dtype=torch.float32, device="cuda").requires_grad_(True)
+        b = torch.tensor(data["b"], dtype=torch.float32, device="cuda").requires_grad_(True)
+
+        fn = get_batched_matmul_fn(algebra)
+        if fn is None:
+            pytest.skip(f"No batched matmul function for {algebra}")
+
+        c = fn(a, b)
+        c.sum().backward()
+
+        assert a.grad is not None, "grad_a should be computed on GPU"
+        assert b.grad is not None, "grad_b should be computed on GPU"
+        assert a.grad.device.type == "cuda", "grad_a should be on GPU"
+        assert b.grad.device.type == "cuda", "grad_b should be on GPU"
+
+
+@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA not available")
+class TestGPUNonBatchedMatmul:
+    """Test GPU non-batched matmul against Julia reference using PyTorch autograd."""
+
+    @pytest.mark.parametrize("algebra,scalar,shape", [
+        (algebra, "f32", shape)
+        for algebra in FLOAT_ALGEBRAS
+        for shape in ["square_8", "square_16", "square_30"]
+    ])
+    def test_gpu_matmul_correctness(self, algebra: str, scalar: str, shape: str):
+        """Test GPU matmul using PyTorch autograd interface against Julia reference."""
+        from tropical_gemm.pytorch import (
+            tropical_maxplus_matmul,
+            tropical_minplus_matmul,
+            tropical_maxmul_matmul,
+        )
+
+        data = load_fixture(algebra, scalar, shape)
+
+        a = torch.tensor(data["a"], dtype=torch.float32, device="cuda")
+        b = torch.tensor(data["b"], dtype=torch.float32, device="cuda")
+        c_expected = torch.tensor(data["c_expected"], dtype=torch.float32, device="cuda")
+
+        # Get PyTorch autograd function
+        fn_map = {
+            "maxplus": tropical_maxplus_matmul,
+            "minplus": tropical_minplus_matmul,
+            "maxmul": tropical_maxmul_matmul,
+        }
+        fn = fn_map.get(algebra)
+
+        c = fn(a, b)
+
+        torch.testing.assert_close(
+            c, c_expected, rtol=1e-4, atol=1e-5,
+            msg=f"GPU matmul mismatch for {algebra}/{shape}"
+        )
+
+    @pytest.mark.parametrize("algebra,scalar,shape", [
+        (algebra, "f32", shape)
+        for algebra in FLOAT_ALGEBRAS
+        for shape in ["square_8", "square_16"]
+    ])
+    def test_gpu_matmul_gradient(self, algebra: str, scalar: str, shape: str):
+        """Test GPU matmul gradient computation against Julia reference."""
+        from tropical_gemm.pytorch import (
+            tropical_maxplus_matmul,
+            tropical_minplus_matmul,
+            tropical_maxmul_matmul,
+        )
+
+        data = load_fixture(algebra, scalar, shape)
+
+        a = torch.tensor(data["a"], dtype=torch.float32, device="cuda", requires_grad=True)
+        b = torch.tensor(data["b"], dtype=torch.float32, device="cuda", requires_grad=True)
+
+        fn_map = {
+            "maxplus": tropical_maxplus_matmul,
+            "minplus": tropical_minplus_matmul,
+            "maxmul": tropical_maxmul_matmul,
+        }
+        fn = fn_map.get(algebra)
+
+        c = fn(a, b)
+        c.sum().backward()
+
+        assert a.grad is not None, "grad_a should be computed on GPU"
+        assert b.grad is not None, "grad_b should be computed on GPU"
+        assert a.grad.device.type == "cuda", "grad_a should be on GPU"
+        assert b.grad.device.type == "cuda", "grad_b should be on GPU"
