@@ -1,4 +1,4 @@
-.PHONY: help build build-release test benchmark benchmark-gpu benchmark-all clean
+.PHONY: help build build-release test benchmark benchmark-gpu benchmark-jax benchmark-all clean
 
 help:
 	@echo "tropical-gemm-python"
@@ -11,9 +11,10 @@ help:
 	@echo "  make test           - Run all tests"
 	@echo ""
 	@echo "Benchmark:"
-	@echo "  make benchmark      - Run CPU benchmarks"
-	@echo "  make benchmark-gpu  - Run GPU benchmarks"
-	@echo "  make benchmark-all  - Run CPU + GPU benchmarks"
+	@echo "  make benchmark      - Run PyTorch CPU benchmarks"
+	@echo "  make benchmark-gpu  - Run PyTorch GPU benchmarks"
+	@echo "  make benchmark-jax  - Run JAX benchmarks"
+	@echo "  make benchmark-all  - Run all benchmarks"
 	@echo ""
 	@echo "Misc:"
 	@echo "  make clean          - Clean build artifacts"
@@ -33,8 +34,11 @@ benchmark: build-release
 benchmark-gpu: build-release
 	python benchmarks/benchmark.py --gpu
 
+benchmark-jax: build-release
+	python benchmarks/benchmark.py --jax
+
 benchmark-all: build-release
-	python benchmarks/benchmark.py --cpu --gpu
+	python benchmarks/benchmark.py --all
 
 clean:
 	rm -rf target/ *.egg-info/ dist/ build/

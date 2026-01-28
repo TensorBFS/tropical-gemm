@@ -1,28 +1,38 @@
 """
-Benchmark: tropical_gemm PyTorch wrapper vs naive PyTorch implementation.
+Benchmark: tropical_gemm wrappers vs naive implementations.
 
-Covers all operations:
+Covers:
+- PyTorch: CPU and GPU benchmarks
+- JAX: CPU benchmarks with autodiff
+
+Operations:
 - 2D: tropical_maxplus_matmul, tropical_minplus_matmul, tropical_maxmul_matmul
 - 3D batched: tropical_maxplus_matmul_batched, etc.
 """
 
 import argparse
-import torch
 import time
 import numpy as np
 from typing import Tuple, Callable
 
 import tropical_gemm
-from tropical_gemm.pytorch import (
-    tropical_maxplus_matmul,
-    tropical_minplus_matmul,
-    tropical_maxmul_matmul,
-    tropical_maxplus_matmul_batched,
-    tropical_minplus_matmul_batched,
-    tropical_maxmul_matmul_batched,
-)
 
-CUDA_AVAILABLE = tropical_gemm.cuda_available() and torch.cuda.is_available()
+# PyTorch imports
+try:
+    import torch
+    from tropical_gemm.pytorch import (
+        tropical_maxplus_matmul as torch_maxplus,
+        tropical_minplus_matmul as torch_minplus,
+        tropical_maxmul_matmul as torch_maxmul,
+        tropical_maxplus_matmul_batched as torch_maxplus_batched,
+        tropical_minplus_matmul_batched as torch_minplus_batched,
+        tropical_maxmul_matmul_batched as torch_maxmul_batched,
+    )
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
+CUDA_AVAILABLE = TORCH_AVAILABLE and tropical_gemm.cuda_available() and torch.cuda.is_available()
 
 if CUDA_AVAILABLE:
     from tropical_gemm.pytorch import (
@@ -34,38 +44,72 @@ if CUDA_AVAILABLE:
         tropical_maxmul_matmul_batched_gpu,
     )
 
+# JAX imports
+try:
+    import jax
+    import jax.numpy as jnp
+    from jax import grad
+    from tropical_gemm.jax import (
+        tropical_maxplus_matmul as jax_maxplus,
+        tropical_minplus_matmul as jax_minplus,
+        tropical_maxmul_matmul as jax_maxmul,
+        tropical_maxplus_matmul_batched as jax_maxplus_batched,
+        tropical_minplus_matmul_batched as jax_minplus_batched,
+        tropical_maxmul_matmul_batched as jax_maxmul_batched,
+    )
+    JAX_AVAILABLE = True
+except ImportError:
+    JAX_AVAILABLE = False
+
 
 # ============================================================================
-# Naive PyTorch Implementations
+# Naive Implementations
 # ============================================================================
 
-# 2D operations
-def naive_maxplus_2d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+# PyTorch naive
+def torch_naive_maxplus_2d(a, b):
     return (a.unsqueeze(-1) + b.unsqueeze(0)).max(dim=1).values
 
-def naive_minplus_2d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def torch_naive_minplus_2d(a, b):
     return (a.unsqueeze(-1) + b.unsqueeze(0)).min(dim=1).values
 
-def naive_maxmul_2d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def torch_naive_maxmul_2d(a, b):
     return (a.unsqueeze(-1) * b.unsqueeze(0)).max(dim=1).values
 
-# 3D batched operations
-def naive_maxplus_3d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def torch_naive_maxplus_3d(a, b):
     return (a.unsqueeze(-1) + b.unsqueeze(-3)).max(dim=-2).values
 
-def naive_minplus_3d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def torch_naive_minplus_3d(a, b):
     return (a.unsqueeze(-1) + b.unsqueeze(-3)).min(dim=-2).values
 
-def naive_maxmul_3d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def torch_naive_maxmul_3d(a, b):
     return (a.unsqueeze(-1) * b.unsqueeze(-3)).max(dim=-2).values
+
+# JAX naive
+def jax_naive_maxplus_2d(a, b):
+    return (a[:, :, None] + b[None, :, :]).max(axis=1)
+
+def jax_naive_minplus_2d(a, b):
+    return (a[:, :, None] + b[None, :, :]).min(axis=1)
+
+def jax_naive_maxmul_2d(a, b):
+    return (a[:, :, None] * b[None, :, :]).max(axis=1)
+
+def jax_naive_maxplus_3d(a, b):
+    return (a[:, :, :, None] + b[:, None, :, :]).max(axis=2)
+
+def jax_naive_minplus_3d(a, b):
+    return (a[:, :, :, None] + b[:, None, :, :]).min(axis=2)
+
+def jax_naive_maxmul_3d(a, b):
+    return (a[:, :, :, None] * b[:, None, :, :]).max(axis=2)
 
 
 # ============================================================================
 # Benchmark Utilities
 # ============================================================================
 
-def bench_forward(fn: Callable, a: torch.Tensor, b: torch.Tensor,
-                  warmup: int = 5, iters: int = 20, sync: bool = False) -> Tuple[float, float]:
+def bench_torch_forward(fn, a, b, warmup=5, iters=20, sync=False):
     for _ in range(warmup):
         _ = fn(a, b)
         if sync: torch.cuda.synchronize()
@@ -80,8 +124,7 @@ def bench_forward(fn: Callable, a: torch.Tensor, b: torch.Tensor,
     return np.mean(times), np.std(times)
 
 
-def bench_backward(fn: Callable, a: torch.Tensor, b: torch.Tensor,
-                   warmup: int = 3, iters: int = 10, sync: bool = False) -> Tuple[float, float]:
+def bench_torch_backward(fn, a, b, warmup=3, iters=10, sync=False):
     for _ in range(warmup):
         ac, bc = a.clone().requires_grad_(True), b.clone().requires_grad_(True)
         fn(ac, bc).sum().backward()
@@ -98,8 +141,38 @@ def bench_backward(fn: Callable, a: torch.Tensor, b: torch.Tensor,
     return np.mean(times), np.std(times)
 
 
-def verify(opt_fn, naive_fn, a, b, atol=1e-5) -> bool:
-    return torch.allclose(opt_fn(a, b), naive_fn(a, b), atol=atol)
+def bench_jax_forward(fn, a, b, warmup=5, iters=20):
+    # Block until computation completes
+    for _ in range(warmup):
+        _ = fn(a, b).block_until_ready()
+
+    times = []
+    for _ in range(iters):
+        t0 = time.perf_counter()
+        _ = fn(a, b).block_until_ready()
+        times.append((time.perf_counter() - t0) * 1000)
+    return np.mean(times), np.std(times)
+
+
+def bench_jax_backward(fn, a, b, warmup=3, iters=10):
+    def loss_fn(a, b):
+        return fn(a, b).sum()
+
+    grad_fn = grad(loss_fn, argnums=(0, 1))
+
+    for _ in range(warmup):
+        ga, gb = grad_fn(a, b)
+        ga.block_until_ready()
+        gb.block_until_ready()
+
+    times = []
+    for _ in range(iters):
+        t0 = time.perf_counter()
+        ga, gb = grad_fn(a, b)
+        ga.block_until_ready()
+        gb.block_until_ready()
+        times.append((time.perf_counter() - t0) * 1000)
+    return np.mean(times), np.std(times)
 
 
 def fmt_time(mean, std):
@@ -107,36 +180,36 @@ def fmt_time(mean, std):
 
 
 # ============================================================================
-# CPU Benchmarks
+# PyTorch CPU Benchmarks
 # ============================================================================
 
-def run_cpu_benchmarks():
+def run_pytorch_cpu_benchmarks():
+    if not TORCH_AVAILABLE:
+        print("PyTorch not available, skipping PyTorch benchmarks")
+        return
+
     print("=" * 85)
-    print("CPU Benchmark: Optimized Rust vs Naive PyTorch")
+    print("PyTorch CPU Benchmark: Optimized Rust vs Naive PyTorch")
     print("=" * 85)
 
-    # 2D configs: (M, K, N)
     configs_2d = [(128, 128, 128), (256, 256, 256), (512, 512, 512)]
-
-    # 3D configs: (B, M, K, N)
     configs_3d = [(4, 64, 64, 64), (8, 128, 128, 128), (16, 128, 128, 128)]
 
     ops_2d = [
-        ("MaxPlus 2D", tropical_maxplus_matmul, naive_maxplus_2d, False),
-        ("MinPlus 2D", tropical_minplus_matmul, naive_minplus_2d, False),
-        ("MaxMul 2D", tropical_maxmul_matmul, naive_maxmul_2d, True),
+        ("MaxPlus 2D", torch_maxplus, torch_naive_maxplus_2d, False),
+        ("MinPlus 2D", torch_minplus, torch_naive_minplus_2d, False),
+        ("MaxMul 2D", torch_maxmul, torch_naive_maxmul_2d, True),
     ]
 
     ops_3d = [
-        ("MaxPlus Batched", tropical_maxplus_matmul_batched, naive_maxplus_3d, False),
-        ("MinPlus Batched", tropical_minplus_matmul_batched, naive_minplus_3d, False),
-        ("MaxMul Batched", tropical_maxmul_matmul_batched, naive_maxmul_3d, True),
+        ("MaxPlus Batched", torch_maxplus_batched, torch_naive_maxplus_3d, False),
+        ("MinPlus Batched", torch_minplus_batched, torch_naive_minplus_3d, False),
+        ("MaxMul Batched", torch_maxmul_batched, torch_naive_maxmul_3d, True),
     ]
 
-    # Forward 2D
     print("\n2D Forward Pass")
     print("-" * 85)
-    print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10} {'OK':<4}")
+    print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10}")
     print("-" * 85)
 
     for name, opt_fn, naive_fn, pos in ops_2d:
@@ -144,63 +217,57 @@ def run_cpu_benchmarks():
             a = torch.randn(m, k).abs() + 0.1 if pos else torch.randn(m, k)
             b = torch.randn(k, n).abs() + 0.1 if pos else torch.randn(k, n)
 
-            opt_m, opt_s = bench_forward(opt_fn, a, b)
-            naive_m, naive_s = bench_forward(naive_fn, a, b)
-            ok = verify(opt_fn, naive_fn, a, b)
+            opt_m, opt_s = bench_torch_forward(opt_fn, a, b)
+            naive_m, naive_s = bench_torch_forward(naive_fn, a, b)
 
-            print(f"{name:<16} ({m},{k},{n}){'':<9} {fmt_time(opt_m, opt_s):<16} {fmt_time(naive_m, naive_s):<16} {naive_m/opt_m:>5.2f}x     {'✓' if ok else '✗'}")
+            print(f"{name:<16} ({m},{k},{n}){'':<9} {fmt_time(opt_m, opt_s):<16} {fmt_time(naive_m, naive_s):<16} {naive_m/opt_m:>5.2f}x")
 
-    # Forward 3D
     print("\n3D Batched Forward Pass")
     print("-" * 85)
-    print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10} {'OK':<4}")
+    print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10}")
     print("-" * 85)
 
     for name, opt_fn, naive_fn, pos in ops_3d:
-        for b, m, k, n in configs_3d:
-            a = torch.randn(b, m, k).abs() + 0.1 if pos else torch.randn(b, m, k)
-            bb = torch.randn(b, k, n).abs() + 0.1 if pos else torch.randn(b, k, n)
+        for batch, m, k, n in configs_3d:
+            a = torch.randn(batch, m, k).abs() + 0.1 if pos else torch.randn(batch, m, k)
+            bb = torch.randn(batch, k, n).abs() + 0.1 if pos else torch.randn(batch, k, n)
 
-            opt_m, opt_s = bench_forward(opt_fn, a, bb)
-            naive_m, naive_s = bench_forward(naive_fn, a, bb)
-            ok = verify(opt_fn, naive_fn, a, bb)
+            opt_m, opt_s = bench_torch_forward(opt_fn, a, bb)
+            naive_m, naive_s = bench_torch_forward(naive_fn, a, bb)
 
-            print(f"{name:<16} ({b},{m},{k},{n}){'':<6} {fmt_time(opt_m, opt_s):<16} {fmt_time(naive_m, naive_s):<16} {naive_m/opt_m:>5.2f}x     {'✓' if ok else '✗'}")
+            print(f"{name:<16} ({batch},{m},{k},{n}){'':<6} {fmt_time(opt_m, opt_s):<16} {fmt_time(naive_m, naive_s):<16} {naive_m/opt_m:>5.2f}x")
 
-    # Backward
     print("\nForward + Backward Pass")
     print("-" * 85)
     print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10}")
     print("-" * 85)
 
-    # 2D backward
     for m, k, n in [(128, 128, 128), (256, 256, 256)]:
         a, b = torch.randn(m, k), torch.randn(k, n)
-        opt_m, _ = bench_backward(tropical_maxplus_matmul, a, b)
-        naive_m, _ = bench_backward(naive_maxplus_2d, a, b)
+        opt_m, _ = bench_torch_backward(torch_maxplus, a, b)
+        naive_m, _ = bench_torch_backward(torch_naive_maxplus_2d, a, b)
         print(f"{'MaxPlus 2D':<16} ({m},{k},{n}){'':<9} {opt_m:>6.2f}            {naive_m:>6.2f}            {naive_m/opt_m:>5.2f}x")
 
-    # 3D backward
     for batch, m, k, n in [(4, 64, 64, 64), (8, 128, 128, 128)]:
         a, b = torch.randn(batch, m, k), torch.randn(batch, k, n)
-        opt_m, _ = bench_backward(tropical_maxplus_matmul_batched, a, b)
-        naive_m, _ = bench_backward(naive_maxplus_3d, a, b)
+        opt_m, _ = bench_torch_backward(torch_maxplus_batched, a, b)
+        naive_m, _ = bench_torch_backward(torch_naive_maxplus_3d, a, b)
         print(f"{'MaxPlus Batched':<16} ({batch},{m},{k},{n}){'':<6} {opt_m:>6.2f}            {naive_m:>6.2f}            {naive_m/opt_m:>5.2f}x")
 
     print()
 
 
 # ============================================================================
-# GPU Benchmarks
+# PyTorch GPU Benchmarks
 # ============================================================================
 
-def run_gpu_benchmarks():
+def run_pytorch_gpu_benchmarks():
     if not CUDA_AVAILABLE:
         print("CUDA not available, skipping GPU benchmarks")
         return
 
     print("=" * 95)
-    print(f"GPU Benchmark: Optimized CUDA vs Naive PyTorch | Device: {torch.cuda.get_device_name(0)}")
+    print(f"PyTorch GPU Benchmark: Optimized CUDA vs Naive | Device: {torch.cuda.get_device_name(0)}")
     print("=" * 95)
 
     device = torch.device("cuda")
@@ -209,18 +276,17 @@ def run_gpu_benchmarks():
     configs_3d = [(16, 256, 256, 256), (32, 256, 256, 256), (8, 512, 512, 512)]
 
     ops_2d = [
-        ("MaxPlus 2D", tropical_maxplus_matmul_gpu, tropical_maxplus_matmul, naive_maxplus_2d, False),
-        ("MinPlus 2D", tropical_minplus_matmul_gpu, tropical_minplus_matmul, naive_minplus_2d, False),
-        ("MaxMul 2D", tropical_maxmul_matmul_gpu, tropical_maxmul_matmul, naive_maxmul_2d, True),
+        ("MaxPlus 2D", tropical_maxplus_matmul_gpu, torch_maxplus, torch_naive_maxplus_2d, False),
+        ("MinPlus 2D", tropical_minplus_matmul_gpu, torch_minplus, torch_naive_minplus_2d, False),
+        ("MaxMul 2D", tropical_maxmul_matmul_gpu, torch_maxmul, torch_naive_maxmul_2d, True),
     ]
 
     ops_3d = [
-        ("MaxPlus Batched", tropical_maxplus_matmul_batched_gpu, tropical_maxplus_matmul_batched, naive_maxplus_3d, False),
-        ("MinPlus Batched", tropical_minplus_matmul_batched_gpu, tropical_minplus_matmul_batched, naive_minplus_3d, False),
-        ("MaxMul Batched", tropical_maxmul_matmul_batched_gpu, tropical_maxmul_matmul_batched, naive_maxmul_3d, True),
+        ("MaxPlus Batched", tropical_maxplus_matmul_batched_gpu, torch_maxplus_batched, torch_naive_maxplus_3d, False),
+        ("MinPlus Batched", tropical_minplus_matmul_batched_gpu, torch_minplus_batched, torch_naive_minplus_3d, False),
+        ("MaxMul Batched", tropical_maxmul_matmul_batched_gpu, torch_maxmul_batched, torch_naive_maxmul_3d, True),
     ]
 
-    # 2D Forward
     print("\n2D Forward Pass")
     print("-" * 95)
     print(f"{'Op':<14} {'Shape':<18} {'GPU Opt (ms)':<14} {'GPU Naive (ms)':<16} {'CPU Opt (ms)':<14} {'vs Naive':<10}")
@@ -232,13 +298,12 @@ def run_gpu_benchmarks():
             b_gpu = (torch.randn(k, n, device=device).abs() + 0.1) if pos else torch.randn(k, n, device=device)
             a_cpu, b_cpu = a_gpu.cpu(), b_gpu.cpu()
 
-            gpu_m, _ = bench_forward(gpu_fn, a_gpu, b_gpu, sync=True)
-            naive_m, _ = bench_forward(naive_fn, a_gpu, b_gpu, sync=True)
-            cpu_m, _ = bench_forward(cpu_fn, a_cpu, b_cpu)
+            gpu_m, _ = bench_torch_forward(gpu_fn, a_gpu, b_gpu, sync=True)
+            naive_m, _ = bench_torch_forward(naive_fn, a_gpu, b_gpu, sync=True)
+            cpu_m, _ = bench_torch_forward(cpu_fn, a_cpu, b_cpu)
 
             print(f"{name:<14} ({m},{k},{n}){'':<7} {gpu_m:>8.2f}       {naive_m:>8.2f}         {cpu_m:>8.2f}       {naive_m/gpu_m:>5.2f}x")
 
-    # 3D Forward
     print("\n3D Batched Forward Pass")
     print("-" * 95)
     print(f"{'Op':<14} {'Shape':<18} {'GPU Opt (ms)':<14} {'GPU Naive (ms)':<16} {'CPU Opt (ms)':<14} {'vs Naive':<10}")
@@ -250,13 +315,12 @@ def run_gpu_benchmarks():
             b_gpu = (torch.randn(batch, k, n, device=device).abs() + 0.1) if pos else torch.randn(batch, k, n, device=device)
             a_cpu, b_cpu = a_gpu.cpu(), b_gpu.cpu()
 
-            gpu_m, _ = bench_forward(gpu_fn, a_gpu, b_gpu, sync=True)
-            naive_m, _ = bench_forward(naive_fn, a_gpu, b_gpu, sync=True)
-            cpu_m, _ = bench_forward(cpu_fn, a_cpu, b_cpu)
+            gpu_m, _ = bench_torch_forward(gpu_fn, a_gpu, b_gpu, sync=True)
+            naive_m, _ = bench_torch_forward(naive_fn, a_gpu, b_gpu, sync=True)
+            cpu_m, _ = bench_torch_forward(cpu_fn, a_cpu, b_cpu)
 
             print(f"{name:<14} ({batch},{m},{k},{n}){'':<4} {gpu_m:>8.2f}       {naive_m:>8.2f}         {cpu_m:>8.2f}       {naive_m/gpu_m:>5.2f}x")
 
-    # Backward
     print("\nForward + Backward Pass")
     print("-" * 80)
     print(f"{'Op':<16} {'Shape':<18} {'GPU (ms)':<14} {'CPU (ms)':<14} {'Speedup':<10}")
@@ -267,8 +331,8 @@ def run_gpu_benchmarks():
         b_gpu = torch.randn(k, n, device=device)
         a_cpu, b_cpu = a_gpu.cpu(), b_gpu.cpu()
 
-        gpu_m, _ = bench_backward(tropical_maxplus_matmul_gpu, a_gpu, b_gpu, sync=True)
-        cpu_m, _ = bench_backward(tropical_maxplus_matmul, a_cpu, b_cpu)
+        gpu_m, _ = bench_torch_backward(tropical_maxplus_matmul_gpu, a_gpu, b_gpu, sync=True)
+        cpu_m, _ = bench_torch_backward(torch_maxplus, a_cpu, b_cpu)
         print(f"{'MaxPlus 2D':<16} ({m},{k},{n}){'':<7} {gpu_m:>8.2f}       {cpu_m:>8.2f}       {cpu_m/gpu_m:>5.2f}x")
 
     for batch, m, k, n in [(16, 256, 256, 256), (32, 256, 256, 256)]:
@@ -276,23 +340,116 @@ def run_gpu_benchmarks():
         b_gpu = torch.randn(batch, k, n, device=device)
         a_cpu, b_cpu = a_gpu.cpu(), b_gpu.cpu()
 
-        gpu_m, _ = bench_backward(tropical_maxplus_matmul_batched_gpu, a_gpu, b_gpu, sync=True)
-        cpu_m, _ = bench_backward(tropical_maxplus_matmul_batched, a_cpu, b_cpu)
+        gpu_m, _ = bench_torch_backward(tropical_maxplus_matmul_batched_gpu, a_gpu, b_gpu, sync=True)
+        cpu_m, _ = bench_torch_backward(torch_maxplus_batched, a_cpu, b_cpu)
         print(f"{'MaxPlus Batched':<16} ({batch},{m},{k},{n}){'':<4} {gpu_m:>8.2f}       {cpu_m:>8.2f}       {cpu_m/gpu_m:>5.2f}x")
+
+    print()
+
+
+# ============================================================================
+# JAX Benchmarks
+# ============================================================================
+
+def run_jax_benchmarks():
+    if not JAX_AVAILABLE:
+        print("JAX not available, skipping JAX benchmarks")
+        return
+
+    print("=" * 85)
+    print("JAX Benchmark: Optimized Rust vs Naive JAX")
+    print("=" * 85)
+
+    configs_2d = [(128, 128, 128), (256, 256, 256), (512, 512, 512)]
+    configs_3d = [(4, 64, 64, 64), (8, 128, 128, 128), (16, 128, 128, 128)]
+
+    ops_2d = [
+        ("MaxPlus 2D", jax_maxplus, jax_naive_maxplus_2d, False),
+        ("MinPlus 2D", jax_minplus, jax_naive_minplus_2d, False),
+        ("MaxMul 2D", jax_maxmul, jax_naive_maxmul_2d, True),
+    ]
+
+    ops_3d = [
+        ("MaxPlus Batched", jax_maxplus_batched, jax_naive_maxplus_3d, False),
+        ("MinPlus Batched", jax_minplus_batched, jax_naive_minplus_3d, False),
+        ("MaxMul Batched", jax_maxmul_batched, jax_naive_maxmul_3d, True),
+    ]
+
+    print("\n2D Forward Pass")
+    print("-" * 85)
+    print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10}")
+    print("-" * 85)
+
+    for name, opt_fn, naive_fn, pos in ops_2d:
+        for m, k, n in configs_2d:
+            key = jax.random.PRNGKey(42)
+            a = jnp.abs(jax.random.normal(key, (m, k))) + 0.1 if pos else jax.random.normal(key, (m, k))
+            b = jnp.abs(jax.random.normal(jax.random.PRNGKey(43), (k, n))) + 0.1 if pos else jax.random.normal(jax.random.PRNGKey(43), (k, n))
+
+            opt_m, opt_s = bench_jax_forward(opt_fn, a, b)
+            naive_m, naive_s = bench_jax_forward(naive_fn, a, b)
+
+            print(f"{name:<16} ({m},{k},{n}){'':<9} {fmt_time(opt_m, opt_s):<16} {fmt_time(naive_m, naive_s):<16} {naive_m/opt_m:>5.2f}x")
+
+    print("\n3D Batched Forward Pass")
+    print("-" * 85)
+    print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10}")
+    print("-" * 85)
+
+    for name, opt_fn, naive_fn, pos in ops_3d:
+        for batch, m, k, n in configs_3d:
+            key = jax.random.PRNGKey(42)
+            a = jnp.abs(jax.random.normal(key, (batch, m, k))) + 0.1 if pos else jax.random.normal(key, (batch, m, k))
+            b = jnp.abs(jax.random.normal(jax.random.PRNGKey(43), (batch, k, n))) + 0.1 if pos else jax.random.normal(jax.random.PRNGKey(43), (batch, k, n))
+
+            opt_m, opt_s = bench_jax_forward(opt_fn, a, b)
+            naive_m, naive_s = bench_jax_forward(naive_fn, a, b)
+
+            print(f"{name:<16} ({batch},{m},{k},{n}){'':<6} {fmt_time(opt_m, opt_s):<16} {fmt_time(naive_m, naive_s):<16} {naive_m/opt_m:>5.2f}x")
+
+    print("\nForward + Backward Pass")
+    print("-" * 85)
+    print(f"{'Op':<16} {'Shape':<18} {'Optimized (ms)':<16} {'Naive (ms)':<16} {'Speedup':<10}")
+    print("-" * 85)
+
+    for m, k, n in [(128, 128, 128), (256, 256, 256)]:
+        key = jax.random.PRNGKey(42)
+        a = jax.random.normal(key, (m, k))
+        b = jax.random.normal(jax.random.PRNGKey(43), (k, n))
+
+        opt_m, _ = bench_jax_backward(jax_maxplus, a, b)
+        naive_m, _ = bench_jax_backward(jax_naive_maxplus_2d, a, b)
+        print(f"{'MaxPlus 2D':<16} ({m},{k},{n}){'':<9} {opt_m:>6.2f}            {naive_m:>6.2f}            {naive_m/opt_m:>5.2f}x")
+
+    for batch, m, k, n in [(4, 64, 64, 64), (8, 128, 128, 128)]:
+        key = jax.random.PRNGKey(42)
+        a = jax.random.normal(key, (batch, m, k))
+        b = jax.random.normal(jax.random.PRNGKey(43), (batch, k, n))
+
+        opt_m, _ = bench_jax_backward(jax_maxplus_batched, a, b)
+        naive_m, _ = bench_jax_backward(jax_naive_maxplus_3d, a, b)
+        print(f"{'MaxPlus Batched':<16} ({batch},{m},{k},{n}){'':<6} {opt_m:>6.2f}            {naive_m:>6.2f}            {naive_m/opt_m:>5.2f}x")
 
     print()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark tropical_gemm")
-    parser.add_argument("--gpu", action="store_true", help="Run GPU benchmarks")
-    parser.add_argument("--cpu", action="store_true", help="Run CPU benchmarks")
+    parser.add_argument("--gpu", action="store_true", help="Run PyTorch GPU benchmarks")
+    parser.add_argument("--cpu", action="store_true", help="Run PyTorch CPU benchmarks")
+    parser.add_argument("--jax", action="store_true", help="Run JAX benchmarks")
+    parser.add_argument("--all", action="store_true", help="Run all benchmarks")
     args = parser.parse_args()
 
-    if not args.gpu and not args.cpu:
-        args.cpu = True
+    if args.all:
+        args.cpu = args.gpu = args.jax = True
+
+    if not (args.cpu or args.gpu or args.jax):
+        args.cpu = True  # Default to PyTorch CPU
 
     if args.cpu:
-        run_cpu_benchmarks()
+        run_pytorch_cpu_benchmarks()
     if args.gpu:
-        run_gpu_benchmarks()
+        run_pytorch_gpu_benchmarks()
+    if args.jax:
+        run_jax_benchmarks()
