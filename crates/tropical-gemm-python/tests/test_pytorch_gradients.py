@@ -745,3 +745,257 @@ def test_tropical_gemm_has_metadata():
     """Basic sanity checks on tropical_gemm module attributes."""
     assert hasattr(tropical_gemm, "cuda_available")
     assert hasattr(tropical_gemm, "__version__")
+
+
+# ============================================================================
+# Batched operation tests
+# ============================================================================
+
+
+from tropical_gemm.pytorch import (
+    TropicalMaxPlusMatmulBatched,
+    TropicalMinPlusMatmulBatched,
+    TropicalMaxMulMatmulBatched,
+    tropical_maxplus_matmul_batched,
+    tropical_minplus_matmul_batched,
+    tropical_maxmul_matmul_batched,
+)
+
+
+def test_batched_maxplus_forward_correctness():
+    """Test batched MaxPlus forward pass matches looped reference."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 4, 3, 5, 2
+    a = torch.randn(batch, m, k)
+    b = torch.randn(batch, k, n)
+
+    # Batched computation
+    c_batched = tropical_maxplus_matmul_batched(a, b)
+
+    # Reference: loop over batch
+    c_ref = torch.stack([
+        tropical_maxplus_matmul(a[i], b[i])
+        for i in range(batch)
+    ])
+
+    assert c_batched.shape == (batch, m, n)
+    assert torch.allclose(c_batched, c_ref, atol=1e-5), \
+        f"Batched result differs from reference:\n{c_batched}\nvs\n{c_ref}"
+
+
+def test_batched_minplus_forward_correctness():
+    """Test batched MinPlus forward pass matches looped reference."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 4, 3, 5, 2
+    a = torch.randn(batch, m, k)
+    b = torch.randn(batch, k, n)
+
+    c_batched = tropical_minplus_matmul_batched(a, b)
+
+    c_ref = torch.stack([
+        tropical_minplus_matmul(a[i], b[i])
+        for i in range(batch)
+    ])
+
+    assert c_batched.shape == (batch, m, n)
+    assert torch.allclose(c_batched, c_ref, atol=1e-5)
+
+
+def test_batched_maxmul_forward_correctness():
+    """Test batched MaxMul forward pass matches looped reference."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 4, 3, 5, 2
+    a = torch.randn(batch, m, k).abs() + 0.1
+    b = torch.randn(batch, k, n).abs() + 0.1
+
+    c_batched = tropical_maxmul_matmul_batched(a, b)
+
+    c_ref = torch.stack([
+        tropical_maxmul_matmul(a[i], b[i])
+        for i in range(batch)
+    ])
+
+    assert c_batched.shape == (batch, m, n)
+    assert torch.allclose(c_batched, c_ref, atol=1e-5)
+
+
+def test_batched_maxplus_gradient_structure():
+    """Verify gradient structure of batched MaxPlus matmul."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 3, 4, 2
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    # Each output element contributes to exactly one gradient
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01, "grad_A sum incorrect"
+    assert abs(b.grad.sum().item() - c.numel()) < 0.01, "grad_B sum incorrect"
+
+
+def test_batched_minplus_gradient_structure():
+    """Verify gradient structure of batched MinPlus matmul."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 3, 4, 2
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+
+    c = tropical_minplus_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01, "grad_A sum incorrect"
+    assert abs(b.grad.sum().item() - c.numel()) < 0.01, "grad_B sum incorrect"
+
+
+def test_batched_maxmul_gradient_structure():
+    """Verify gradient structure of batched MaxMul matmul."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 3, 4, 2
+    # Use positive values for MaxMul - create as leaf tensors
+    a = (torch.randn(batch, m, k).abs() + 0.1).requires_grad_(True)
+    b = (torch.randn(batch, k, n).abs() + 0.1).requires_grad_(True)
+
+    c = tropical_maxmul_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    assert a.grad is not None, "grad_A should not be None"
+    assert b.grad is not None, "grad_B should not be None"
+    assert a.grad.shape == (batch, m, k)
+    assert b.grad.shape == (batch, k, n)
+
+
+def test_batched_numerical_gradient_maxplus():
+    """Verify batched MaxPlus gradients using finite differences."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 2, 3, 2
+    # Use well-separated values to ensure unique argmax - create as leaf tensors
+    a = (torch.randn(batch, m, k) * 3).requires_grad_(True)
+    b = (torch.randn(batch, k, n) * 3).requires_grad_(True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for bi in range(batch):
+        for i in range(m):
+            for j in range(k):
+                a_plus = a.detach().clone()
+                a_plus[bi, i, j] += eps
+                a_minus = a.detach().clone()
+                a_minus[bi, i, j] -= eps
+
+                c_plus = tropical_maxplus_matmul_batched(a_plus, b.detach()).sum()
+                c_minus = tropical_maxplus_matmul_batched(a_minus, b.detach()).sum()
+
+                numerical_grad_a[bi, i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        f"grad_A mismatch:\nAnalytical: {analytical_grad_a}\nNumerical: {numerical_grad_a}"
+
+
+def test_batched_optimization_convergence():
+    """Test that batched gradients enable optimization to converge."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 3, 4, 5, 3
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+    target = torch.randn(batch, m, n)
+
+    optimizer = torch.optim.Adam([a, b], lr=0.1)
+
+    initial_loss = None
+    final_loss = None
+
+    for step in range(20):
+        optimizer.zero_grad()
+
+        c = tropical_maxplus_matmul_batched(a, b)
+        loss = ((c - target) ** 2).mean()
+
+        if step == 0:
+            initial_loss = loss.item()
+
+        loss.backward()
+        optimizer.step()
+
+        final_loss = loss.item()
+
+    assert final_loss < initial_loss, f"Loss did not decrease: {initial_loss} -> {final_loss}"
+
+
+def test_batched_single_batch():
+    """Test batched operation with batch size 1."""
+    torch.manual_seed(42)
+
+    a = torch.randn(1, 3, 4, requires_grad=True)
+    b = torch.randn(1, 4, 2, requires_grad=True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    assert c.shape == (1, 3, 2)
+
+    c.backward(torch.ones_like(c))
+    assert a.grad.shape == (1, 3, 4)
+    assert b.grad.shape == (1, 4, 2)
+
+
+def test_batched_large_batch():
+    """Test batched operation with larger batch size."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 16, 8, 10, 6
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    assert c.shape == (batch, m, n)
+
+    loss = c.sum()
+    loss.backward()
+
+    assert a.grad.shape == (batch, m, k)
+    assert b.grad.shape == (batch, k, n)
+
+
+def test_batched_gradient_accumulation():
+    """Test that batched gradients accumulate correctly."""
+    torch.manual_seed(42)
+
+    batch = 3
+    a = torch.randn(batch, 2, 3, requires_grad=True)
+    b = torch.randn(batch, 3, 2, requires_grad=True)
+
+    c1 = tropical_maxplus_matmul_batched(a, b)
+    c1.sum().backward()
+    grad_a_1 = a.grad.clone()
+
+    c2 = tropical_maxplus_matmul_batched(a, b)
+    c2.sum().backward()
+    grad_a_2 = a.grad.clone()
+
+    assert torch.allclose(grad_a_2, 2 * grad_a_1), "Gradient accumulation incorrect"
+
+
+def test_batched_exports():
+    """Test that batched functions are exported correctly."""
+    from tropical_gemm import pytorch
+
+    assert hasattr(pytorch, "TropicalMaxPlusMatmulBatched")
+    assert hasattr(pytorch, "TropicalMinPlusMatmulBatched")
+    assert hasattr(pytorch, "TropicalMaxMulMatmulBatched")
+    assert hasattr(pytorch, "tropical_maxplus_matmul_batched")
+    assert hasattr(pytorch, "tropical_minplus_matmul_batched")
+    assert hasattr(pytorch, "tropical_maxmul_matmul_batched")
