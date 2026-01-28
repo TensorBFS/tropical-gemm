@@ -1,13 +1,20 @@
 # Makefile for tropical-gemm
 # Automates environment setup, benchmarking, testing, documentation, and examples
 
-.PHONY: all build check test bench docs clean help
-.PHONY: setup setup-rust setup-python setup-cuda
-.PHONY: test-rust test-python test-all
-.PHONY: bench-cpu bench-cuda bench-all
+.PHONY: all build build-debug check clean help
+.PHONY: setup setup-rust setup-python setup-python-gpu setup-cuda
+.PHONY: test test-rust test-python test-python-gpu
+.PHONY: bench bench-cpu bench-cuda bench-python bench-python-gpu bench-python-jax
+.PHONY: validate
 .PHONY: example-rust example-python example-mnist example-mnist-gpu
-.PHONY: docs-build docs-serve docs-deploy docs-book docs-book-serve
-.PHONY: fmt clippy lint coverage
+.PHONY: docs docs-build docs-serve docs-deploy docs-book docs-book-serve
+.PHONY: fmt fmt-check clippy lint coverage
+
+# Python package directory
+PYTHON_PKG := crates/tropical-gemm-python
+
+# Default CUDA version for PyTorch (override with: make setup-python-gpu CUDA=cu118)
+CUDA ?= cu121
 
 # Default target
 all: build test
@@ -20,48 +27,57 @@ help:
 	@echo "tropical-gemm Makefile"
 	@echo ""
 	@echo "Setup targets:"
-	@echo "  setup          - Setup complete development environment"
-	@echo "  setup-rust     - Install Rust toolchain and components"
-	@echo "  setup-python   - Setup Python virtual environment"
-	@echo "  setup-cuda     - Verify CUDA installation"
+	@echo "  setup              - Setup complete dev environment (Rust + Python CPU)"
+	@echo "  setup-rust         - Install Rust toolchain and components"
+	@echo "  setup-python       - Setup Python with uv (CPU only)"
+	@echo "  setup-python-gpu   - Setup Python with CUDA PyTorch (default: cu121)"
+	@echo "                       Override: make setup-python-gpu CUDA=cu118"
+	@echo "  setup-cuda         - Verify CUDA installation"
 	@echo ""
 	@echo "Build targets:"
-	@echo "  build          - Build all crates in release mode"
-	@echo "  build-debug    - Build all crates in debug mode"
-	@echo "  check          - Check all crates for errors"
+	@echo "  build              - Build all Rust crates (release)"
+	@echo "  build-debug        - Build all Rust crates (debug)"
+	@echo "  build-python       - Build Python extension (CPU)"
+	@echo "  build-python-gpu   - Build Python extension (with CUDA)"
+	@echo "  check              - Check all crates for errors"
 	@echo ""
 	@echo "Test targets:"
-	@echo "  test           - Run all tests (Rust + Python)"
-	@echo "  test-rust      - Run Rust tests only"
-	@echo "  test-python    - Run Python tests only"
+	@echo "  test               - Run all tests (Rust + Python)"
+	@echo "  test-rust          - Run Rust tests only"
+	@echo "  test-python        - Run Python tests (CPU build)"
+	@echo "  test-python-gpu    - Run Python tests (CUDA build)"
 	@echo ""
 	@echo "Benchmark targets:"
-	@echo "  bench          - Run all benchmarks"
-	@echo "  bench-cpu      - Run CPU benchmarks"
-	@echo "  bench-cuda     - Run CUDA benchmarks"
+	@echo "  bench              - Run all benchmarks"
+	@echo "  bench-cpu          - Run Rust CPU benchmarks"
+	@echo "  bench-cuda         - Run Rust CUDA benchmarks"
+	@echo "  bench-python       - Run Python CPU benchmarks"
+	@echo "  bench-python-gpu   - Run Python GPU benchmarks"
+	@echo "  bench-python-jax   - Run Python JAX benchmarks"
+	@echo "  validate           - Cross-validate PyTorch vs JAX results"
 	@echo ""
 	@echo "Example targets:"
-	@echo "  example-rust      - Run Rust examples"
-	@echo "  example-python    - Run Python PyTorch example"
-	@echo "  example-mnist     - Run MNIST tropical example (CPU)"
-	@echo "  example-mnist-gpu - Run MNIST tropical example (GPU)"
+	@echo "  example-rust       - Run Rust examples"
+	@echo "  example-python     - Run Python PyTorch example"
+	@echo "  example-mnist      - Run MNIST tropical example (CPU)"
+	@echo "  example-mnist-gpu  - Run MNIST tropical example (GPU)"
 	@echo ""
 	@echo "Documentation targets:"
-	@echo "  docs           - Build all documentation (API + user guide)"
-	@echo "  docs-build     - Build Rust API documentation"
-	@echo "  docs-book      - Build mdBook user guide"
-	@echo "  docs-book-serve- Serve mdBook locally (port 3000)"
-	@echo "  docs-serve     - Serve API docs locally (port 8000)"
-	@echo "  docs-deploy    - Deploy documentation to GitHub Pages"
+	@echo "  docs               - Build all documentation"
+	@echo "  docs-build         - Build Rust API documentation"
+	@echo "  docs-book          - Build mdBook user guide"
+	@echo "  docs-book-serve    - Serve mdBook locally (port 3000)"
+	@echo "  docs-serve         - Serve API docs locally (port 8000)"
 	@echo ""
 	@echo "Code quality targets:"
-	@echo "  fmt            - Format code"
-	@echo "  clippy         - Run clippy lints"
-	@echo "  lint           - Run all lints (fmt check + clippy)"
-	@echo "  coverage       - Generate test coverage report"
+	@echo "  fmt                - Format code"
+	@echo "  clippy             - Run clippy lints"
+	@echo "  lint               - Run all lints"
+	@echo "  coverage           - Generate test coverage report"
 	@echo ""
-	@echo "Utility targets:"
-	@echo "  clean          - Clean build artifacts"
+	@echo "Quick start (GPU):"
+	@echo "  make setup-python-gpu   # Install PyTorch with CUDA"
+	@echo "  make test-python-gpu    # Build with CUDA and run tests"
 
 #==============================================================================
 # Environment Setup
@@ -77,15 +93,18 @@ setup-rust:
 	@echo "Rust setup complete."
 
 setup-python:
-	@echo "Setting up Python environment..."
-	cd crates/tropical-gemm-python && \
-		python -m venv .venv && \
-		unset CONDA_PREFIX && \
-		. .venv/bin/activate && \
-		pip install --upgrade pip && \
-		pip install maturin pytest numpy && \
-		maturin develop
+	@echo "Setting up Python environment with uv..."
+	cd $(PYTHON_PKG) && uv pip install -e ".[dev]"
 	@echo "Python setup complete."
+
+setup-python-gpu:
+	@echo "Setting up Python environment with CUDA..."
+	cd $(PYTHON_PKG) && uv pip uninstall torch -q 2>/dev/null || true
+	cd $(PYTHON_PKG) && uv pip install torch --index-url https://download.pytorch.org/whl/$(CUDA)
+	cd $(PYTHON_PKG) && uv pip install -e ".[dev]"
+	@echo ""
+	@echo "Verifying CUDA..."
+	@cd $(PYTHON_PKG) && uv run python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
 setup-cuda:
 	@echo "Checking CUDA installation..."
@@ -103,6 +122,12 @@ build:
 build-debug:
 	cargo build --workspace
 
+build-python:
+	cd $(PYTHON_PKG) && uv run maturin develop --release
+
+build-python-gpu:
+	cd $(PYTHON_PKG) && uv run maturin develop --release --features cuda
+
 check:
 	cargo check --workspace
 
@@ -117,15 +142,15 @@ test-rust:
 	cargo test --workspace --release
 	@echo "Rust tests complete."
 
-test-python:
+test-python: build-python
 	@echo "Running Python tests..."
-	cd crates/tropical-gemm-python && \
-		unset CONDA_PREFIX && \
-		. .venv/bin/activate && \
-		pytest tests/ -v
+	cd $(PYTHON_PKG) && uv run pytest tests/ -v
 	@echo "Python tests complete."
 
-test-all: test
+test-python-gpu: build-python-gpu
+	@echo "Running Python tests (with CUDA)..."
+	cd $(PYTHON_PKG) && uv run pytest tests/ -v
+	@echo "Python tests complete."
 
 #==============================================================================
 # Benchmarks
@@ -134,12 +159,12 @@ test-all: test
 bench: bench-cpu bench-cuda
 
 bench-cpu:
-	@echo "Running CPU benchmarks..."
+	@echo "Running Rust CPU benchmarks..."
 	cargo run --release --example bench_rust -p tropical-gemm
 	@echo "CPU benchmarks complete."
 
 bench-cuda:
-	@echo "Running CUDA benchmarks..."
+	@echo "Running Rust CUDA benchmarks..."
 	@if which nvcc > /dev/null 2>&1; then \
 		LD_LIBRARY_PATH=/usr/local/cuda/lib64:$$LD_LIBRARY_PATH \
 		cargo run --release --example bench_cuda_vs_cpu -p tropical-gemm-cuda; \
@@ -148,7 +173,25 @@ bench-cuda:
 	fi
 	@echo "CUDA benchmarks complete."
 
-bench-all: bench
+bench-python: build-python
+	@echo "Running Python CPU benchmarks..."
+	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --cpu
+	@echo "Python CPU benchmarks complete."
+
+bench-python-gpu: build-python-gpu
+	@echo "Running Python GPU benchmarks..."
+	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --gpu
+	@echo "Python GPU benchmarks complete."
+
+bench-python-jax: build-python
+	@echo "Running Python JAX benchmarks..."
+	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --jax
+	@echo "Python JAX benchmarks complete."
+
+validate: build-python
+	@echo "Cross-validating PyTorch vs JAX..."
+	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --validate
+	@echo "Validation complete."
 
 #==============================================================================
 # Examples
@@ -160,34 +203,19 @@ example-rust:
 	cargo run --release --example shortest_path -p tropical-gemm
 	@echo "Rust examples complete."
 
-example-python:
+example-python: build-python
 	@echo "Running Python examples..."
-	cd crates/tropical-gemm-python && \
-		unset CONDA_PREFIX && \
-		. .venv/bin/activate && \
-		pip install torch --quiet 2>/dev/null || true && \
-		maturin develop && \
-		python examples/pytorch_tropical.py
+	cd $(PYTHON_PKG) && uv run python examples/pytorch_tropical.py
 	@echo "Python examples complete."
 
-example-mnist:
+example-mnist: build-python
 	@echo "Running MNIST tropical example (CPU)..."
-	cd crates/tropical-gemm-python && \
-		unset CONDA_PREFIX && \
-		. .venv/bin/activate && \
-		pip install torch torchvision --quiet 2>/dev/null || true && \
-		maturin develop && \
-		python examples/mnist_tropical.py
+	cd $(PYTHON_PKG) && uv run python examples/mnist_tropical.py
 	@echo "MNIST example complete."
 
-example-mnist-gpu:
+example-mnist-gpu: build-python-gpu
 	@echo "Running MNIST tropical example (GPU)..."
-	cd crates/tropical-gemm-python && \
-		unset CONDA_PREFIX && \
-		. .venv/bin/activate && \
-		pip install torch torchvision --quiet 2>/dev/null || true && \
-		maturin develop --features cuda && \
-		python examples/mnist_tropical.py --gpu
+	cd $(PYTHON_PKG) && uv run python examples/mnist_tropical.py --gpu
 	@echo "MNIST example complete."
 
 #==============================================================================
@@ -218,8 +246,6 @@ docs-serve: docs-build
 
 docs-deploy: docs-build docs-book
 	@echo "Deploying documentation to GitHub Pages..."
-	@echo "Note: This requires gh-pages branch setup."
-	@echo "Run: ghp-import -n -p -f target/doc"
 	@which ghp-import > /dev/null 2>&1 || (echo "Install ghp-import: pip install ghp-import" && exit 1)
 	ghp-import -n -p -f target/doc
 
@@ -251,8 +277,8 @@ clean:
 	cargo clean
 	rm -rf coverage/
 	rm -rf docs/book/
-	rm -rf crates/tropical-gemm-python/.venv
-	rm -rf crates/tropical-gemm-python/target
+	rm -rf $(PYTHON_PKG)/target
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+	find . -name "*.so" -delete 2>/dev/null || true
 	@echo "Clean complete."
