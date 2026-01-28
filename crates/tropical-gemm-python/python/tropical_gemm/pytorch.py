@@ -376,10 +376,11 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
 
             # Reshape results (numpy arrays from Rust)
             c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device).long()
         else:
             # Fallback to optimized Rust CPU backend (still O(M*K + K*N) memory)
             c, argmax = _rust_cpu_maxplus_with_argmax(a, b)
+            argmax = argmax.long()
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -428,10 +429,11 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
             c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_contig, b_contig)
 
             c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device).long()
         else:
             # Fallback to optimized Rust CPU backend
             c, argmax = _rust_cpu_minplus_with_argmax(a, b)
+            argmax = argmax.long()
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -481,14 +483,14 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
             c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_contig, b_contig)
 
             c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device).long()
 
             # Save original tensors for multiplicative backward
             ctx.save_for_backward(a.detach(), b.detach(), argmax)
         else:
             # Fallback to optimized Rust CPU backend
             c, argmax = _rust_cpu_maxmul_with_argmax(a, b)
-            ctx.save_for_backward(a.detach(), b.detach(), argmax)
+            ctx.save_for_backward(a.detach(), b.detach(), argmax.long())
 
         ctx.k = k
         ctx.m = m
@@ -782,7 +784,7 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
             )
 
             c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
         else:
             # Fallback to CPU batched backend
             a_np = a.detach().cpu().numpy().astype(np.float32)
@@ -798,7 +800,7 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
             )
 
             c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -856,7 +858,7 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
             )
 
             c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
         else:
             a_np = a.detach().cpu().numpy().astype(np.float32)
             b_np = b.detach().cpu().numpy().astype(np.float32)
@@ -871,7 +873,7 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
             )
 
             c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -925,7 +927,7 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
             )
 
             c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
         else:
             a_np = a.detach().cpu().numpy().astype(np.float32)
             b_np = b.detach().cpu().numpy().astype(np.float32)
@@ -940,7 +942,7 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
             )
 
             c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.batch_size = batch_size
