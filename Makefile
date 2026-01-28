@@ -103,7 +103,7 @@ setup-python-gpu:
 	cd $(PYTHON_PKG) && uv pip install -e ".[dev]"
 	@echo ""
 	@echo "Verifying CUDA..."
-	@cd $(PYTHON_PKG) && uv run python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+	@cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 
 setup-cuda:
 	@echo "Checking CUDA installation..."
@@ -122,10 +122,10 @@ build-debug:
 	cargo build --workspace
 
 build-python:
-	cd $(PYTHON_PKG) && uv run maturin develop --release
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run maturin develop --release
 
 build-python-gpu:
-	cd $(PYTHON_PKG) && uv run maturin develop --release --features cuda
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run maturin develop --release --features cuda
 
 check:
 	cargo check --workspace
@@ -143,12 +143,12 @@ test-rust:
 
 test-python: build-python
 	@echo "Running Python tests..."
-	cd $(PYTHON_PKG) && uv run pytest tests/ -v
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run pytest tests/ -v
 	@echo "Python tests complete."
 
 test-python-gpu: build-python-gpu
 	@echo "Running Python tests (with CUDA)..."
-	cd $(PYTHON_PKG) && uv run pytest tests/ -v
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run pytest tests/ -v
 	@echo "Python tests complete."
 
 #==============================================================================
@@ -174,17 +174,17 @@ bench-cuda:
 
 bench-python: build-python
 	@echo "Running Python CPU benchmarks (PyTorch + JAX)..."
-	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --cpu
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run python benchmarks/benchmark.py --cpu
 	@echo "Python CPU benchmarks complete."
 
 bench-python-gpu: build-python-gpu
 	@echo "Running Python GPU benchmarks (PyTorch + JAX)..."
-	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --gpu
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run python benchmarks/benchmark.py --gpu
 	@echo "Python GPU benchmarks complete."
 
 validate: build-python
 	@echo "Cross-validating PyTorch vs JAX..."
-	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --validate
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run python benchmarks/benchmark.py --validate
 	@echo "Validation complete."
 
 #==============================================================================
@@ -199,17 +199,17 @@ example-rust:
 
 example-python: build-python
 	@echo "Running Python examples..."
-	cd $(PYTHON_PKG) && uv run python examples/pytorch_tropical.py
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run python examples/pytorch_tropical.py
 	@echo "Python examples complete."
 
 example-mnist: build-python
 	@echo "Running MNIST tropical example (CPU)..."
-	cd $(PYTHON_PKG) && uv run python examples/mnist_tropical.py
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run python examples/mnist_tropical.py
 	@echo "MNIST example complete."
 
 example-mnist-gpu: build-python-gpu
 	@echo "Running MNIST tropical example (GPU)..."
-	cd $(PYTHON_PKG) && uv run python examples/mnist_tropical.py --gpu
+	cd $(PYTHON_PKG) && unset CONDA_PREFIX && uv run python examples/mnist_tropical.py --gpu
 	@echo "MNIST example complete."
 
 #==============================================================================
