@@ -97,8 +97,8 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
 
         c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
 
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        c_np = np.asarray(c_flat).reshape(m, n)
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
         ctx.save_for_backward(torch.from_numpy(argmax_np.copy()))
         ctx.k = k
@@ -134,8 +134,8 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
         grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
 
         # Reshape to 2D
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k, n)).to(grad_c.device)
 
         return grad_a, grad_b
 
@@ -159,8 +159,8 @@ class TropicalMinPlusMatmul(torch.autograd.Function):
 
         c_flat, argmax_flat = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
 
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        c_np = np.asarray(c_flat).reshape(m, n)
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
         ctx.save_for_backward(torch.from_numpy(argmax_np.copy()))
         ctx.k = k
@@ -187,8 +187,8 @@ class TropicalMinPlusMatmul(torch.autograd.Function):
         grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
         grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k, n)).to(grad_c.device)
 
         return grad_a, grad_b
 
@@ -217,8 +217,8 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
 
         c_flat, argmax_flat = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
 
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        c_np = np.asarray(c_flat).reshape(m, n)
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
         # Save inputs and argmax for backward (needed for multiplicative gradient)
         ctx.save_for_backward(
@@ -253,10 +253,10 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
         grad_a_flat = tropical_gemm.maxmul_backward_a(grad_c_np, argmax_np, b_np)
         grad_b_flat = tropical_gemm.maxmul_backward_b(grad_c_np, argmax_np, a_np)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k_dim)).to(
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k_dim)).to(
             grad_c.device
         )
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k_dim, n)).to(
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k_dim, n)).to(
             grad_c.device
         )
 
@@ -290,15 +290,19 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass transposed B, A so dimension check passes and kernel computes correctly
-        a_t = a.detach().t().contiguous()  # (K, M)
-        b_t = b.detach().t().contiguous()  # (N, K)
+        # Rust side already applies the row-major -> column-major swap trick for external pointers.
+        # Keep the Python API simple: pass (M,K) and (K,N) directly and reshape output as (M,N).
+        a_c = a.detach().contiguous()
+        b_c = b.detach().contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(b_t, a_t)
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_c, b_c)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(n, m).copy()).to(a.device).t().contiguous()
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(n, m).copy()).to(a.device).t().contiguous().long()
+        c = torch.from_numpy(np.asarray(c_flat).reshape(m, n).copy()).to(a.device)
+        argmax = (
+            torch.from_numpy(np.asarray(argmax_flat).reshape(m, n).copy())
+            .to(a.device)
+            .long()
+        )
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -344,15 +348,17 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass transposed B, A so dimension check passes and kernel computes correctly
-        a_t = a.detach().t().contiguous()  # (K, M)
-        b_t = b.detach().t().contiguous()  # (N, K)
+        a_c = a.detach().contiguous()
+        b_c = b.detach().contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(b_t, a_t)
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_c, b_c)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(n, m).copy()).to(a.device).t().contiguous()
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(n, m).copy()).to(a.device).t().contiguous().long()
+        c = torch.from_numpy(np.asarray(c_flat).reshape(m, n).copy()).to(a.device)
+        argmax = (
+            torch.from_numpy(np.asarray(argmax_flat).reshape(m, n).copy())
+            .to(a.device)
+            .long()
+        )
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -399,15 +405,17 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass transposed B, A so dimension check passes and kernel computes correctly
-        a_t = a.detach().t().contiguous()  # (K, M)
-        b_t = b.detach().t().contiguous()  # (N, K)
+        a_c = a.detach().contiguous()
+        b_c = b.detach().contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(b_t, a_t)
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_c, b_c)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(n, m).copy()).to(a.device).t().contiguous()
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(n, m).copy()).to(a.device).t().contiguous().long()
+        c = torch.from_numpy(np.asarray(c_flat).reshape(m, n).copy()).to(a.device)
+        argmax = (
+            torch.from_numpy(np.asarray(argmax_flat).reshape(m, n).copy())
+            .to(a.device)
+            .long()
+        )
 
         ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.k = k
@@ -477,8 +485,8 @@ class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
             a_np, b_np
         )
 
-        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(
+        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(
             a.device
         )
 
@@ -509,10 +517,10 @@ class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
         grad_a_flat = tropical_gemm.backward_a_strided_batched(grad_c_np, argmax_np, k)
         grad_b_flat = tropical_gemm.backward_b_strided_batched(grad_c_np, argmax_np, k)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(batch_size, m, k)).to(
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(batch_size, m, k)).to(
             grad_c.device
         )
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(batch_size, k, n)).to(
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(batch_size, k, n)).to(
             grad_c.device
         )
 
@@ -538,8 +546,8 @@ class TropicalMinPlusMatmulBatched(torch.autograd.Function):
             a_np, b_np
         )
 
-        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(
+        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(
             a.device
         )
 
@@ -570,10 +578,10 @@ class TropicalMinPlusMatmulBatched(torch.autograd.Function):
         grad_a_flat = tropical_gemm.backward_a_strided_batched(grad_c_np, argmax_np, k)
         grad_b_flat = tropical_gemm.backward_b_strided_batched(grad_c_np, argmax_np, k)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(batch_size, m, k)).to(
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(batch_size, m, k)).to(
             grad_c.device
         )
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(batch_size, k, n)).to(
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(batch_size, k, n)).to(
             grad_c.device
         )
 
@@ -601,8 +609,8 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
             a_np, b_np
         )
 
-        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(
+        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(
             a.device
         )
 
@@ -642,10 +650,10 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
             grad_c_np, argmax_np, a_np
         )
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(batch_size, m, k_dim)).to(
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(batch_size, m, k_dim)).to(
             grad_c.device
         )
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(batch_size, k_dim, n)).to(
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(batch_size, k_dim, n)).to(
             grad_c.device
         )
 
@@ -680,8 +688,8 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
             a_np, b_np
         )
 
-        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -733,8 +741,8 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
             a_np, b_np
         )
 
-        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -782,8 +790,8 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
             a_np, b_np
         )
 
-        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.batch_size = batch_size

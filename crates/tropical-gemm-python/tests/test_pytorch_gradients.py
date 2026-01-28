@@ -472,8 +472,8 @@ def test_gpu_maxplus_forward():
     """Test GPU MaxPlus forward pass matches CPU."""
     torch.manual_seed(42)
 
-    a = torch.randn(4, 3)
-    b = torch.randn(3, 5)
+    a = torch.randn(4, 3, device="cuda")
+    b = torch.randn(3, 5, device="cuda")
 
     c_cpu = tropical_maxplus_matmul(a, b)
     c_gpu = tropical_maxplus_matmul_gpu(a, b)
@@ -486,8 +486,8 @@ def test_gpu_minplus_forward():
     """Test GPU MinPlus forward pass matches CPU."""
     torch.manual_seed(42)
 
-    a = torch.randn(4, 3)
-    b = torch.randn(3, 5)
+    a = torch.randn(4, 3, device="cuda")
+    b = torch.randn(3, 5, device="cuda")
 
     c_cpu = tropical_minplus_matmul(a, b)
     c_gpu = tropical_minplus_matmul_gpu(a, b)
@@ -500,8 +500,8 @@ def test_gpu_maxplus_gradient():
     """Test GPU MaxPlus backward pass."""
     torch.manual_seed(42)
 
-    a = torch.tensor([[1.0, 10.0], [5.0, 2.0]], requires_grad=True)
-    b = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    a = torch.tensor([[1.0, 10.0], [5.0, 2.0]], device="cuda", requires_grad=True)
+    b = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda", requires_grad=True)
 
     c = tropical_maxplus_matmul_gpu(a, b)
     loss = c.sum()
@@ -519,9 +519,9 @@ def test_gpu_optimization():
     """Test GPU optimization convergence."""
     torch.manual_seed(42)
 
-    a = torch.randn(3, 4, requires_grad=True)
-    b = torch.randn(4, 3, requires_grad=True)
-    target = torch.randn(3, 3)
+    a = torch.randn(3, 4, device="cuda", requires_grad=True)
+    b = torch.randn(4, 3, device="cuda", requires_grad=True)
+    target = torch.randn(3, 3, device="cuda")
 
     optimizer = torch.optim.Adam([a, b], lr=0.1)
 
@@ -688,6 +688,45 @@ def test_dlpack_gpu_tensor_zero_copy():
     c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(100, 80))
 
     assert torch.allclose(c, c_ref, atol=1e-5), "GPU DLPack path should match CPU reference"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+@pytest.mark.parametrize(
+    "m,k,n",
+    [
+        (1, 1, 1),
+        (2, 3, 4),
+        (17, 19, 23),
+        (64, 7, 33),  # skinny K
+        (7, 64, 33),  # fat K
+    ],
+)
+def test_dlpack_gpu_layout_and_argmax_bounds(m, k, n):
+    """
+    Regression test for DLPack GPU layout.
+
+    Contract: (c_flat, argmax_flat) are flattened in row-major order and reshape to (m, n).
+    """
+    torch.manual_seed(123)
+
+    a = torch.randn(m, k, dtype=torch.float32, device="cuda")
+    b = torch.randn(k, n, dtype=torch.float32, device="cuda")
+
+    c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a, b)
+    c = torch.from_numpy(np.asarray(c_flat).reshape(m, n))
+    argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(m, n))
+
+    # Bounds check: argmax must be in [0, k)
+    assert argmax.min().item() >= 0
+    assert argmax.max().item() < k
+
+    # Value check vs CPU reference
+    a_cpu = a.cpu().numpy()
+    b_cpu = b.cpu().numpy()
+    c_ref_flat, _ = tropical_gemm.maxplus_matmul_with_argmax(a_cpu, b_cpu)
+    c_ref = torch.from_numpy(np.asarray(c_ref_flat).reshape(m, n))
+
+    assert torch.allclose(c, c_ref, atol=1e-5)
 
 
 @pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")

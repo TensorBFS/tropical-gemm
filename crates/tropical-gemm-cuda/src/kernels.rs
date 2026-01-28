@@ -396,10 +396,17 @@ pub unsafe fn launch_gemm_external_with_argmax_f32(
     // Original: C[i,j] = A[i,k] ⊗ B[k,j]  with A(M,K), B(K,N), C(M,N)
     // Swapped:  C^T = B^T ⊗ A^T  which gives us C in row-major
 
-    // Allocate output: kernel computes C^T (N×M col-major) = C (M×N row-major)
-    // But we allocate as (M, N) in col-major and the kernel fills it correctly
-    // when we swap the order and dimensions
-    let mut c = GpuMatrixWithArgmax::<f32>::alloc(ctx, m, n)?;
+    // The kernel is launched with swapped dimensions (M'=N, N'=M), so it produces
+    // C^T as a column-major matrix of shape (n × m).
+    //
+    // Key layout fact:
+    // - column-major (n × m) buffer for C^T is byte-identical to row-major (m × n)
+    //   buffer for C.
+    //
+    // We therefore allocate (n, m) here to match the kernel's indexing, and the
+    // downloaded buffer can be interpreted as a row-major flattened C (m × n) by
+    // higher-level callers (e.g. Python) without extra transposes.
+    let mut c = GpuMatrixWithArgmax::<f32>::alloc(ctx, n, m)?;
 
     let grid = CudaContext::grid_dims_f32(n, m); // Swapped: (n, m) instead of (m, n)
     let block = CudaContext::block_dims_f32();
@@ -441,7 +448,8 @@ pub unsafe fn launch_gemm_external_f32(
     k: usize,
     n: usize,
 ) -> Result<GpuMatrix<f32>> {
-    let mut c = GpuMatrix::<f32>::alloc(ctx, m, n)?;
+    // See `launch_gemm_external_with_argmax_f32` for why this is allocated as (n, m).
+    let mut c = GpuMatrix::<f32>::alloc(ctx, n, m)?;
 
     let grid = CudaContext::grid_dims_f32(n, m); // Swapped
     let block = CudaContext::block_dims_f32();

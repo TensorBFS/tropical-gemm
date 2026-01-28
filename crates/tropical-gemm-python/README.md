@@ -56,6 +56,14 @@ if tropical_gemm.cuda_available():
     c = tropical_gemm.maxplus_matmul_gpu(a, b)
     c = tropical_gemm.minplus_matmul_gpu(a, b)
     c = tropical_gemm.maxmul_matmul_gpu(a, b)
+
+    # DLPack (PyTorch/JAX) zero-copy entrypoints (f32 only; inputs must be contiguous)
+    #
+    # Returns are flattened in row-major order and should be reshaped as (M, N).
+    # Example (PyTorch):
+    #   c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_t, b_t)
+    #   c = np.asarray(c_flat).reshape(M, N)
+    #   argmax = np.asarray(argmax_flat).reshape(M, N)
 ```
 
 ## PyTorch Integration

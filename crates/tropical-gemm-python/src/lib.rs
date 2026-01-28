@@ -1635,8 +1635,8 @@ mod gpu {
     ///
     /// Returns:
     ///     Tuple of (C, argmax) as numpy arrays where:
-    ///     - C: Result matrix of shape (M, N) as flattened f32 array
-    ///     - argmax: Indices of shape (M, N) as flattened i32 array
+    ///     - C: Result matrix of shape (M, N) as a flattened f32 array in row-major order
+    ///     - argmax: Indices of shape (M, N) as a flattened i32 array in row-major order
     ///
     /// Note:
     ///     - For GPU tensors: Uses zero-copy DLPack interface with Rust CUDA backend
@@ -1759,7 +1759,12 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
-                // Download results to host (column-major layout)
+                // Download results to host.
+                //
+                // Note: `launch_gemm_external_with_argmax_f32` uses the row-major -> column-major
+                // swap trick and allocates the output as (n, m) in column-major. The raw host
+                // buffer we download here is therefore byte-identical to a row-major flattened
+                // C of shape (m, n). Python callers should reshape this buffer as (m, n).
                 let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
@@ -1795,6 +1800,11 @@ mod gpu {
     }
 
     /// MinPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns:
+    ///     Tuple of (C, argmax) as numpy arrays where:
+    ///     - C: Result matrix of shape (M, N) as a flattened f32 array in row-major order
+    ///     - argmax: Indices of shape (M, N) as a flattened i32 array in row-major order
     #[pyfunction]
     pub fn minplus_matmul_dlpack<'py>(
         py: Python<'py>,
@@ -1903,6 +1913,7 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
+                // See `maxplus_matmul_dlpack` for layout notes.
                 let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
@@ -1937,6 +1948,11 @@ mod gpu {
     }
 
     /// MaxMul matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns:
+    ///     Tuple of (C, argmax) as numpy arrays where:
+    ///     - C: Result matrix of shape (M, N) as a flattened f32 array in row-major order
+    ///     - argmax: Indices of shape (M, N) as a flattened i32 array in row-major order
     #[pyfunction]
     pub fn maxmul_matmul_dlpack<'py>(
         py: Python<'py>,
@@ -2043,6 +2059,7 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
+                // See `maxplus_matmul_dlpack` for layout notes.
                 let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
