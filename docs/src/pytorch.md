@@ -47,14 +47,22 @@ The `tropical_gemm.pytorch` module provides pre-built autograd functions:
 ```python
 import torch
 from tropical_gemm.pytorch import (
-    # CPU operations
+    # 2D CPU operations
     tropical_maxplus_matmul,
     tropical_minplus_matmul,
     tropical_maxmul_matmul,
-    # GPU operations (requires CUDA)
+    # 3D batched CPU operations
+    tropical_maxplus_matmul_batched,
+    tropical_minplus_matmul_batched,
+    tropical_maxmul_matmul_batched,
+    # 2D GPU operations (requires CUDA)
     tropical_maxplus_matmul_gpu,
     tropical_minplus_matmul_gpu,
     tropical_maxmul_matmul_gpu,
+    # 3D batched GPU operations (requires CUDA)
+    tropical_maxplus_matmul_batched_gpu,
+    tropical_minplus_matmul_batched_gpu,
+    tropical_maxmul_matmul_batched_gpu,
     # Check GPU availability
     GPU_AVAILABLE,
 )
@@ -74,27 +82,63 @@ print(f"grad_a shape: {a.grad.shape}")  # (100, 50)
 print(f"grad_b shape: {b.grad.shape}")  # (50, 80)
 ```
 
+### Batched Operations
+
+For 3D tensors with a batch dimension:
+
+```python
+# Batched operations: (batch, M, K) @ (batch, K, N) -> (batch, M, N)
+a_batch = torch.randn(4, 32, 64, requires_grad=True)
+b_batch = torch.randn(4, 64, 48, requires_grad=True)
+
+c_batch = tropical_maxplus_matmul_batched(a_batch, b_batch)
+print(c_batch.shape)  # (4, 32, 48)
+
+# Gradients work with batched operations
+loss = c_batch.sum()
+loss.backward()
+print(a_batch.grad.shape)  # (4, 32, 64)
+```
+
 ### GPU Acceleration
 
 For larger matrices, use GPU-accelerated functions:
 
 ```python
 if GPU_AVAILABLE:
+    # 2D GPU operations
     a = torch.randn(1024, 512, requires_grad=True)
     b = torch.randn(512, 1024, requires_grad=True)
 
     c = tropical_maxplus_matmul_gpu(a, b)
     loss = c.sum()
     loss.backward()  # Gradients still work!
+
+    # 3D batched GPU operations
+    a_batch = torch.randn(8, 256, 512, requires_grad=True, device="cuda")
+    b_batch = torch.randn(8, 512, 256, requires_grad=True, device="cuda")
+
+    c_batch = tropical_maxplus_matmul_batched_gpu(a_batch, b_batch)
+    c_batch.sum().backward()
 ```
 
 ### Available Functions
+
+**2D Operations** (M, K) @ (K, N) -> (M, N)
 
 | CPU Function | GPU Function | Operation |
 |--------------|--------------|-----------|
 | `tropical_maxplus_matmul` | `tropical_maxplus_matmul_gpu` | max_k(A[i,k] + B[k,j]) |
 | `tropical_minplus_matmul` | `tropical_minplus_matmul_gpu` | min_k(A[i,k] + B[k,j]) |
 | `tropical_maxmul_matmul` | `tropical_maxmul_matmul_gpu` | max_k(A[i,k] * B[k,j]) |
+
+**3D Batched Operations** (B, M, K) @ (B, K, N) -> (B, M, N)
+
+| CPU Function | GPU Function | Operation |
+|--------------|--------------|-----------|
+| `tropical_maxplus_matmul_batched` | `tropical_maxplus_matmul_batched_gpu` | max_k(A[b,i,k] + B[b,k,j]) |
+| `tropical_minplus_matmul_batched` | `tropical_minplus_matmul_batched_gpu` | min_k(A[b,i,k] + B[b,k,j]) |
+| `tropical_maxmul_matmul_batched` | `tropical_maxmul_matmul_batched_gpu` | max_k(A[b,i,k] * B[b,k,j]) |
 
 ## Training Example
 

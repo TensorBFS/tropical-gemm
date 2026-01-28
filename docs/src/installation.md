@@ -23,6 +23,9 @@ pip install tropical-gemm
 # With PyTorch support for automatic differentiation
 pip install tropical-gemm[torch]
 
+# With JAX support (requires Python >= 3.10)
+pip install tropical-gemm[jax]
+
 # For development
 pip install tropical-gemm[dev]
 ```
@@ -34,7 +37,8 @@ The Python package has optional extras:
 | Extra | Command | Description |
 |-------|---------|-------------|
 | `torch` | `pip install tropical-gemm[torch]` | PyTorch integration with autograd support |
-| `dev` | `pip install tropical-gemm[dev]` | Development dependencies (pytest, torch) |
+| `jax` | `pip install tropical-gemm[jax]` | JAX integration with custom_vjp support (Python >= 3.10) |
+| `dev` | `pip install tropical-gemm[dev]` | Development dependencies (pytest, torch, jax) |
 
 ### From Source
 
@@ -88,6 +92,31 @@ c.sum().backward()
 
 print(f"grad_a: {a.grad.shape}")  # (3, 4)
 print(f"grad_b: {b.grad.shape}")  # (4, 5)
+```
+
+### Verify JAX Integration
+
+```python
+import jax
+import jax.numpy as jnp
+from tropical_gemm.jax import tropical_maxplus_matmul, GPU_AVAILABLE
+
+print(f"GPU available: {GPU_AVAILABLE}")
+
+a = jax.random.normal(jax.random.PRNGKey(0), (3, 4))
+b = jax.random.normal(jax.random.PRNGKey(1), (4, 5))
+
+c = tropical_maxplus_matmul(a, b)
+
+# Compute gradients
+def loss_fn(a, b):
+    return tropical_maxplus_matmul(a, b).sum()
+
+grad_a = jax.grad(loss_fn, argnums=0)(a, b)
+grad_b = jax.grad(loss_fn, argnums=1)(a, b)
+
+print(f"grad_a: {grad_a.shape}")  # (3, 4)
+print(f"grad_b: {grad_b.shape}")  # (4, 5)
 ```
 
 ## CUDA Setup

@@ -11,6 +11,7 @@
 - [Matrix API](./matrix-api.md)
 - [GPU Acceleration](./gpu.md)
 - [PyTorch Integration](./pytorch.md)
+- [JAX Integration](./jax.md)
 
 # Reference
 

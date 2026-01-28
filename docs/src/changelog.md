@@ -5,6 +5,16 @@ All notable changes to tropical-gemm.
 ## [Unreleased]
 
 ### Added
+- **JAX Integration** - Full JAX support with `custom_vjp` for automatic differentiation
+  - 2D operations: `tropical_maxplus_matmul`, `tropical_minplus_matmul`, `tropical_maxmul_matmul`
+  - 3D batched operations: `tropical_*_matmul_batched`
+  - GPU operations via DLPack zero-copy interface
+  - Compatible with `jax.jit`, `jax.grad`, and other JAX transformations
+- **Batched Operations** - Native support for 3D tensors with batch dimension
+  - PyTorch: `tropical_*_matmul_batched` and `tropical_*_matmul_batched_gpu`
+  - JAX: `tropical_*_matmul_batched` and `tropical_*_matmul_batched_gpu`
+  - Full autograd/autodiff support for batched operations
+- **Cross-Validation** - Benchmark tool to validate PyTorch vs JAX implementations
 - mdBook documentation
 - Comprehensive architecture documentation
 - Performance tuning guide
@@ -37,6 +47,7 @@ All notable changes to tropical-gemm.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 0.2.0 | 2026 | JAX integration, batched operations |
 | 0.1.0 | 2024 | Initial release |
 
 ## Migration Guides
