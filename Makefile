@@ -4,7 +4,7 @@
 .PHONY: all build build-debug check clean help
 .PHONY: setup setup-rust setup-python setup-python-gpu setup-cuda
 .PHONY: test test-rust test-python test-python-gpu
-.PHONY: bench bench-cpu bench-cuda bench-python bench-python-gpu bench-python-jax
+.PHONY: bench bench-cpu bench-cuda bench-python bench-python-gpu
 .PHONY: validate
 .PHONY: example-rust example-python example-mnist example-mnist-gpu
 .PHONY: docs docs-build docs-serve docs-deploy docs-book docs-book-serve
@@ -51,9 +51,8 @@ help:
 	@echo "  bench              - Run all benchmarks"
 	@echo "  bench-cpu          - Run Rust CPU benchmarks"
 	@echo "  bench-cuda         - Run Rust CUDA benchmarks"
-	@echo "  bench-python       - Run Python CPU benchmarks"
-	@echo "  bench-python-gpu   - Run Python GPU benchmarks"
-	@echo "  bench-python-jax   - Run Python JAX benchmarks"
+	@echo "  bench-python       - Run Python CPU benchmarks (PyTorch + JAX)"
+	@echo "  bench-python-gpu   - Run Python GPU benchmarks (PyTorch + JAX)"
 	@echo "  validate           - Cross-validate PyTorch vs JAX results"
 	@echo ""
 	@echo "Example targets:"
@@ -174,19 +173,14 @@ bench-cuda:
 	@echo "CUDA benchmarks complete."
 
 bench-python: build-python
-	@echo "Running Python CPU benchmarks..."
+	@echo "Running Python CPU benchmarks (PyTorch + JAX)..."
 	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --cpu
 	@echo "Python CPU benchmarks complete."
 
 bench-python-gpu: build-python-gpu
-	@echo "Running Python GPU benchmarks..."
+	@echo "Running Python GPU benchmarks (PyTorch + JAX)..."
 	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --gpu
 	@echo "Python GPU benchmarks complete."
-
-bench-python-jax: build-python
-	@echo "Running Python JAX benchmarks..."
-	cd $(PYTHON_PKG) && uv run python benchmarks/benchmark.py --jax
-	@echo "Python JAX benchmarks complete."
 
 validate: build-python
 	@echo "Cross-validating PyTorch vs JAX..."
