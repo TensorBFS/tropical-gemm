@@ -712,7 +712,6 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
         n = ctx.n
 
         # Get winning B values: b_winning[b,i,j] = B[b, argmax[b,i,j], j]
-        j_indices = torch.arange(n, device=b.device).view(1, 1, n).expand(batch, m, n)
         b_winning = b.gather(1, argmax)  # (batch, m, n)
 
         # Get winning A values: a_winning[b,i,j] = A[b, i, argmax[b,i,j]]

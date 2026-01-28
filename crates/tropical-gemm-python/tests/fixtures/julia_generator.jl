@@ -16,7 +16,14 @@ using Pkg
 # Ensure required packages are available
 required_packages = ["TropicalNumbers", "JSON3", "Random"]
 for pkg in required_packages
-    if !haskey(Pkg.project().dependencies, pkg)
+    try
+        # Check if package is available in current environment
+        if !haskey(Pkg.project().dependencies, pkg)
+            println("Installing $pkg...")
+            Pkg.add(pkg)
+        end
+    catch
+        # Fallback: try to add if project check fails
         println("Installing $pkg...")
         Pkg.add(pkg)
     end
