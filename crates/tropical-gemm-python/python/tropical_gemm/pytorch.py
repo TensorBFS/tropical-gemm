@@ -291,14 +291,14 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
         n = b.shape[1]
 
         # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
-        a_cont = a.detach().contiguous()
-        b_cont = b.detach().contiguous()
+        # Pass transposed B, A so dimension check passes and kernel computes correctly
+        a_t = a.detach().t().contiguous()  # (K, M)
+        b_t = b.detach().t().contiguous()  # (N, K)
 
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(b_cont, a_cont)
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(b_t, a_t)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(m, n).copy()).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n).copy()).to(a.device).long()
+        c = torch.from_numpy(np.array(c_flat).reshape(n, m).copy()).to(a.device).t().contiguous()
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(n, m).copy()).to(a.device).t().contiguous().long()
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -345,14 +345,14 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
         n = b.shape[1]
 
         # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
-        a_cont = a.detach().contiguous()
-        b_cont = b.detach().contiguous()
+        # Pass transposed B, A so dimension check passes and kernel computes correctly
+        a_t = a.detach().t().contiguous()  # (K, M)
+        b_t = b.detach().t().contiguous()  # (N, K)
 
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(b_cont, a_cont)
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(b_t, a_t)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(m, n).copy()).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n).copy()).to(a.device).long()
+        c = torch.from_numpy(np.array(c_flat).reshape(n, m).copy()).to(a.device).t().contiguous()
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(n, m).copy()).to(a.device).t().contiguous().long()
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -400,14 +400,14 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
         n = b.shape[1]
 
         # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
-        a_cont = a.detach().contiguous()
-        b_cont = b.detach().contiguous()
+        # Pass transposed B, A so dimension check passes and kernel computes correctly
+        a_t = a.detach().t().contiguous()  # (K, M)
+        b_t = b.detach().t().contiguous()  # (N, K)
 
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(b_cont, a_cont)
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(b_t, a_t)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(m, n).copy()).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n).copy()).to(a.device).long()
+        c = torch.from_numpy(np.array(c_flat).reshape(n, m).copy()).to(a.device).t().contiguous()
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(n, m).copy()).to(a.device).t().contiguous().long()
 
         ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.k = k
@@ -672,13 +672,12 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        # GPU batched kernel uses row-major, no transpose trick needed
         a_np = _to_contiguous_numpy_3d(a)
         b_np = _to_contiguous_numpy_3d(b)
 
         c_flat, argmax_flat = tropical_gemm.maxplus_matmul_gpu_strided_batched_with_argmax(
-            b_np, a_np
+            a_np, b_np
         )
 
         c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
@@ -726,13 +725,12 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        # GPU batched kernel uses row-major, no transpose trick needed
         a_np = _to_contiguous_numpy_3d(a)
         b_np = _to_contiguous_numpy_3d(b)
 
         c_flat, argmax_flat = tropical_gemm.minplus_matmul_gpu_strided_batched_with_argmax(
-            b_np, a_np
+            a_np, b_np
         )
 
         c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
@@ -776,13 +774,12 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
-        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        # GPU batched kernel uses row-major, no transpose trick needed
         a_np = _to_contiguous_numpy_3d(a)
         b_np = _to_contiguous_numpy_3d(b)
 
         c_flat, argmax_flat = tropical_gemm.maxmul_matmul_gpu_strided_batched_with_argmax(
-            b_np, a_np
+            a_np, b_np
         )
 
         c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
