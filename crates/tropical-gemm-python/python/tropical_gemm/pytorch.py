@@ -38,88 +38,26 @@ GPU_AVAILABLE = tropical_gemm.cuda_available()
 
 
 # ===========================================================================
-# Helper: Use Rust CPU backend as fallback for GPU tensors without DLPack
+# Helper: Convert tensors to C-contiguous numpy arrays
 # ===========================================================================
 
 
-def _rust_cpu_maxplus_with_argmax(
-    a: torch.Tensor, b: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Use optimized Rust CPU backend for tropical max-plus matmul.
-
-    This is used as fallback when DLPack is not available. Transfers data
-    to CPU, uses Rust SIMD-optimized backend, then transfers back to device.
-    """
-    m, k = a.shape
-    n = b.shape[1]
-    device = a.device
-    dtype = a.dtype
-
-    a_np = a.detach().cpu().numpy().astype(np.float32)
-    b_np = b.detach().cpu().numpy().astype(np.float32)
-
-    if not a_np.flags["C_CONTIGUOUS"]:
-        a_np = np.ascontiguousarray(a_np)
-    if not b_np.flags["C_CONTIGUOUS"]:
-        b_np = np.ascontiguousarray(b_np)
-
-    c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
-
-    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
-    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
-
-    return c, argmax
+def _to_contiguous_numpy(t: torch.Tensor) -> np.ndarray:
+    """Convert PyTorch tensor to C_CONTIGUOUS numpy array."""
+    arr = t.detach().cpu().numpy().astype(np.float32)
+    if not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr)
+    return arr
 
 
-def _rust_cpu_minplus_with_argmax(
-    a: torch.Tensor, b: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Use optimized Rust CPU backend for tropical min-plus matmul."""
-    m, k = a.shape
-    n = b.shape[1]
-    device = a.device
-    dtype = a.dtype
-
-    a_np = a.detach().cpu().numpy().astype(np.float32)
-    b_np = b.detach().cpu().numpy().astype(np.float32)
-
-    if not a_np.flags["C_CONTIGUOUS"]:
-        a_np = np.ascontiguousarray(a_np)
-    if not b_np.flags["C_CONTIGUOUS"]:
-        b_np = np.ascontiguousarray(b_np)
-
-    c_flat, argmax_flat = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
-
-    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
-    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
-
-    return c, argmax
+def _to_contiguous_numpy_3d(t: torch.Tensor) -> np.ndarray:
+    """Convert 3D PyTorch tensor to C_CONTIGUOUS numpy array."""
+    arr = t.detach().cpu().numpy().astype(np.float32)
+    if not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr)
+    return arr
 
 
-def _rust_cpu_maxmul_with_argmax(
-    a: torch.Tensor, b: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Use optimized Rust CPU backend for tropical max-mul matmul."""
-    m, k = a.shape
-    n = b.shape[1]
-    device = a.device
-    dtype = a.dtype
-
-    a_np = a.detach().cpu().numpy().astype(np.float32)
-    b_np = b.detach().cpu().numpy().astype(np.float32)
-
-    if not a_np.flags["C_CONTIGUOUS"]:
-        a_np = np.ascontiguousarray(a_np)
-    if not b_np.flags["C_CONTIGUOUS"]:
-        b_np = np.ascontiguousarray(b_np)
-
-    c_flat, argmax_flat = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
-
-    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
-    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
-
-    return c, argmax
 
 
 # ===========================================================================
@@ -154,30 +92,20 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        # Convert to contiguous numpy arrays
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        a_np = _to_contiguous_numpy(a)
+        b_np = _to_contiguous_numpy(b)
 
-        # Ensure contiguous layout
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
-
-        # Call the optimized Rust implementation (returns flattened arrays)
         c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
 
-        # Reshape to 2D
         c_np = np.array(c_flat).reshape(m, n)
         argmax_np = np.array(argmax_flat).reshape(m, n)
 
-        # Save argmax for backward pass
-        ctx.save_for_backward(torch.from_numpy(argmax_np))
+        ctx.save_for_backward(torch.from_numpy(argmax_np.copy()))
         ctx.k = k
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return torch.from_numpy(c_np.copy()).to(a.device)
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
@@ -226,25 +154,20 @@ class TropicalMinPlusMatmul(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
-
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+        a_np = _to_contiguous_numpy(a)
+        b_np = _to_contiguous_numpy(b)
 
         c_flat, argmax_flat = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
 
         c_np = np.array(c_flat).reshape(m, n)
         argmax_np = np.array(argmax_flat).reshape(m, n)
 
-        ctx.save_for_backward(torch.from_numpy(argmax_np))
+        ctx.save_for_backward(torch.from_numpy(argmax_np.copy()))
         ctx.k = k
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return torch.from_numpy(c_np.copy()).to(a.device)
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
@@ -289,13 +212,8 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
-
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+        a_np = _to_contiguous_numpy(a)
+        b_np = _to_contiguous_numpy(b)
 
         c_flat, argmax_flat = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
 
@@ -304,15 +222,15 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
 
         # Save inputs and argmax for backward (needed for multiplicative gradient)
         ctx.save_for_backward(
-            torch.from_numpy(a_np),
-            torch.from_numpy(b_np),
-            torch.from_numpy(argmax_np),
+            torch.from_numpy(a_np.copy()),
+            torch.from_numpy(b_np.copy()),
+            torch.from_numpy(argmax_np.copy()),
         )
         ctx.k = k
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return torch.from_numpy(c_np.copy()).to(a.device)
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
@@ -364,23 +282,23 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if not _DLPACK_AVAILABLE:
+            raise RuntimeError("CUDA support not available. Build with CUDA feature enabled.")
+        if not a.is_cuda or not b.is_cuda:
+            raise RuntimeError("GPU function requires CUDA tensors. Use tropical_maxplus_matmul for CPU tensors.")
+
         m, k = a.shape
         n = b.shape[1]
 
-        if _DLPACK_AVAILABLE and a.is_cuda:
-            # Use Rust CUDA backend via DLPack (zero-copy for inputs)
-            a_contig = a.detach().contiguous()
-            b_contig = b.detach().contiguous()
+        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
+        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        a_cont = a.detach().contiguous()
+        b_cont = b.detach().contiguous()
 
-            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_contig, b_contig)
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(b_cont, a_cont)
 
-            # Reshape results (numpy arrays from Rust)
-            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device).long()
-        else:
-            # Fallback to optimized Rust CPU backend (still O(M*K + K*N) memory)
-            c, argmax = _rust_cpu_maxplus_with_argmax(a, b)
-            argmax = argmax.long()
+        c = torch.from_numpy(np.array(c_flat).reshape(m, n).copy()).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n).copy()).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -418,22 +336,23 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if not _DLPACK_AVAILABLE:
+            raise RuntimeError("CUDA support not available. Build with CUDA feature enabled.")
+        if not a.is_cuda or not b.is_cuda:
+            raise RuntimeError("GPU function requires CUDA tensors. Use tropical_minplus_matmul for CPU tensors.")
+
         m, k = a.shape
         n = b.shape[1]
 
-        if _DLPACK_AVAILABLE and a.is_cuda:
-            # Use Rust CUDA backend via DLPack
-            a_contig = a.detach().contiguous()
-            b_contig = b.detach().contiguous()
+        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
+        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        a_cont = a.detach().contiguous()
+        b_cont = b.detach().contiguous()
 
-            c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_contig, b_contig)
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(b_cont, a_cont)
 
-            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device).long()
-        else:
-            # Fallback to optimized Rust CPU backend
-            c, argmax = _rust_cpu_minplus_with_argmax(a, b)
-            argmax = argmax.long()
+        c = torch.from_numpy(np.array(c_flat).reshape(m, n).copy()).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n).copy()).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -472,26 +391,25 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if not _DLPACK_AVAILABLE:
+            raise RuntimeError("CUDA support not available. Build with CUDA feature enabled.")
+        if not a.is_cuda or not b.is_cuda:
+            raise RuntimeError("GPU function requires CUDA tensors. Use tropical_maxmul_matmul for CPU tensors.")
+
         m, k = a.shape
         n = b.shape[1]
 
-        if _DLPACK_AVAILABLE and a.is_cuda:
-            # Use Rust CUDA backend via DLPack
-            a_contig = a.detach().contiguous()
-            b_contig = b.detach().contiguous()
+        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
+        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        a_cont = a.detach().contiguous()
+        b_cont = b.detach().contiguous()
 
-            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_contig, b_contig)
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(b_cont, a_cont)
 
-            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device).long()
+        c = torch.from_numpy(np.array(c_flat).reshape(m, n).copy()).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n).copy()).to(a.device).long()
 
-            # Save original tensors for multiplicative backward
-            ctx.save_for_backward(a.detach(), b.detach(), argmax)
-        else:
-            # Fallback to optimized Rust CPU backend
-            c, argmax = _rust_cpu_maxmul_with_argmax(a, b)
-            ctx.save_for_backward(a.detach(), b.detach(), argmax.long())
-
+        ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.k = k
         ctx.m = m
         ctx.n = n
@@ -552,13 +470,8 @@ class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
-
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+        a_np = _to_contiguous_numpy_3d(a)
+        b_np = _to_contiguous_numpy_3d(b)
 
         c_flat, argmax_flat = tropical_gemm.maxplus_matmul_strided_batched_with_argmax(
             a_np, b_np
@@ -618,13 +531,8 @@ class TropicalMinPlusMatmulBatched(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
-
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+        a_np = _to_contiguous_numpy_3d(a)
+        b_np = _to_contiguous_numpy_3d(b)
 
         c_flat, argmax_flat = tropical_gemm.minplus_matmul_strided_batched_with_argmax(
             a_np, b_np
@@ -686,13 +594,8 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
-
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+        a_np = _to_contiguous_numpy_3d(a)
+        b_np = _to_contiguous_numpy_3d(b)
 
         c_flat, argmax_flat = tropical_gemm.maxmul_matmul_strided_batched_with_argmax(
             a_np, b_np
@@ -703,9 +606,9 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
             a.device
         )
 
-        # Save inputs and argmax for multiplicative gradient
+        # Save inputs for backward pass
         ctx.save_for_backward(
-            torch.from_numpy(a_np), torch.from_numpy(b_np), argmax
+            torch.from_numpy(a_np.copy()), torch.from_numpy(b_np.copy()), argmax
         )
         ctx.batch_size = batch_size
         ctx.k = k
@@ -769,18 +672,13 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Use CPU batched backend (GPU batched has column-major layout issues)
-        # TODO: Add true GPU batched support with proper memory layout handling
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
+        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        a_np = _to_contiguous_numpy_3d(a)
+        b_np = _to_contiguous_numpy_3d(b)
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
-
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_strided_batched_with_argmax(
-            a_np, b_np
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_gpu_strided_batched_with_argmax(
+            b_np, a_np
         )
 
         c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
@@ -828,17 +726,13 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Use CPU batched backend (GPU batched has column-major layout issues)
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
+        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        a_np = _to_contiguous_numpy_3d(a)
+        b_np = _to_contiguous_numpy_3d(b)
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
-
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_strided_batched_with_argmax(
-            a_np, b_np
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_gpu_strided_batched_with_argmax(
+            b_np, a_np
         )
 
         c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
@@ -882,17 +776,13 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Use CPU batched backend (GPU batched has column-major layout issues)
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Use transpose identity: C = A @ B computed via C^T = B^T @ A^T
+        # Pass contiguous B, A (swapped) - backend sees them transposed, result is correct
+        a_np = _to_contiguous_numpy_3d(a)
+        b_np = _to_contiguous_numpy_3d(b)
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
-
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_strided_batched_with_argmax(
-            a_np, b_np
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_gpu_strided_batched_with_argmax(
+            b_np, a_np
         )
 
         c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
@@ -918,11 +808,6 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
         # grad_a[b,i,argmax[b,i,j]] += grad_c[b,i,j] * B[b,argmax[b,i,j],j]
         # grad_b[b,argmax[b,i,j],j] += grad_c[b,i,j] * A[b,i,argmax[b,i,j]]
 
-        # Get the winning values from B: B[b, argmax[b,i,j], j]
-        # argmax is (batch, m, n), need B[b, argmax[b,i,j], j]
-        argmax_expanded = argmax.unsqueeze(-1).expand(-1, -1, -1, n)  # (batch, m, n, n)
-        b_expanded = b.unsqueeze(1).expand(-1, m, -1, -1)  # (batch, m, k, n)
-        # This is getting complex, let's use simpler approach with gather
         # b_winning[b,i,j] = b[b, argmax[b,i,j], j]
         b_winning = torch.gather(b, 1, argmax)  # (batch, m, n) gathering along k axis
 
