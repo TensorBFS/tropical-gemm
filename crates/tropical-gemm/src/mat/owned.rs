@@ -93,7 +93,12 @@ impl<S: TropicalSemiring> Mat<S> {
     /// Create a matrix from row-major scalar data.
     ///
     /// This is a convenience method that converts row-major input to column-major storage.
-    #[deprecated(since = "0.4.0", note = "use from_col_major instead for direct column-major input")]
+    ///
+    /// # Performance Warning
+    ///
+    /// This method performs an O(m×n) transpose operation. For performance-critical code,
+    /// provide data in column-major order and use [`from_col_major`] instead.
+    #[deprecated(since = "0.4.0", note = "use from_col_major instead for direct column-major input; this method has O(m×n) transpose overhead")]
     pub fn from_row_major(data: &[S::Scalar], nrows: usize, ncols: usize) -> Self
     where
         S::Scalar: Copy,

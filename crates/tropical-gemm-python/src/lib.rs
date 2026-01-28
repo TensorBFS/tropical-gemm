@@ -1113,13 +1113,118 @@ fn maxmul_matmul_batched_with_argmax<'py>(
 #[cfg(feature = "cuda")]
 mod gpu {
     use super::*;
-    use dlpark::ffi::{DataTypeCode, DeviceType};
-    use dlpark::ManagedTensor;
-    use dlpark::TensorView;
+    use dlpark::ffi::{DataType, DataTypeCode, Device, DeviceType};
+    use dlpark::{ManagerCtx, ManagedTensor, ShapeAndStrides, ToTensor, TensorView};
+    use pyo3::IntoPy;
+    use std::ffi::c_void;
     use tropical_gemm_cuda::{
-        get_global_context, launch_gemm_external_with_argmax_f32, tropical_matmul_gpu,
-        tropical_matmul_gpu_with_argmax, ExternalGpuMatrix,
+        get_context_for_device, get_global_context, launch_gemm_external_batched_with_argmax_f32,
+        launch_gemm_external_with_argmax_f32, tropical_matmul_gpu,
+        tropical_matmul_gpu_with_argmax, ExternalGpuMatrix, ExternalGpuTensor3,
+        GpuTensor3,
     };
+
+    // ========================================================================
+    // DLPack wrapper types for GPU tensor export
+    // ========================================================================
+
+    /// Wrapper for GpuTensor3<f32> that implements ToTensor for DLPack export.
+    ///
+    /// This wrapper owns the GPU tensor and provides the necessary metadata
+    /// for DLPack tensor exchange. The tensor data remains on GPU.
+    struct DLPackGpuTensor3F32 {
+        tensor: GpuTensor3<f32>,
+        shape: [i64; 3],
+        device_id: i32,
+    }
+
+    impl DLPackGpuTensor3F32 {
+        fn new(tensor: GpuTensor3<f32>, device_id: i32) -> Self {
+            let shape = [
+                tensor.batch() as i64,
+                tensor.rows() as i64,
+                tensor.cols() as i64,
+            ];
+            Self { tensor, shape, device_id }
+        }
+    }
+
+    impl ToTensor for DLPackGpuTensor3F32 {
+        fn data_ptr(&self) -> *mut c_void {
+            self.tensor.device_ptr() as *mut c_void
+        }
+
+        fn shape_and_strides(&self) -> ShapeAndStrides {
+            // Row-major (C-contiguous) strides for 3D tensor
+            ShapeAndStrides::new_contiguous(&self.shape)
+        }
+
+        fn device(&self) -> Device {
+            Device {
+                device_type: DeviceType::Cuda,
+                device_id: self.device_id,
+            }
+        }
+
+        fn dtype(&self) -> DataType {
+            DataType {
+                code: DataTypeCode::Float,
+                bits: 32,
+                lanes: 1,
+            }
+        }
+
+        fn byte_offset(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Wrapper for GpuTensor3<i32> (argmax indices) that implements ToTensor.
+    struct DLPackGpuTensor3I32 {
+        tensor: GpuTensor3<i32>,
+        shape: [i64; 3],
+        device_id: i32,
+    }
+
+    impl DLPackGpuTensor3I32 {
+        fn new(tensor: GpuTensor3<i32>, device_id: i32) -> Self {
+            let shape = [
+                tensor.batch() as i64,
+                tensor.rows() as i64,
+                tensor.cols() as i64,
+            ];
+            Self { tensor, shape, device_id }
+        }
+    }
+
+    impl ToTensor for DLPackGpuTensor3I32 {
+        fn data_ptr(&self) -> *mut c_void {
+            self.tensor.device_ptr() as *mut c_void
+        }
+
+        fn shape_and_strides(&self) -> ShapeAndStrides {
+            ShapeAndStrides::new_contiguous(&self.shape)
+        }
+
+        fn device(&self) -> Device {
+            Device {
+                device_type: DeviceType::Cuda,
+                device_id: self.device_id,
+            }
+        }
+
+        fn dtype(&self) -> DataType {
+            DataType {
+                code: DataTypeCode::Int,
+                bits: 32,
+                lanes: 1,
+            }
+        }
+
+        fn byte_offset(&self) -> u64 {
+            0
+        }
+    }
 
     /// Helper function to extract ManagedTensor from a Python object.
     /// Calls __dlpack__() if available, otherwise tries direct extraction.
@@ -1481,7 +1586,11 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
-                // Download results to host (column-major layout)
+                // TODO(#34): Avoid D2H transfer by returning DLPack capsules directly.
+                // Currently downloads results to host, then Python copies back to GPU.
+                // To fix: implement ToTensor for GpuMatrixWithArgmax and use IntoDLPack.
+                // This requires careful memory lifetime management (deleter callback must
+                // properly drop the CudaSlice when Python releases the capsule).
                 let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
@@ -1625,6 +1734,7 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
+                // TODO(#34): Avoid D2H transfer by returning DLPack capsules directly.
                 let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
@@ -1765,6 +1875,7 @@ mod gpu {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
+                // TODO(#34): Avoid D2H transfer by returning DLPack capsules directly.
                 let c_data = result.matrix_to_host(ctx).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
                 })?;
@@ -1804,6 +1915,225 @@ mod gpu {
         true
     }
 
+    // ========================================================================
+    // Batched DLPack functions (3D tensors)
+    // ========================================================================
+    //
+    // Note: Only f32 with argmax is supported for batched GPU operations.
+    // f64/i32/i64 and non-argmax variants are not implemented.
+    // For other dtypes, use the CPU batched API.
+
+    /// Batched MaxPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Computes C[b,i,j] = max_k(A[b,i,k] + B[b,k,j]) for each batch b.
+    ///
+    /// # Limitations
+    ///
+    /// - Only f32 dtype is supported (GPU batched)
+    /// - Always returns argmax (no non-argmax variant)
+    ///
+    /// Args:
+    ///     a: Input tensor A of shape (batch, M, K) - must support __dlpack__(), f32, CUDA
+    ///     b: Input tensor B of shape (batch, K, N) - must support __dlpack__(), f32, CUDA
+    ///
+    /// Returns:
+    ///     Tuple of (C, argmax) as DLPack capsules where:
+    ///     - C: Result tensor of shape (batch, M, N) as f32 CUDA tensor
+    ///     - argmax: Indices of shape (batch, M, N) as i32 CUDA tensor
+    ///
+    ///     Use `torch.from_dlpack(capsule)` to convert to PyTorch tensors.
+    ///
+    /// Raises:
+    ///     RuntimeError: If tensors are not on CUDA or DLPack extraction fails
+    ///     ValueError: If tensors are not f32 or not 3D
+    #[pyfunction]
+    pub fn maxplus_matmul_batched_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(PyObject, PyObject)> {
+        batched_dlpack_impl(py, a, b, "tropical_maxplus_f32_nn_batched_with_argmax")
+    }
+
+    /// Batched MinPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn minplus_matmul_batched_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(PyObject, PyObject)> {
+        batched_dlpack_impl(py, a, b, "tropical_minplus_f32_nn_batched_with_argmax")
+    }
+
+    /// Batched MaxMul matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn maxmul_matmul_batched_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(PyObject, PyObject)> {
+        batched_dlpack_impl(py, a, b, "tropical_maxmul_f32_nn_batched_with_argmax")
+    }
+
+    /// Implementation for batched DLPack operations.
+    ///
+    /// Returns DLPack capsules that keep data on GPU - use `torch.from_dlpack()`
+    /// to convert to PyTorch tensors.
+    fn batched_dlpack_impl(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+        kernel_name: &'static str,
+    ) -> PyResult<(PyObject, PyObject)> {
+        // Extract tensor info from DLPack
+        let a_tensor = extract_dlpack_tensor(py, &a)?;
+        let b_tensor = extract_dlpack_tensor(py, &b)?;
+
+        // Get device info
+        let a_device = TensorView::device(&a_tensor);
+        let b_device = TensorView::device(&b_tensor);
+
+        // Validate: must be on CUDA device (not CudaHost/pinned memory)
+        if a_device.device_type != DeviceType::Cuda {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Tensor A must be on CUDA device, got {:?}. Use CPU batched functions for CPU tensors.",
+                a_device.device_type
+            )));
+        }
+
+        if b_device.device_type != DeviceType::Cuda {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Tensor B must be on CUDA device, got {:?}. Use CPU batched functions for CPU tensors.",
+                b_device.device_type
+            )));
+        }
+
+        if a_device.device_id != b_device.device_id {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Tensors must be on the same CUDA device: A is on cuda:{}, B is on cuda:{}",
+                a_device.device_id, b_device.device_id
+            )));
+        }
+
+        let device_id = a_device.device_id;
+
+        // Get dtype and validate
+        let a_dtype = TensorView::dtype(&a_tensor);
+        let b_dtype = TensorView::dtype(&b_tensor);
+        if a_dtype != b_dtype {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Tensors must have the same dtype: A is {:?}, B is {:?}",
+                a_dtype, b_dtype
+            )));
+        }
+
+        if a_dtype.code != DataTypeCode::Float || a_dtype.bits != 32 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Only f32 tensors are supported for batched DLPack interface",
+            ));
+        }
+
+        // Get shapes - must be 3D
+        let a_shape = TensorView::shape(&a_tensor);
+        let b_shape = TensorView::shape(&b_tensor);
+
+        if a_shape.len() != 3 || b_shape.len() != 3 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Expected 3D tensors, got A with {} dims, B with {} dims",
+                a_shape.len(),
+                b_shape.len()
+            )));
+        }
+
+        let batch = a_shape[0] as usize;
+        let m = a_shape[1] as usize;
+        let k = a_shape[2] as usize;
+        let batch_b = b_shape[0] as usize;
+        let k2 = b_shape[1] as usize;
+        let n = b_shape[2] as usize;
+
+        if batch != batch_b {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Batch size mismatch: A has batch {}, B has batch {}",
+                batch, batch_b
+            )));
+        }
+
+        if k != k2 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+                m, k, k2, n
+            )));
+        }
+
+        // Guard against zero-sized dimensions (would cause invalid CUDA launch)
+        if batch == 0 || m == 0 || k == 0 || n == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Zero-sized dimensions not supported: batch={}, m={}, k={}, n={}",
+                batch, m, k, n
+            )));
+        }
+
+        // Check strides for contiguity (row-major per batch)
+        let a_strides = TensorView::strides(&a_tensor);
+        let b_strides = TensorView::strides(&b_tensor);
+
+        // For 3D row-major (C-contiguous): strides should be [m*k, k, 1]
+        let a_contiguous = a_strides.is_none()
+            || a_strides.map_or(false, |s| {
+                s.len() == 3 && s[2] == 1 && s[1] == k as i64 && s[0] == (m * k) as i64
+            });
+        let b_contiguous = b_strides.is_none()
+            || b_strides.map_or(false, |s| {
+                s.len() == 3 && s[2] == 1 && s[1] == n as i64 && s[0] == (k * n) as i64
+            });
+
+        if !a_contiguous || !b_contiguous {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Tensors must be contiguous (call .contiguous() on PyTorch tensors)",
+            ));
+        }
+
+        // GPU path: zero-copy using DLPack
+        let a_ptr = TensorView::data_ptr(&a_tensor) as u64;
+        let b_ptr = TensorView::data_ptr(&b_tensor) as u64;
+
+        // Create external 3D tensor views
+        let a_ext = unsafe { ExternalGpuTensor3::from_raw_contiguous(a_ptr, batch, m, k) };
+        let b_ext = unsafe { ExternalGpuTensor3::from_raw_contiguous(b_ptr, batch, k, n) };
+
+        // Get CUDA context for the input device
+        let ctx = get_context_for_device(device_id as usize).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+        })?;
+
+        // Launch batched kernel
+        let result = unsafe {
+            launch_gemm_external_batched_with_argmax_f32(ctx, kernel_name, &a_ext, &b_ext, batch, m, k, n)
+        }
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
+        })?;
+
+        // Split result into tensor and argmax, then wrap for DLPack export
+        let (c_tensor, argmax_tensor) = result.into_parts();
+
+        // Wrap in DLPack-compatible wrappers with correct device_id
+        let c_dlpack = DLPackGpuTensor3F32::new(c_tensor, device_id);
+        let argmax_dlpack = DLPackGpuTensor3I32::new(argmax_tensor, device_id);
+
+        // Convert to DLPack capsules using ManagerCtx
+        // ManagerCtx owns the tensor and exports it as a DLPack capsule
+        let c_capsule = ManagerCtx::new(c_dlpack).into_py(py);
+        let argmax_capsule = ManagerCtx::new(argmax_dlpack).into_py(py);
+
+        Ok((c_capsule, argmax_capsule))
+    }
+
     /// Register GPU functions in the module.
     pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(maxplus_matmul_gpu, m)?)?;
@@ -1816,6 +2146,10 @@ mod gpu {
         m.add_function(wrap_pyfunction!(maxplus_matmul_dlpack, m)?)?;
         m.add_function(wrap_pyfunction!(minplus_matmul_dlpack, m)?)?;
         m.add_function(wrap_pyfunction!(maxmul_matmul_dlpack, m)?)?;
+        // Batched DLPack functions
+        m.add_function(wrap_pyfunction!(maxplus_matmul_batched_dlpack, m)?)?;
+        m.add_function(wrap_pyfunction!(minplus_matmul_batched_dlpack, m)?)?;
+        m.add_function(wrap_pyfunction!(maxmul_matmul_batched_dlpack, m)?)?;
         m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
         Ok(())
     }

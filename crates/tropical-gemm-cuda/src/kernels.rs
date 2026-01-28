@@ -2,7 +2,9 @@
 
 use crate::context::CudaContext;
 use crate::error::Result;
-use crate::memory::{ExternalGpuMatrix, GpuMatrix, GpuMatrixWithArgmax};
+use crate::memory::{
+    ExternalGpuMatrix, ExternalGpuTensor3, GpuMatrix, GpuMatrixWithArgmax, GpuTensor3WithArgmax,
+};
 use cudarc::driver::{DeviceRepr, LaunchAsync, LaunchConfig, ValidAsZeroBits};
 use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
 
@@ -463,6 +465,83 @@ pub unsafe fn launch_gemm_external_f32(
             n as i32,
             m as i32,
             k as i32,
+        ),
+    )?;
+
+    ctx.device().synchronize()?;
+    Ok(c)
+}
+
+// ============================================================================
+// Batched External Kernels (for DLPack 3D tensors)
+// ============================================================================
+
+/// Launch a batched tropical GEMM kernel with argmax using external (DLPack) 3D tensors.
+///
+/// Computes C[b] = A[b] ⊗ B[b] for each batch b, where ⊗ is tropical matrix multiplication.
+///
+/// # Arguments
+///
+/// * `ctx` - CUDA context
+/// * `kernel_name` - Name of the batched kernel to launch
+/// * `a` - External 3D tensor A (batch, M, K) in row-major per batch
+/// * `b` - External 3D tensor B (batch, K, N) in row-major per batch
+/// * `batch` - Batch size
+/// * `m` - Rows per matrix in A/C
+/// * `k` - Columns in A / rows in B
+/// * `n` - Columns per matrix in B/C
+///
+/// # Safety
+///
+/// - The input pointers must point to valid GPU memory with the specified dimensions
+/// - The memory must remain valid for the duration of the kernel execution
+pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
+    ctx: &CudaContext,
+    kernel_name: &'static str,
+    a: &ExternalGpuTensor3<f32>,
+    b: &ExternalGpuTensor3<f32>,
+    batch: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Result<GpuTensor3WithArgmax<f32>> {
+    // Apply row-major → column-major trick: swap inputs and swap M↔N
+    // Same as non-batched version, but for each batch
+    let mut c = GpuTensor3WithArgmax::<f32>::alloc(ctx, batch, m, n)?;
+
+    // Grid: (ceil(N/64) * ceil(M/64), 1, batch) with swapped M↔N
+    let grid_xy = ((n + 63) / 64) * ((m + 63) / 64);
+    let grid = (grid_xy as u32, 1, batch as u32);
+    let block = CudaContext::block_dims_f32();
+
+    let kernel = ctx.get_kernel(kernel_name)?;
+    let cfg = LaunchConfig {
+        grid_dim: grid,
+        block_dim: block,
+        shared_mem_bytes: 0,
+    };
+
+    // Compute strides before borrowing mutably
+    let stride_a = a.stride() as i32;
+    let stride_b = b.stride() as i32;
+    let stride_c = c.tensor.stride() as i32;
+
+    // Swap order: pass B first, then A, and swap M↔N
+    // Kernel signature: (A, B, C, argmax, M, N, K, strideA, strideB, strideC)
+    // We pass:          (B, A, C, argmax, N, M, K, strideB, strideA, strideC)
+    kernel.launch(
+        cfg,
+        (
+            b.device_ptr(),                  // B becomes "A" in kernel
+            a.device_ptr(),                  // A becomes "B" in kernel
+            c.tensor.as_slice_mut(),
+            c.argmax.as_slice_mut(),
+            n as i32,                        // Swapped: N becomes "M"
+            m as i32,                        // Swapped: M becomes "N"
+            k as i32,
+            stride_b,                        // strideA (B's stride in our swap)
+            stride_a,                        // strideB (A's stride in our swap)
+            stride_c,                        // strideC
         ),
     )?;
 

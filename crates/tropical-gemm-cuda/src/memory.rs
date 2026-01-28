@@ -54,7 +54,13 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     ///
     /// Use this when interfacing with row-major data sources (e.g., C arrays).
     /// For column-major data, use `from_host` instead for better performance.
-    #[deprecated(since = "0.4.0", note = "use from_host with column-major data instead")]
+    ///
+    /// # Performance Warning
+    ///
+    /// This method performs an O(rows×cols) transpose on the CPU before uploading to GPU.
+    /// For performance-critical code, provide data in column-major order and use
+    /// [`from_host`] instead.
+    #[deprecated(since = "0.4.0", note = "use from_host with column-major data instead; this method has O(m×n) transpose overhead")]
     pub fn from_host_row_major(
         ctx: &CudaContext,
         data: &[T],
@@ -112,7 +118,13 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     ///
     /// Use this when interfacing with row-major data consumers.
     /// For column-major data, use `to_host` instead for better performance.
-    #[deprecated(since = "0.4.0", note = "use to_host for column-major data instead")]
+    ///
+    /// # Performance Warning
+    ///
+    /// This method performs an O(rows×cols) transpose on the CPU after downloading from GPU.
+    /// For performance-critical code, use [`to_host`] and handle the column-major layout
+    /// in your application.
+    #[deprecated(since = "0.4.0", note = "use to_host for column-major data instead; this method has O(m×n) transpose overhead")]
     pub fn to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
         let col_major = ctx.device().dtoh_sync_copy(&self.data)?;
         // Transpose from column-major to row-major
@@ -324,5 +336,219 @@ impl<T> ExternalGpuMatrix<T> {
     /// Check if the matrix is empty.
     pub fn is_empty(&self) -> bool {
         self.memory.is_empty()
+    }
+}
+
+/// A 3D tensor view into external GPU memory for batched operations.
+///
+/// This represents a batch of matrices stored contiguously in row-major order
+/// (as PyTorch tensors are). Shape is (batch, rows, cols) with stride between batches.
+///
+/// The actual data is not copied - we just store metadata and a pointer.
+pub struct ExternalGpuTensor3<T> {
+    device_ptr: CUdeviceptr,
+    batch: usize,
+    rows: usize,
+    cols: usize,
+    stride: usize, // elements per batch (typically rows * cols for contiguous)
+    _marker: PhantomData<T>,
+}
+
+impl<T> ExternalGpuTensor3<T> {
+    /// Create a new ExternalGpuTensor3 from a raw device pointer.
+    ///
+    /// # Safety
+    ///
+    /// - `device_ptr` must point to valid GPU memory containing at least `batch * stride` elements
+    /// - The memory must be in row-major (C-contiguous) order per batch
+    /// - The memory must remain valid for the lifetime of this struct
+    pub unsafe fn from_raw(
+        device_ptr: CUdeviceptr,
+        batch: usize,
+        rows: usize,
+        cols: usize,
+        stride: usize,
+    ) -> Self {
+        Self {
+            device_ptr,
+            batch,
+            rows,
+            cols,
+            stride,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create from contiguous 3D tensor (stride = rows * cols).
+    ///
+    /// # Safety
+    ///
+    /// Same requirements as `from_raw`.
+    pub unsafe fn from_raw_contiguous(
+        device_ptr: CUdeviceptr,
+        batch: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Self {
+        Self::from_raw(device_ptr, batch, rows, cols, rows * cols)
+    }
+
+    /// Get the raw device pointer.
+    pub fn device_ptr(&self) -> CUdeviceptr {
+        self.device_ptr
+    }
+
+    /// Get the batch size.
+    pub fn batch(&self) -> usize {
+        self.batch
+    }
+
+    /// Get the number of rows per matrix.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Get the number of columns per matrix.
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// Get the stride (elements between batches).
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    /// Get the total number of elements.
+    pub fn len(&self) -> usize {
+        self.batch * self.stride
+    }
+
+    /// Check if the tensor is empty.
+    pub fn is_empty(&self) -> bool {
+        self.batch == 0 || self.rows == 0 || self.cols == 0
+    }
+
+    /// Check if the tensor is contiguous (stride == rows * cols).
+    pub fn is_contiguous(&self) -> bool {
+        self.stride == self.rows * self.cols
+    }
+}
+
+/// A batched GPU matrix result with owned memory.
+///
+/// Stores batch_size matrices of shape (rows, cols) contiguously on GPU.
+pub struct GpuTensor3<T: DeviceRepr> {
+    data: CudaSlice<T>,
+    batch: usize,
+    rows: usize,
+    cols: usize,
+}
+
+impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuTensor3<T> {
+    /// Allocate a zeroed batched GPU tensor.
+    pub fn alloc(ctx: &CudaContext, batch: usize, rows: usize, cols: usize) -> Result<Self> {
+        let gpu_data = ctx.device().alloc_zeros::<T>(batch * rows * cols)?;
+        Ok(Self {
+            data: gpu_data,
+            batch,
+            rows,
+            cols,
+        })
+    }
+
+    /// Copy GPU data back to host as a flat vector (batch × rows × cols elements).
+    pub fn to_host(&self, ctx: &CudaContext) -> Result<Vec<T>> {
+        Ok(ctx.device().dtoh_sync_copy(&self.data)?)
+    }
+
+    /// Get the batch size.
+    pub fn batch(&self) -> usize {
+        self.batch
+    }
+
+    /// Get rows per matrix.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Get columns per matrix.
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// Get stride (elements per batch).
+    pub fn stride(&self) -> usize {
+        self.rows * self.cols
+    }
+
+    /// Get the underlying CUDA slice.
+    pub fn as_slice(&self) -> &CudaSlice<T> {
+        &self.data
+    }
+
+    /// Get a mutable reference to the underlying CUDA slice.
+    pub fn as_slice_mut(&mut self) -> &mut CudaSlice<T> {
+        &mut self.data
+    }
+
+    /// Get the raw device pointer (for DLPack export).
+    pub fn device_ptr(&self) -> CUdeviceptr {
+        use cudarc::driver::DevicePtr;
+        *self.data.device_ptr()
+    }
+
+    /// Consume self and return the inner CudaSlice (for ownership transfer).
+    pub fn into_inner(self) -> CudaSlice<T> {
+        self.data
+    }
+}
+
+/// A batched GPU tensor with argmax indices for backward propagation.
+pub struct GpuTensor3WithArgmax<T: DeviceRepr> {
+    /// The result tensor C (batch × rows × cols).
+    pub tensor: GpuTensor3<T>,
+    /// The argmax indices (batch × rows × cols).
+    pub argmax: GpuTensor3<ArgmaxIndex>,
+}
+
+impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuTensor3WithArgmax<T> {
+    /// Allocate a zeroed batched GPU tensor with argmax.
+    pub fn alloc(ctx: &CudaContext, batch: usize, rows: usize, cols: usize) -> Result<Self> {
+        let tensor = GpuTensor3::alloc(ctx, batch, rows, cols)?;
+        let argmax = GpuTensor3::alloc(ctx, batch, rows, cols)?;
+        Ok(Self { tensor, argmax })
+    }
+
+    /// Get batch size.
+    pub fn batch(&self) -> usize {
+        self.tensor.batch()
+    }
+
+    /// Get rows per matrix.
+    pub fn rows(&self) -> usize {
+        self.tensor.rows()
+    }
+
+    /// Get cols per matrix.
+    pub fn cols(&self) -> usize {
+        self.tensor.cols()
+    }
+
+    /// Copy the result tensor back to host.
+    pub fn tensor_to_host(&self, ctx: &CudaContext) -> Result<Vec<T>> {
+        self.tensor.to_host(ctx)
+    }
+
+    /// Copy the argmax indices back to host.
+    pub fn argmax_to_host(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
+        self.argmax.to_host(ctx)
+    }
+
+    /// Consume self and return the tensor and argmax components separately.
+    ///
+    /// This is useful for DLPack export where each tensor needs to be wrapped
+    /// independently for ownership transfer.
+    pub fn into_parts(self) -> (GpuTensor3<T>, GpuTensor3<ArgmaxIndex>) {
+        (self.tensor, self.argmax)
     }
 }

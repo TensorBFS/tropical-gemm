@@ -71,7 +71,10 @@ pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T>>(
         return;
     }
 
-    // Allocate packing buffers
+    // TODO(#34): Avoid repeated allocation by accepting caller-provided workspace.
+    // For repeated GEMM calls, consider adding a workspace-based API:
+    //   pub struct GemmWorkspace<T> { packed_a: Vec<T>, packed_b: Vec<T> }
+    //   pub fn tropical_gemm_with_workspace(..., workspace: &mut GemmWorkspace<T>)
     let mut packed_a = vec![T::Scalar::scalar_zero(); packed_a_size(params.mc, params.kc, K::MR)];
     let mut packed_b = vec![T::Scalar::scalar_zero(); packed_b_size(params.kc, params.nc, K::NR)];
 
@@ -185,7 +188,7 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
     let ldc = result.ld;
     let (c, argmax) = result.as_mut_ptrs();
 
-    // Allocate packing buffers
+    // TODO(#34): Avoid repeated allocation by accepting caller-provided workspace.
     let mut packed_a = vec![T::Scalar::scalar_zero(); packed_a_size(params.mc, params.kc, K::MR)];
     let mut packed_b = vec![T::Scalar::scalar_zero(); packed_b_size(params.kc, params.nc, K::NR)];
 

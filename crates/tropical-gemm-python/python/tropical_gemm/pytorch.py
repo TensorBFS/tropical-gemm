@@ -21,6 +21,8 @@ Example:
     >>> loss.backward()
 """
 
+import warnings
+
 import numpy as np
 
 try:
@@ -351,6 +353,7 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
 
 # Check if DLPack functions are available (CUDA build)
 _DLPACK_AVAILABLE = hasattr(tropical_gemm, "maxplus_matmul_dlpack")
+_BATCHED_DLPACK_AVAILABLE = hasattr(tropical_gemm, "maxplus_matmul_batched_dlpack")
 
 
 class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
@@ -367,19 +370,33 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        if _DLPACK_AVAILABLE and a.is_cuda:
-            # Use Rust CUDA backend via DLPack (zero-copy for inputs)
-            a_contig = a.detach().contiguous()
-            b_contig = b.detach().contiguous()
+        # GPU functions require CUDA tensors and DLPack support
+        if not a.is_cuda:
+            raise RuntimeError(
+                "TropicalMaxPlusMatmulGPU requires CUDA tensors. "
+                "Use TropicalMaxPlusMatmul for CPU tensors."
+            )
+        if not _DLPACK_AVAILABLE:
+            raise RuntimeError(
+                "DLPack support not available. Rebuild tropical-gemm with CUDA support "
+                "or use TropicalMaxPlusMatmul for CPU execution."
+            )
 
-            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_contig, b_contig)
+        # Use Rust CUDA backend via DLPack (zero-copy for inputs)
+        a_contig = a.detach()
+        if not a_contig.is_contiguous():
+            a_contig = a_contig.contiguous()
+        b_contig = b.detach()
+        if not b_contig.is_contiguous():
+            b_contig = b_contig.contiguous()
 
-            # Reshape results (numpy arrays from Rust)
-            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
-        else:
-            # Fallback to optimized Rust CPU backend (still O(M*K + K*N) memory)
-            c, argmax = _rust_cpu_maxplus_with_argmax(a, b)
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_contig, b_contig)
+
+        # Reshape results (numpy arrays from Rust)
+        c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(
+            device=a.device, dtype=torch.int64
+        )
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -420,18 +437,32 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        if _DLPACK_AVAILABLE and a.is_cuda:
-            # Use Rust CUDA backend via DLPack
-            a_contig = a.detach().contiguous()
-            b_contig = b.detach().contiguous()
+        # GPU functions require CUDA tensors and DLPack support
+        if not a.is_cuda:
+            raise RuntimeError(
+                "TropicalMinPlusMatmulGPU requires CUDA tensors. "
+                "Use TropicalMinPlusMatmul for CPU tensors."
+            )
+        if not _DLPACK_AVAILABLE:
+            raise RuntimeError(
+                "DLPack support not available. Rebuild tropical-gemm with CUDA support "
+                "or use TropicalMinPlusMatmul for CPU execution."
+            )
 
-            c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_contig, b_contig)
+        # Use Rust CUDA backend via DLPack
+        a_contig = a.detach()
+        if not a_contig.is_contiguous():
+            a_contig = a_contig.contiguous()
+        b_contig = b.detach()
+        if not b_contig.is_contiguous():
+            b_contig = b_contig.contiguous()
 
-            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
-        else:
-            # Fallback to optimized Rust CPU backend
-            c, argmax = _rust_cpu_minplus_with_argmax(a, b)
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_contig, b_contig)
+
+        c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(
+            device=a.device, dtype=torch.int64
+        )
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -473,22 +504,35 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
         m, k = a.shape
         n = b.shape[1]
 
-        if _DLPACK_AVAILABLE and a.is_cuda:
-            # Use Rust CUDA backend via DLPack
-            a_contig = a.detach().contiguous()
-            b_contig = b.detach().contiguous()
+        # GPU functions require CUDA tensors and DLPack support
+        if not a.is_cuda:
+            raise RuntimeError(
+                "TropicalMaxMulMatmulGPU requires CUDA tensors. "
+                "Use TropicalMaxMulMatmul for CPU tensors."
+            )
+        if not _DLPACK_AVAILABLE:
+            raise RuntimeError(
+                "DLPack support not available. Rebuild tropical-gemm with CUDA support "
+                "or use TropicalMaxMulMatmul for CPU execution."
+            )
 
-            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_contig, b_contig)
+        # Use Rust CUDA backend via DLPack
+        a_contig = a.detach()
+        if not a_contig.is_contiguous():
+            a_contig = a_contig.contiguous()
+        b_contig = b.detach()
+        if not b_contig.is_contiguous():
+            b_contig = b_contig.contiguous()
 
-            c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(a.device)
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_contig, b_contig)
 
-            # Save original tensors for multiplicative backward
-            ctx.save_for_backward(a.detach(), b.detach(), argmax)
-        else:
-            # Fallback to optimized Rust CPU backend
-            c, argmax = _rust_cpu_maxmul_with_argmax(a, b)
-            ctx.save_for_backward(a.detach(), b.detach(), argmax)
+        c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(
+            device=a.device, dtype=torch.int64
+        )
+
+        # Save original tensors for multiplicative backward
+        ctx.save_for_backward(a.detach(), b.detach(), argmax)
 
         ctx.k = k
         ctx.m = m
@@ -550,27 +594,62 @@ class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
         batch, m, k = a.shape
         n = b.shape[2]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Check if either tensor is on CUDA
+        if a.is_cuda or b.is_cuda:
+            # Validate both tensors are on the same device
+            if a.device != b.device:
+                raise RuntimeError(
+                    f"Tensors must be on the same device: a is on {a.device}, b is on {b.device}"
+                )
+            # CUDA tensors require batched DLPack support
+            if not _BATCHED_DLPACK_AVAILABLE:
+                raise RuntimeError(
+                    "Batched GPU operations require CUDA support. "
+                    "Rebuild tropical-gemm with CUDA support or move tensors to CPU."
+                )
+            # Use Rust CUDA backend via DLPack (zero-copy for inputs AND outputs)
+            a_contig = a.detach()
+            if not a_contig.is_contiguous():
+                a_contig = a_contig.contiguous()
+            b_contig = b.detach()
+            if not b_contig.is_contiguous():
+                b_contig = b_contig.contiguous()
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+            # Returns DLPack capsules - data stays on GPU
+            c_capsule, argmax_capsule = tropical_gemm.maxplus_matmul_batched_dlpack(
+                a_contig, b_contig
+            )
 
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_batched_with_argmax(a_np, b_np)
+            # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
+            c = torch.from_dlpack(c_capsule)
+            # Cast argmax to int64 for PyTorch indexing ops (scatter_add_, gather)
+            argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
+        else:
+            # CPU path
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
 
-        c_np = np.array(c_flat).reshape(batch, m, n)
-        argmax_np = np.array(argmax_flat).reshape(batch, m, n)
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
 
-        # Save argmax on the same device as input for backward pass
-        ctx.save_for_backward(torch.from_numpy(argmax_np).to(a.device))
+            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch, m, n)).to(
+                device=a.device, dtype=torch.int64
+            )
+
+        ctx.save_for_backward(argmax)
         ctx.k = k
         ctx.batch = batch
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return c
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
@@ -611,27 +690,62 @@ class TropicalMinPlusMatmulBatched(torch.autograd.Function):
         batch, m, k = a.shape
         n = b.shape[2]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Check if either tensor is on CUDA
+        if a.is_cuda or b.is_cuda:
+            # Validate both tensors are on the same device
+            if a.device != b.device:
+                raise RuntimeError(
+                    f"Tensors must be on the same device: a is on {a.device}, b is on {b.device}"
+                )
+            # CUDA tensors require batched DLPack support
+            if not _BATCHED_DLPACK_AVAILABLE:
+                raise RuntimeError(
+                    "Batched GPU operations require CUDA support. "
+                    "Rebuild tropical-gemm with CUDA support or move tensors to CPU."
+                )
+            # Use Rust CUDA backend via DLPack (zero-copy for inputs AND outputs)
+            a_contig = a.detach()
+            if not a_contig.is_contiguous():
+                a_contig = a_contig.contiguous()
+            b_contig = b.detach()
+            if not b_contig.is_contiguous():
+                b_contig = b_contig.contiguous()
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+            # Returns DLPack capsules - data stays on GPU
+            c_capsule, argmax_capsule = tropical_gemm.minplus_matmul_batched_dlpack(
+                a_contig, b_contig
+            )
 
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_batched_with_argmax(a_np, b_np)
+            # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
+            c = torch.from_dlpack(c_capsule)
+            # Cast argmax to int64 for PyTorch indexing ops (scatter_add_, gather)
+            argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
+        else:
+            # CPU path
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
 
-        c_np = np.array(c_flat).reshape(batch, m, n)
-        argmax_np = np.array(argmax_flat).reshape(batch, m, n)
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
 
-        # Save argmax on the same device as input for backward pass
-        ctx.save_for_backward(torch.from_numpy(argmax_np).to(a.device))
+            c_flat, argmax_flat = tropical_gemm.minplus_matmul_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch, m, n)).to(
+                device=a.device, dtype=torch.int64
+            )
+
+        ctx.save_for_backward(argmax)
         ctx.k = k
         ctx.batch = batch
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(a.device)
+        return c
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):
@@ -676,32 +790,69 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
         batch, m, k = a.shape
         n = b.shape[2]
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Check if either tensor is on CUDA
+        if a.is_cuda or b.is_cuda:
+            # Validate both tensors are on the same device
+            if a.device != b.device:
+                raise RuntimeError(
+                    f"Tensors must be on the same device: a is on {a.device}, b is on {b.device}"
+                )
+            # CUDA tensors require batched DLPack support
+            if not _BATCHED_DLPACK_AVAILABLE:
+                raise RuntimeError(
+                    "Batched GPU operations require CUDA support. "
+                    "Rebuild tropical-gemm with CUDA support or move tensors to CPU."
+                )
+            # Use Rust CUDA backend via DLPack (zero-copy for inputs AND outputs)
+            a_contig = a.detach()
+            if not a_contig.is_contiguous():
+                a_contig = a_contig.contiguous()
+            b_contig = b.detach()
+            if not b_contig.is_contiguous():
+                b_contig = b_contig.contiguous()
 
-        if not a_np.flags["C_CONTIGUOUS"]:
-            a_np = np.ascontiguousarray(a_np)
-        if not b_np.flags["C_CONTIGUOUS"]:
-            b_np = np.ascontiguousarray(b_np)
+            # Returns DLPack capsules - data stays on GPU
+            c_capsule, argmax_capsule = tropical_gemm.maxmul_matmul_batched_dlpack(
+                a_contig, b_contig
+            )
 
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_batched_with_argmax(a_np, b_np)
+            # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
+            c = torch.from_dlpack(c_capsule)
+            # Cast argmax to int64 for PyTorch indexing ops (scatter_add_, gather)
+            argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
+            # Save tensors for backward pass
+            ctx.save_for_backward(a.detach(), b.detach(), argmax)
+        else:
+            # CPU path
+            a_np = a.detach().cpu().numpy().astype(np.float32)
+            b_np = b.detach().cpu().numpy().astype(np.float32)
 
-        c_np = np.array(c_flat).reshape(batch, m, n)
-        argmax_np = np.array(argmax_flat).reshape(batch, m, n)
+            if not a_np.flags["C_CONTIGUOUS"]:
+                a_np = np.ascontiguousarray(a_np)
+            if not b_np.flags["C_CONTIGUOUS"]:
+                b_np = np.ascontiguousarray(b_np)
 
-        # Save tensors on the same device as input for backward pass
-        device = a.device
-        ctx.save_for_backward(
-            torch.from_numpy(a_np).to(device),
-            torch.from_numpy(b_np).to(device),
-            torch.from_numpy(argmax_np).to(device),
-        )
+            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.array(c_flat).reshape(batch, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch, m, n)).to(
+                device=a.device, dtype=torch.int64
+            )
+            # Save tensors on the same device as input for backward pass
+            ctx.save_for_backward(
+                torch.from_numpy(a_np).to(a.device),
+                torch.from_numpy(b_np).to(a.device),
+                argmax,
+            )
+
         ctx.k = k
         ctx.batch = batch
         ctx.m = m
         ctx.n = n
 
-        return torch.from_numpy(c_np).to(device)
+        return c
 
     @staticmethod
     def backward(ctx, grad_c: torch.Tensor):

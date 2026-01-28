@@ -48,54 +48,100 @@ mod gpu_mat;
 mod kernels;
 mod memory;
 
+use cudarc::driver::CudaDevice;
 use once_cell::sync::OnceCell;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// Global CUDA context for convenience functions.
-/// Lazily initialized on first use, persists for process lifetime.
-static GLOBAL_CONTEXT: OnceCell<CudaContext> = OnceCell::new();
+/// Per-device CUDA context cache, dynamically sized based on available devices.
+static DEVICE_CONTEXTS: OnceCell<Mutex<HashMap<usize, &'static CudaContext>>> = OnceCell::new();
 
-/// Mutex to ensure only one thread initializes the context.
+/// Mutex to ensure thread-safe initialization.
 static INIT_MUTEX: Mutex<()> = Mutex::new(());
 
-/// Get or initialize the global CUDA context.
+/// Get the number of available CUDA devices.
+pub fn cuda_device_count() -> Result<usize> {
+    Ok(CudaDevice::count()? as usize)
+}
+
+/// Get or initialize the CUDA context for a specific device.
 ///
-/// This function is thread-safe and will only initialize the context once.
-/// Subsequent calls return the cached context.
+/// This function is thread-safe and will only initialize the context once per device.
+/// Subsequent calls return the cached context for that device.
+///
+/// # Arguments
+///
+/// * `device_id` - The CUDA device ordinal
 ///
 /// # Errors
 ///
-/// Returns an error if CUDA initialization fails (no device, driver issues, etc.)
-pub fn get_global_context() -> Result<&'static CudaContext> {
-    // Fast path: already initialized
-    if let Some(ctx) = GLOBAL_CONTEXT.get() {
-        return Ok(ctx);
+/// Returns an error if CUDA initialization fails or device_id is invalid.
+pub fn get_context_for_device(device_id: usize) -> Result<&'static CudaContext> {
+    // Check device count
+    let device_count = cuda_device_count()?;
+    if device_id >= device_count {
+        return Err(CudaError::DimensionMismatch(format!(
+            "Device {} not available (only {} CUDA device(s) found)",
+            device_id, device_count
+        )));
+    }
+
+    // Initialize the map if needed
+    let contexts = DEVICE_CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+    // Fast path: check if context exists
+    {
+        let map = contexts.lock().unwrap();
+        if let Some(&ctx) = map.get(&device_id) {
+            return Ok(ctx);
+        }
     }
 
     // Slow path: need to initialize
     let _lock = INIT_MUTEX.lock().unwrap();
 
     // Double-check after acquiring lock
-    if let Some(ctx) = GLOBAL_CONTEXT.get() {
-        return Ok(ctx);
+    {
+        let map = contexts.lock().unwrap();
+        if let Some(&ctx) = map.get(&device_id) {
+            return Ok(ctx);
+        }
     }
 
-    // Initialize and store
-    let ctx = CudaContext::new()?;
-    let _ = GLOBAL_CONTEXT.set(ctx);
+    // Create context and leak it for 'static lifetime
+    let ctx = CudaContext::new_on_device(device_id)?;
+    let ctx_static: &'static CudaContext = Box::leak(Box::new(ctx));
 
-    Ok(GLOBAL_CONTEXT.get().unwrap())
+    // Store in map
+    {
+        let mut map = contexts.lock().unwrap();
+        map.insert(device_id, ctx_static);
+    }
+
+    Ok(ctx_static)
+}
+
+/// Get or initialize the global CUDA context (device 0).
+///
+/// This is a convenience function equivalent to `get_context_for_device(0)`.
+///
+/// # Errors
+///
+/// Returns an error if CUDA initialization fails (no device, driver issues, etc.)
+pub fn get_global_context() -> Result<&'static CudaContext> {
+    get_context_for_device(0)
 }
 
 pub use context::CudaContext;
 pub use error::{CudaError, Result};
 pub use gpu_mat::{GpuMat, GpuMatWithArgmax};
 pub use kernels::{
-    launch_gemm_external_f32, launch_gemm_external_with_argmax_f32, CudaKernel,
-    CudaKernelWithArgmax,
+    launch_gemm_external_batched_with_argmax_f32, launch_gemm_external_f32,
+    launch_gemm_external_with_argmax_f32, CudaKernel, CudaKernelWithArgmax,
 };
 pub use memory::{
-    ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, GpuMatrix, GpuMatrixWithArgmax,
+    ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, ExternalGpuTensor3, GpuMatrix,
+    GpuMatrixWithArgmax, GpuTensor3, GpuTensor3WithArgmax,
 };
 
 use cudarc::driver::{DeviceRepr, ValidAsZeroBits};
@@ -125,7 +171,27 @@ fn validate_gemm_input<T>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Res
 /// One-shot tropical matrix multiplication on GPU.
 ///
 /// This function handles all GPU memory management automatically.
-/// For repeated operations, use `tropical_gemm_gpu` with a persistent context.
+///
+/// # Performance Note
+///
+/// This function performs host-to-device (H2D) transfers for inputs and
+/// device-to-host (D2H) transfer for output on every call. For repeated
+/// operations, use [`GpuMatrix`] with [`tropical_gemm_gpu`] instead to
+/// keep data on GPU between operations:
+///
+/// ```ignore
+/// let ctx = get_global_context()?;
+/// let a_gpu = GpuMatrix::from_host(ctx, &a, m, k)?;
+/// let b_gpu = GpuMatrix::from_host(ctx, &b, k, n)?;
+/// let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
+///
+/// // Repeated operations without H2D/D2H transfers
+/// for _ in 0..iterations {
+///     tropical_gemm_gpu::<TropicalMaxPlus<f32>>(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+/// }
+///
+/// let c = c_gpu.to_host(ctx)?; // Single D2H at the end
+/// ```
 ///
 /// # Arguments
 ///
@@ -251,6 +317,12 @@ where
 /// Returns both the result matrix C and the argmax indices that indicate
 /// which k-index produced each C[i,j]. This is essential for backward
 /// propagation in tropical neural networks.
+///
+/// # Performance Note
+///
+/// This function performs H2D transfers for inputs and D2H transfers for outputs
+/// on every call. For repeated operations, use [`GpuMatrixWithArgmax`] with
+/// [`tropical_gemm_gpu_with_argmax`] to keep data on GPU between operations.
 ///
 /// # Arguments
 ///
