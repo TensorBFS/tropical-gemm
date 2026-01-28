@@ -769,38 +769,22 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        if _GPU_BATCHED_AVAILABLE and a.is_cuda:
-            # Use Rust CUDA batched backend
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Use CPU batched backend (GPU batched has column-major layout issues)
+        # TODO: Add true GPU batched support with proper memory layout handling
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
 
-            if not a_np.flags["C_CONTIGUOUS"]:
-                a_np = np.ascontiguousarray(a_np)
-            if not b_np.flags["C_CONTIGUOUS"]:
-                b_np = np.ascontiguousarray(b_np)
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
 
-            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_gpu_strided_batched_with_argmax(
-                a_np, b_np
-            )
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_strided_batched_with_argmax(
+            a_np, b_np
+        )
 
-            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
-        else:
-            # Fallback to CPU batched backend
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
-
-            if not a_np.flags["C_CONTIGUOUS"]:
-                a_np = np.ascontiguousarray(a_np)
-            if not b_np.flags["C_CONTIGUOUS"]:
-                b_np = np.ascontiguousarray(b_np)
-
-            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_strided_batched_with_argmax(
-                a_np, b_np
-            )
-
-            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -844,36 +828,21 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        if _GPU_BATCHED_AVAILABLE and a.is_cuda:
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Use CPU batched backend (GPU batched has column-major layout issues)
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
 
-            if not a_np.flags["C_CONTIGUOUS"]:
-                a_np = np.ascontiguousarray(a_np)
-            if not b_np.flags["C_CONTIGUOUS"]:
-                b_np = np.ascontiguousarray(b_np)
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
 
-            c_flat, argmax_flat = tropical_gemm.minplus_matmul_gpu_strided_batched_with_argmax(
-                a_np, b_np
-            )
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_strided_batched_with_argmax(
+            a_np, b_np
+        )
 
-            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
-        else:
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
-
-            if not a_np.flags["C_CONTIGUOUS"]:
-                a_np = np.ascontiguousarray(a_np)
-            if not b_np.flags["C_CONTIGUOUS"]:
-                b_np = np.ascontiguousarray(b_np)
-
-            c_flat, argmax_flat = tropical_gemm.minplus_matmul_strided_batched_with_argmax(
-                a_np, b_np
-            )
-
-            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -913,36 +882,21 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        if _GPU_BATCHED_AVAILABLE and a.is_cuda:
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Use CPU batched backend (GPU batched has column-major layout issues)
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
 
-            if not a_np.flags["C_CONTIGUOUS"]:
-                a_np = np.ascontiguousarray(a_np)
-            if not b_np.flags["C_CONTIGUOUS"]:
-                b_np = np.ascontiguousarray(b_np)
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
 
-            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_gpu_strided_batched_with_argmax(
-                a_np, b_np
-            )
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_strided_batched_with_argmax(
+            a_np, b_np
+        )
 
-            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
-        else:
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
-
-            if not a_np.flags["C_CONTIGUOUS"]:
-                a_np = np.ascontiguousarray(a_np)
-            if not b_np.flags["C_CONTIGUOUS"]:
-                b_np = np.ascontiguousarray(b_np)
-
-            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_strided_batched_with_argmax(
-                a_np, b_np
-            )
-
-            c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+        c = torch.from_numpy(np.array(c_flat).reshape(batch_size, m, n)).to(a.device)
+        argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
 
         ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.batch_size = batch_size
