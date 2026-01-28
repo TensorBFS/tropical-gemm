@@ -1,4 +1,4 @@
-.PHONY: help build build-release test benchmark benchmark-gpu benchmark-jax benchmark-all clean
+.PHONY: help build build-release test benchmark benchmark-gpu benchmark-jax benchmark-all validate clean
 
 help:
 	@echo "tropical-gemm-python"
@@ -9,6 +9,7 @@ help:
 	@echo ""
 	@echo "Test:"
 	@echo "  make test           - Run all tests"
+	@echo "  make validate       - Cross-validate PyTorch/JAX results"
 	@echo ""
 	@echo "Benchmark:"
 	@echo "  make benchmark      - Run PyTorch CPU benchmarks"
@@ -27,6 +28,9 @@ build-release:
 
 test:
 	pytest tests/ -v
+
+validate: build-release
+	python benchmarks/benchmark.py --validate
 
 benchmark: build-release
 	python benchmarks/benchmark.py --cpu

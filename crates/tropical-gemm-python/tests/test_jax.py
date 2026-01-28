@@ -194,10 +194,10 @@ class TestMaxPlusGradient:
         grad_a = grad(loss_fn, argnums=0)(a, b)
         grad_b = grad(loss_fn, argnums=1)(a, b)
 
-        # Each output element has exactly one argmax, so gradient is sparse
-        # Total gradient should equal M*N (number of output elements)
+        # Each output element has exactly one argmax, gradient flows to both A and B
+        # Total gradient should equal 2*M*N (each output contributes 1 to grad_a and 1 to grad_b)
         total_grad = grad_a.sum() + grad_b.sum()
-        np.testing.assert_allclose(total_grad, m * n, rtol=1e-5)
+        np.testing.assert_allclose(total_grad, 2 * m * n, rtol=1e-5)
 
     def test_grad_nonnegative(self):
         """Gradients should be non-negative for sum loss."""
