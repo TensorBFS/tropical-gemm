@@ -680,16 +680,43 @@ class TropicalMaxPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Rust binding returns flattened row-major buffers (it transposes on download).
-        a_np = _to_contiguous_numpy_3d(a)
-        b_np = _to_contiguous_numpy_3d(b)
+        if _DLPACK_AVAILABLE:
+            # Correctness-first: use the DLPack path per batch item. This avoids
+            # any ambiguity about column-major vs row-major host downloads in the
+            # older "gpu_strided_batched" bindings.
+            a_c = a.detach().contiguous()
+            b_c = b.detach().contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_gpu_strided_batched_with_argmax(
-            a_np, b_np
-        )
+            c_list = []
+            argmax_list = []
+            for bi in range(batch_size):
+                c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_c[bi], b_c[bi])
+                c_i = torch.from_numpy(np.asarray(c_flat).reshape(m, n).copy()).to(a.device)
+                argmax_i = (
+                    torch.from_numpy(np.asarray(argmax_flat).reshape(m, n).copy())
+                    .to(a.device)
+                    .long()
+                )
+                c_list.append(c_i)
+                argmax_list.append(argmax_i)
 
-        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+            c = torch.stack(c_list, dim=0)
+            argmax = torch.stack(argmax_list, dim=0)
+        else:
+            # Fallback: batched GPU API (requires CUDA feature).
+            a_np = _to_contiguous_numpy_3d(a)
+            b_np = _to_contiguous_numpy_3d(b)
+
+            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_gpu_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = (
+                torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n))
+                .to(a.device)
+                .long()
+            )
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -733,16 +760,39 @@ class TropicalMinPlusMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Rust binding returns flattened row-major buffers (it transposes on download).
-        a_np = _to_contiguous_numpy_3d(a)
-        b_np = _to_contiguous_numpy_3d(b)
+        if _DLPACK_AVAILABLE:
+            a_c = a.detach().contiguous()
+            b_c = b.detach().contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_gpu_strided_batched_with_argmax(
-            a_np, b_np
-        )
+            c_list = []
+            argmax_list = []
+            for bi in range(batch_size):
+                c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_c[bi], b_c[bi])
+                c_i = torch.from_numpy(np.asarray(c_flat).reshape(m, n).copy()).to(a.device)
+                argmax_i = (
+                    torch.from_numpy(np.asarray(argmax_flat).reshape(m, n).copy())
+                    .to(a.device)
+                    .long()
+                )
+                c_list.append(c_i)
+                argmax_list.append(argmax_i)
 
-        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+            c = torch.stack(c_list, dim=0)
+            argmax = torch.stack(argmax_list, dim=0)
+        else:
+            a_np = _to_contiguous_numpy_3d(a)
+            b_np = _to_contiguous_numpy_3d(b)
+
+            c_flat, argmax_flat = tropical_gemm.minplus_matmul_gpu_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = (
+                torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n))
+                .to(a.device)
+                .long()
+            )
 
         ctx.save_for_backward(argmax)
         ctx.batch_size = batch_size
@@ -782,16 +832,39 @@ class TropicalMaxMulMatmulBatchedGPU(torch.autograd.Function):
         batch_size, m, k = a.shape
         n = b.shape[2]
 
-        # Rust binding returns flattened row-major buffers (it transposes on download).
-        a_np = _to_contiguous_numpy_3d(a)
-        b_np = _to_contiguous_numpy_3d(b)
+        if _DLPACK_AVAILABLE:
+            a_c = a.detach().contiguous()
+            b_c = b.detach().contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_gpu_strided_batched_with_argmax(
-            a_np, b_np
-        )
+            c_list = []
+            argmax_list = []
+            for bi in range(batch_size):
+                c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_c[bi], b_c[bi])
+                c_i = torch.from_numpy(np.asarray(c_flat).reshape(m, n).copy()).to(a.device)
+                argmax_i = (
+                    torch.from_numpy(np.asarray(argmax_flat).reshape(m, n).copy())
+                    .to(a.device)
+                    .long()
+                )
+                c_list.append(c_i)
+                argmax_list.append(argmax_i)
 
-        c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
-        argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n)).to(a.device).long()
+            c = torch.stack(c_list, dim=0)
+            argmax = torch.stack(argmax_list, dim=0)
+        else:
+            a_np = _to_contiguous_numpy_3d(a)
+            b_np = _to_contiguous_numpy_3d(b)
+
+            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_gpu_strided_batched_with_argmax(
+                a_np, b_np
+            )
+
+            c = torch.from_numpy(np.asarray(c_flat).reshape(batch_size, m, n)).to(a.device)
+            argmax = (
+                torch.from_numpy(np.asarray(argmax_flat).reshape(batch_size, m, n))
+                .to(a.device)
+                .long()
+            )
 
         ctx.save_for_backward(a.detach(), b.detach(), argmax)
         ctx.batch_size = batch_size
