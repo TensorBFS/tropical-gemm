@@ -7,7 +7,7 @@
 //!
 //! - `cuda`: Enable GPU acceleration via CUDA
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 // Use fully qualified path to avoid naming conflict with the pymodule
@@ -908,6 +908,205 @@ fn maxmul_matmul_i64<'py>(
 }
 
 // ============================================================================
+// Batched operations (3D arrays: batch × rows × cols)
+// ============================================================================
+
+/// Batched MaxPlus tropical matrix multiplication with argmax tracking.
+///
+/// Args:
+///     a: Input tensor of shape (batch, M, K)
+///     b: Input tensor of shape (batch, K, N)
+///
+/// Returns:
+///     Tuple of (C, argmax) where:
+///     - C: Result tensor of shape (batch × M × N) as flattened array
+///     - argmax: Indices of shape (batch × M × N) as flattened array
+#[pyfunction]
+fn maxplus_matmul_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let batch = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let stride_a = m * k;
+    let stride_b = k * n;
+    let stride_c = m * n;
+
+    let mut c_result = vec![0.0f32; batch * stride_c];
+    let mut argmax_result = vec![0i32; batch * stride_c];
+
+    for i in 0..batch {
+        let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
+        let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
+
+        let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
+            tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(a_slice, m, k, b_slice, n);
+
+        for (j, val) in result.values.iter().enumerate() {
+            c_result[i * stride_c + j] = val.value();
+        }
+        for (j, &idx) in result.argmax.iter().enumerate() {
+            argmax_result[i * stride_c + j] = idx as i32;
+        }
+    }
+
+    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+}
+
+/// Batched MinPlus tropical matrix multiplication with argmax tracking.
+///
+/// Args:
+///     a: Input tensor of shape (batch, M, K)
+///     b: Input tensor of shape (batch, K, N)
+///
+/// Returns:
+///     Tuple of (C, argmax) where:
+///     - C: Result tensor of shape (batch × M × N) as flattened array
+///     - argmax: Indices of shape (batch × M × N) as flattened array
+#[pyfunction]
+fn minplus_matmul_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let batch = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let stride_a = m * k;
+    let stride_b = k * n;
+    let stride_c = m * n;
+
+    let mut c_result = vec![0.0f32; batch * stride_c];
+    let mut argmax_result = vec![0i32; batch * stride_c];
+
+    for i in 0..batch {
+        let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
+        let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
+
+        let result: GemmWithArgmax<TropicalMinPlus<f32>> =
+            tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(a_slice, m, k, b_slice, n);
+
+        for (j, val) in result.values.iter().enumerate() {
+            c_result[i * stride_c + j] = val.value();
+        }
+        for (j, &idx) in result.argmax.iter().enumerate() {
+            argmax_result[i * stride_c + j] = idx as i32;
+        }
+    }
+
+    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+}
+
+/// Batched MaxMul tropical matrix multiplication with argmax tracking.
+///
+/// Args:
+///     a: Input tensor of shape (batch, M, K)
+///     b: Input tensor of shape (batch, K, N)
+///
+/// Returns:
+///     Tuple of (C, argmax) where:
+///     - C: Result tensor of shape (batch × M × N) as flattened array
+///     - argmax: Indices of shape (batch × M × N) as flattened array
+#[pyfunction]
+fn maxmul_matmul_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let batch = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    let a_data = a.as_slice()?;
+    let b_data = b.as_slice()?;
+
+    let stride_a = m * k;
+    let stride_b = k * n;
+    let stride_c = m * n;
+
+    let mut c_result = vec![0.0f32; batch * stride_c];
+    let mut argmax_result = vec![0i32; batch * stride_c];
+
+    for i in 0..batch {
+        let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
+        let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
+
+        let result: GemmWithArgmax<TropicalMaxMul<f32>> =
+            tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(a_slice, m, k, b_slice, n);
+
+        for (j, val) in result.values.iter().enumerate() {
+            c_result[i * stride_c + j] = val.value();
+        }
+        for (j, &idx) in result.argmax.iter().enumerate() {
+            argmax_result[i * stride_c + j] = idx as i32;
+        }
+    }
+
+    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+}
+
+// ============================================================================
 // CUDA GPU operations (optional, requires "cuda" feature)
 // ============================================================================
 
@@ -1665,6 +1864,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(maxmul_backward_b, m)?)?;
     m.add_function(wrap_pyfunction!(maxmul_backward_a_f64, m)?)?;
     m.add_function(wrap_pyfunction!(maxmul_backward_b_f64, m)?)?;
+
+    // Batched operations (3D arrays)
+    m.add_function(wrap_pyfunction!(maxplus_matmul_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_batched_with_argmax, m)?)?;
 
     // i32 operations
     m.add_function(wrap_pyfunction!(maxplus_matmul_i32, m)?)?;

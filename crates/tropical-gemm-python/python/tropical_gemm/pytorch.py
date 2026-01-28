@@ -527,6 +527,208 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
 
 
 # ===========================================================================
+# Batched Autograd Functions
+# ===========================================================================
+
+
+class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
+    """
+    Batched MaxPlus tropical matrix multiplication with autograd support.
+
+    Forward: C[b,i,j] = max_k(A[b,i,k] + B[b,k,j]) for each batch b
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch, m, k = a.shape
+        n = b.shape[2]
+
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_batched_with_argmax(a_np, b_np)
+
+        c_np = np.array(c_flat).reshape(batch, m, n)
+        argmax_np = np.array(argmax_flat).reshape(batch, m, n)
+
+        ctx.save_for_backward(torch.from_numpy(argmax_np))
+        ctx.k = k
+        ctx.batch = batch
+        ctx.m = m
+        ctx.n = n
+
+        return torch.from_numpy(c_np).to(a.device)
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        (argmax,) = ctx.saved_tensors
+        k = ctx.k
+        batch = ctx.batch
+        m = ctx.m
+        n = ctx.n
+
+        grad_a = torch.zeros(batch, m, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_a.scatter_add_(2, argmax, grad_c)
+
+        argmax_t = argmax.transpose(1, 2)
+        grad_c_t = grad_c.transpose(1, 2)
+        grad_b_t = torch.zeros(batch, n, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(2, argmax_t, grad_c_t)
+        grad_b = grad_b_t.transpose(1, 2)
+
+        return grad_a, grad_b
+
+
+class TropicalMinPlusMatmulBatched(torch.autograd.Function):
+    """
+    Batched MinPlus tropical matrix multiplication with autograd support.
+
+    Forward: C[b,i,j] = min_k(A[b,i,k] + B[b,k,j]) for each batch b
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch, m, k = a.shape
+        n = b.shape[2]
+
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        c_flat, argmax_flat = tropical_gemm.minplus_matmul_batched_with_argmax(a_np, b_np)
+
+        c_np = np.array(c_flat).reshape(batch, m, n)
+        argmax_np = np.array(argmax_flat).reshape(batch, m, n)
+
+        ctx.save_for_backward(torch.from_numpy(argmax_np))
+        ctx.k = k
+        ctx.batch = batch
+        ctx.m = m
+        ctx.n = n
+
+        return torch.from_numpy(c_np).to(a.device)
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        (argmax,) = ctx.saved_tensors
+        k = ctx.k
+        batch = ctx.batch
+        m = ctx.m
+        n = ctx.n
+
+        grad_a = torch.zeros(batch, m, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_a.scatter_add_(2, argmax, grad_c)
+
+        argmax_t = argmax.transpose(1, 2)
+        grad_c_t = grad_c.transpose(1, 2)
+        grad_b_t = torch.zeros(batch, n, k, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(2, argmax_t, grad_c_t)
+        grad_b = grad_b_t.transpose(1, 2)
+
+        return grad_a, grad_b
+
+
+class TropicalMaxMulMatmulBatched(torch.autograd.Function):
+    """
+    Batched MaxMul tropical matrix multiplication with autograd support.
+
+    Forward: C[b,i,j] = max_k(A[b,i,k] * B[b,k,j]) for each batch b
+
+    The backward pass uses the multiplicative gradient rule:
+    - grad_A[b,i,k] = grad_C[b,i,j] * B[b,k,j] if k == argmax[b,i,j]
+    - grad_B[b,k,j] = grad_C[b,i,j] * A[b,i,k] if k == argmax[b,i,j]
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+
+    @staticmethod
+    def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        batch, m, k = a.shape
+        n = b.shape[2]
+
+        a_np = a.detach().cpu().numpy().astype(np.float32)
+        b_np = b.detach().cpu().numpy().astype(np.float32)
+
+        if not a_np.flags["C_CONTIGUOUS"]:
+            a_np = np.ascontiguousarray(a_np)
+        if not b_np.flags["C_CONTIGUOUS"]:
+            b_np = np.ascontiguousarray(b_np)
+
+        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_batched_with_argmax(a_np, b_np)
+
+        c_np = np.array(c_flat).reshape(batch, m, n)
+        argmax_np = np.array(argmax_flat).reshape(batch, m, n)
+
+        ctx.save_for_backward(
+            torch.from_numpy(a_np),
+            torch.from_numpy(b_np),
+            torch.from_numpy(argmax_np),
+        )
+        ctx.k = k
+        ctx.batch = batch
+        ctx.m = m
+        ctx.n = n
+
+        return torch.from_numpy(c_np).to(a.device)
+
+    @staticmethod
+    def backward(ctx, grad_c: torch.Tensor):
+        a, b, argmax = ctx.saved_tensors
+        k_dim = ctx.k
+        batch = ctx.batch
+        m = ctx.m
+        n = ctx.n
+
+        # Get winning B values: b_winning[b,i,j] = B[b, argmax[b,i,j], j]
+        j_indices = torch.arange(n, device=b.device).view(1, 1, n).expand(batch, m, n)
+        b_winning = b.gather(1, argmax)  # (batch, m, n)
+
+        # Get winning A values: a_winning[b,i,j] = A[b, i, argmax[b,i,j]]
+        a_winning = torch.gather(a, 2, argmax)  # (batch, m, n)
+
+        # grad_a[b,i,k] = sum_j { grad_c[b,i,j] * B[b,k,j] if k == argmax[b,i,j] }
+        grad_a = torch.zeros(batch, m, k_dim, device=grad_c.device, dtype=grad_c.dtype)
+        grad_a.scatter_add_(2, argmax, grad_c * b_winning)
+
+        # grad_b[b,k,j] = sum_i { grad_c[b,i,j] * A[b,i,k] if k == argmax[b,i,j] }
+        argmax_t = argmax.transpose(1, 2)
+        grad_c_a_t = (grad_c * a_winning).transpose(1, 2)
+        grad_b_t = torch.zeros(batch, n, k_dim, device=grad_c.device, dtype=grad_c.dtype)
+        grad_b_t.scatter_add_(2, argmax_t, grad_c_a_t)
+        grad_b = grad_b_t.transpose(1, 2)
+
+        return grad_a, grad_b
+
+
+# ===========================================================================
 # Convenience functions
 # ===========================================================================
 
@@ -624,6 +826,48 @@ def tropical_maxmul_matmul_gpu(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor
     return TropicalMaxMulMatmulGPU.apply(a, b)
 
 
+def tropical_maxplus_matmul_batched(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Batched MaxPlus tropical matrix multiplication: C[b,i,j] = max_k(A[b,i,k] + B[b,k,j])
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMaxPlusMatmulBatched.apply(a, b)
+
+
+def tropical_minplus_matmul_batched(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Batched MinPlus tropical matrix multiplication: C[b,i,j] = min_k(A[b,i,k] + B[b,k,j])
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMinPlusMatmulBatched.apply(a, b)
+
+
+def tropical_maxmul_matmul_batched(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Batched MaxMul tropical matrix multiplication: C[b,i,j] = max_k(A[b,i,k] * B[b,k,j])
+
+    Args:
+        a: Input tensor of shape (batch, M, K)
+        b: Input tensor of shape (batch, K, N)
+
+    Returns:
+        Output tensor of shape (batch, M, N)
+    """
+    return TropicalMaxMulMatmulBatched.apply(a, b)
+
+
 __all__ = [
     # CPU autograd functions
     "TropicalMaxPlusMatmul",
@@ -633,6 +877,10 @@ __all__ = [
     "TropicalMaxPlusMatmulGPU",
     "TropicalMinPlusMatmulGPU",
     "TropicalMaxMulMatmulGPU",
+    # Batched autograd functions
+    "TropicalMaxPlusMatmulBatched",
+    "TropicalMinPlusMatmulBatched",
+    "TropicalMaxMulMatmulBatched",
     # Convenience functions
     "tropical_maxplus_matmul",
     "tropical_minplus_matmul",
@@ -640,6 +888,10 @@ __all__ = [
     "tropical_maxplus_matmul_gpu",
     "tropical_minplus_matmul_gpu",
     "tropical_maxmul_matmul_gpu",
+    # Batched convenience functions
+    "tropical_maxplus_matmul_batched",
+    "tropical_minplus_matmul_batched",
+    "tropical_maxmul_matmul_batched",
     # GPU availability flag
     "GPU_AVAILABLE",
     # DLPack availability flag
