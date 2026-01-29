@@ -1121,7 +1121,7 @@ mod gpu {
         get_context_for_device, get_global_context, launch_gemm_external_batched_with_argmax_f32,
         launch_gemm_external_with_argmax_f32, tropical_matmul_gpu,
         tropical_matmul_gpu_with_argmax, ExternalGpuMatrix, ExternalGpuTensor3,
-        GpuTensor3,
+        GpuMatrix, GpuTensor3,
     };
 
     // ========================================================================
@@ -1200,6 +1200,93 @@ mod gpu {
     impl ToTensor for DLPackGpuTensor3I32 {
         fn data_ptr(&self) -> *mut c_void {
             self.tensor.device_ptr() as *mut c_void
+        }
+
+        fn shape_and_strides(&self) -> ShapeAndStrides {
+            ShapeAndStrides::new_contiguous(&self.shape)
+        }
+
+        fn device(&self) -> Device {
+            Device {
+                device_type: DeviceType::Cuda,
+                device_id: self.device_id,
+            }
+        }
+
+        fn dtype(&self) -> DataType {
+            DataType {
+                code: DataTypeCode::Int,
+                bits: 32,
+                lanes: 1,
+            }
+        }
+
+        fn byte_offset(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Wrapper for GpuMatrix<f32> (2D) that implements ToTensor for DLPack export.
+    struct DLPackGpuMatrixF32 {
+        matrix: GpuMatrix<f32>,
+        shape: [i64; 2],
+        device_id: i32,
+    }
+
+    impl DLPackGpuMatrixF32 {
+        fn new(matrix: GpuMatrix<f32>, device_id: i32) -> Self {
+            let shape = [matrix.rows() as i64, matrix.cols() as i64];
+            Self { matrix, shape, device_id }
+        }
+    }
+
+    impl ToTensor for DLPackGpuMatrixF32 {
+        fn data_ptr(&self) -> *mut c_void {
+            self.matrix.device_ptr() as *mut c_void
+        }
+
+        fn shape_and_strides(&self) -> ShapeAndStrides {
+            // Row-major (C-contiguous) strides for 2D matrix
+            ShapeAndStrides::new_contiguous(&self.shape)
+        }
+
+        fn device(&self) -> Device {
+            Device {
+                device_type: DeviceType::Cuda,
+                device_id: self.device_id,
+            }
+        }
+
+        fn dtype(&self) -> DataType {
+            DataType {
+                code: DataTypeCode::Float,
+                bits: 32,
+                lanes: 1,
+            }
+        }
+
+        fn byte_offset(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Wrapper for GpuMatrix<i32> (2D argmax) that implements ToTensor for DLPack export.
+    struct DLPackGpuMatrixI32 {
+        matrix: GpuMatrix<i32>,
+        shape: [i64; 2],
+        device_id: i32,
+    }
+
+    impl DLPackGpuMatrixI32 {
+        fn new(matrix: GpuMatrix<i32>, device_id: i32) -> Self {
+            let shape = [matrix.rows() as i64, matrix.cols() as i64];
+            Self { matrix, shape, device_id }
+        }
+    }
+
+    impl ToTensor for DLPackGpuMatrixI32 {
+        fn data_ptr(&self) -> *mut c_void {
+            self.matrix.device_ptr() as *mut c_void
         }
 
         fn shape_and_strides(&self) -> ShapeAndStrides {
@@ -1448,37 +1535,84 @@ mod gpu {
     }
 
     // ========================================================================
-    // DLPack zero-copy functions
+    // DLPack zero-copy functions (2D tensors)
     // ========================================================================
 
     /// MaxPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
     ///
     /// This function accepts PyTorch tensors (or any DLPack-compatible tensor) directly
-    /// and performs the computation without copying input data for GPU tensors.
+    /// and performs the computation without copying data for GPU tensors.
     ///
     /// Args:
-    ///     a: Input tensor A of shape (M, K) - must support __dlpack__()
-    ///     b: Input tensor B of shape (K, N) - must support __dlpack__()
+    ///     a: Input tensor A of shape (M, K) - must support __dlpack__(), f32, CUDA
+    ///     b: Input tensor B of shape (K, N) - must support __dlpack__(), f32, CUDA
     ///
     /// Returns:
-    ///     Tuple of (C, argmax) as numpy arrays where:
-    ///     - C: Result matrix of shape (M, N) as flattened f32 array
-    ///     - argmax: Indices of shape (M, N) as flattened i32 array
+    ///     Tuple of (C, argmax) as DLPack capsules where:
+    ///     - C: Result tensor of shape (M, N) as f32 CUDA tensor
+    ///     - argmax: Indices of shape (M, N) as i32 CUDA tensor
+    ///
+    ///     Use `torch.from_dlpack(capsule)` to convert to PyTorch tensors.
     ///
     /// Note:
-    ///     - For GPU tensors: Uses zero-copy DLPack interface with Rust CUDA backend
-    ///     - For CPU tensors: Falls back to optimized Rust CPU backend
+    ///     - For GPU tensors: Returns DLPack capsules (data stays on GPU)
+    ///     - For CPU tensors: Returns numpy arrays (use `.to(device)` to move to GPU)
     #[pyfunction]
-    pub fn maxplus_matmul_dlpack<'py>(
-        py: Python<'py>,
-        a: Bound<'py, pyo3::PyAny>,
-        b: Bound<'py, pyo3::PyAny>,
-    ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    pub fn maxplus_matmul_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(PyObject, PyObject)> {
+        dlpack_2d_impl(py, a, b, "tropical_maxplus_f32_nn_with_argmax", Algebra::MaxPlus)
+    }
+
+    /// MinPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn minplus_matmul_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(PyObject, PyObject)> {
+        dlpack_2d_impl(py, a, b, "tropical_minplus_f32_nn_with_argmax", Algebra::MinPlus)
+    }
+
+    /// MaxMul matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn maxmul_matmul_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(PyObject, PyObject)> {
+        dlpack_2d_impl(py, a, b, "tropical_maxmul_f32_nn_with_argmax", Algebra::MaxMul)
+    }
+
+    /// Algebra type for CPU dispatch in 2D DLPack functions.
+    enum Algebra {
+        MaxPlus,
+        MinPlus,
+        MaxMul,
+    }
+
+    /// Implementation for 2D DLPack operations.
+    ///
+    /// Returns DLPack capsules that keep data on GPU - use `torch.from_dlpack()`
+    /// to convert to PyTorch tensors.
+    fn dlpack_2d_impl(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+        kernel_name: &'static str,
+        algebra: Algebra,
+    ) -> PyResult<(PyObject, PyObject)> {
         // Extract tensor info from DLPack
         let a_tensor = extract_dlpack_tensor(py, &a)?;
         let b_tensor = extract_dlpack_tensor(py, &b)?;
 
-        // Get device info (ManagedTensor implements TensorView trait)
+        // Get device info
         let a_device = TensorView::device(&a_tensor);
         let b_device = TensorView::device(&b_tensor);
 
@@ -1497,6 +1631,8 @@ mod gpu {
                 a_device.device_id, b_device.device_id
             )));
         }
+
+        let device_id = a_device.device_id;
 
         // Get dtype and validate
         let a_dtype = TensorView::dtype(&a_tensor);
@@ -1539,6 +1675,14 @@ mod gpu {
             )));
         }
 
+        // Guard against zero-sized dimensions
+        if m == 0 || k == 0 || n == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Zero-sized dimensions not supported: m={}, k={}, n={}",
+                m, k, n
+            )));
+        }
+
         // Check strides for contiguity
         let a_strides = TensorView::strides(&a_tensor);
         let b_strides = TensorView::strides(&b_tensor);
@@ -1556,7 +1700,7 @@ mod gpu {
         }
 
         match a_device.device_type {
-            DeviceType::Cuda | DeviceType::CudaHost => {
+            DeviceType::Cuda => {
                 // GPU path: zero-copy using DLPack
                 let a_ptr = TensorView::data_ptr(&a_tensor) as u64;
                 let b_ptr = TensorView::data_ptr(&b_tensor) as u64;
@@ -1565,342 +1709,81 @@ mod gpu {
                 let a_ext = unsafe { ExternalGpuMatrix::from_raw(a_ptr, m, k) };
                 let b_ext = unsafe { ExternalGpuMatrix::from_raw(b_ptr, k, n) };
 
-                // Get the global CUDA context
-                let ctx = get_global_context().map_err(|e| {
+                // Get CUDA context for the input device
+                let ctx = get_context_for_device(device_id as usize).map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
                 })?;
 
                 // Launch kernel
                 let result = unsafe {
-                    launch_gemm_external_with_argmax_f32(
-                        ctx,
-                        "tropical_maxplus_f32_nn_with_argmax",
-                        &a_ext,
-                        &b_ext,
-                        m,
-                        k,
-                        n,
-                    )
+                    launch_gemm_external_with_argmax_f32(ctx, kernel_name, &a_ext, &b_ext, m, k, n)
                 }
                 .map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
 
-                // TODO(#34): Avoid D2H transfer by returning DLPack capsules directly.
-                // Currently downloads results to host, then Python copies back to GPU.
-                // To fix: implement ToTensor for GpuMatrixWithArgmax and use IntoDLPack.
-                // This requires careful memory lifetime management (deleter callback must
-                // properly drop the CudaSlice when Python releases the capsule).
-                let c_data = result.matrix_to_host(ctx).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
-                })?;
-                let argmax_data = result.argmax_to_host(ctx).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
-                })?;
+                // Split result into matrix and argmax, then wrap for DLPack export
+                let (c_matrix, argmax_matrix) = result.into_parts();
 
-                Ok((c_data.into_pyarray(py), argmax_data.into_pyarray(py)))
+                // Wrap in DLPack-compatible wrappers with correct device_id
+                let c_dlpack = DLPackGpuMatrixF32::new(c_matrix, device_id);
+                let argmax_dlpack = DLPackGpuMatrixI32::new(argmax_matrix, device_id);
+
+                // Convert to DLPack capsules using ManagerCtx
+                let c_capsule = ManagerCtx::new(c_dlpack).into_py(py);
+                let argmax_capsule = ManagerCtx::new(argmax_dlpack).into_py(py);
+
+                Ok((c_capsule, argmax_capsule))
+            }
+            DeviceType::CudaHost => {
+                // CudaHost (pinned memory) is not supported - the pointer is a host pointer
+                // that cannot be used directly by CUDA kernels without explicit handling
+                Err(pyo3::exceptions::PyValueError::new_err(
+                    "CudaHost (pinned memory) tensors are not supported. Use regular CUDA tensors.",
+                ))
             }
             DeviceType::Cpu => {
-                // CPU path: use existing CPU backend
+                // CPU path: use existing CPU backend, return numpy arrays as PyObject
                 let a_ptr = TensorView::data_ptr(&a_tensor) as *const f32;
                 let b_ptr = TensorView::data_ptr(&b_tensor) as *const f32;
 
                 let a_data = unsafe { std::slice::from_raw_parts(a_ptr, m * k) };
                 let b_data = unsafe { std::slice::from_raw_parts(b_ptr, k * n) };
 
-                let result: ::tropical_gemm::GemmWithArgmax<TropicalMaxPlus<f32>> =
-                    ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(
-                        a_data, m, k, b_data, n,
-                    );
+                let (c_scalars, argmax_i32) = match algebra {
+                    Algebra::MaxPlus => {
+                        let result: ::tropical_gemm::GemmWithArgmax<TropicalMaxPlus<f32>> =
+                            ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(
+                                a_data, m, k, b_data, n,
+                            );
+                        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+                        (c, argmax)
+                    }
+                    Algebra::MinPlus => {
+                        let result: ::tropical_gemm::GemmWithArgmax<TropicalMinPlus<f32>> =
+                            ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(
+                                a_data, m, k, b_data, n,
+                            );
+                        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+                        (c, argmax)
+                    }
+                    Algebra::MaxMul => {
+                        let result: ::tropical_gemm::GemmWithArgmax<TropicalMaxMul<f32>> =
+                            ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(
+                                a_data, m, k, b_data, n,
+                            );
+                        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+                        (c, argmax)
+                    }
+                };
 
-                let c_scalars: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-                let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
-
-                Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
-            }
-            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Unsupported device type: {:?}",
-                a_device.device_type
-            ))),
-        }
-    }
-
-    /// MinPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
-    #[pyfunction]
-    pub fn minplus_matmul_dlpack<'py>(
-        py: Python<'py>,
-        a: Bound<'py, pyo3::PyAny>,
-        b: Bound<'py, pyo3::PyAny>,
-    ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
-        // Extract tensor info from DLPack
-        let a_tensor = extract_dlpack_tensor(py, &a)?;
-        let b_tensor = extract_dlpack_tensor(py, &b)?;
-
-        // Get device info
-        let a_device = TensorView::device(&a_tensor);
-        let b_device = TensorView::device(&b_tensor);
-
-        if a_device.device_type != b_device.device_type {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Tensors must be on the same device type: A is on {:?}, B is on {:?}",
-                a_device.device_type, b_device.device_type
-            )));
-        }
-
-        // Validate: both tensors must be on the same device ID (for multi-GPU)
-        if a_device.device_id != b_device.device_id {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Tensors must be on the same device: A is on device {}, B is on device {}",
-                a_device.device_id, b_device.device_id
-            )));
-        }
-
-        let a_dtype = TensorView::dtype(&a_tensor);
-        let b_dtype = TensorView::dtype(&b_tensor);
-        if a_dtype != b_dtype {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Tensors must have the same dtype: A is {:?}, B is {:?}",
-                a_dtype, b_dtype
-            )));
-        }
-
-        if a_dtype.code != DataTypeCode::Float || a_dtype.bits != 32 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Only f32 tensors are supported for DLPack interface",
-            ));
-        }
-
-        let a_shape = TensorView::shape(&a_tensor);
-        let b_shape = TensorView::shape(&b_tensor);
-
-        if a_shape.len() != 2 || b_shape.len() != 2 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Expected 2D tensors, got A with {} dims, B with {} dims",
-                a_shape.len(),
-                b_shape.len()
-            )));
-        }
-
-        let m = a_shape[0] as usize;
-        let k = a_shape[1] as usize;
-        let k2 = b_shape[0] as usize;
-        let n = b_shape[1] as usize;
-
-        if k != k2 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Dimension mismatch: A is {}x{}, B is {}x{}",
-                m, k, k2, n
-            )));
-        }
-
-        let a_strides = TensorView::strides(&a_tensor);
-        let b_strides = TensorView::strides(&b_tensor);
-
-        let a_contiguous = a_strides.is_none()
-            || a_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == k as i64);
-        let b_contiguous = b_strides.is_none()
-            || b_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == n as i64);
-
-        if !a_contiguous || !b_contiguous {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Tensors must be contiguous (call .contiguous() on PyTorch tensors)",
-            ));
-        }
-
-        match a_device.device_type {
-            DeviceType::Cuda | DeviceType::CudaHost => {
-                let a_ptr = TensorView::data_ptr(&a_tensor) as u64;
-                let b_ptr = TensorView::data_ptr(&b_tensor) as u64;
-
-                let a_ext = unsafe { ExternalGpuMatrix::from_raw(a_ptr, m, k) };
-                let b_ext = unsafe { ExternalGpuMatrix::from_raw(b_ptr, k, n) };
-
-                let ctx = get_global_context().map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
-                })?;
-
-                let result = unsafe {
-                    launch_gemm_external_with_argmax_f32(
-                        ctx,
-                        "tropical_minplus_f32_nn_with_argmax",
-                        &a_ext,
-                        &b_ext,
-                        m,
-                        k,
-                        n,
-                    )
-                }
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
-                })?;
-
-                // TODO(#34): Avoid D2H transfer by returning DLPack capsules directly.
-                let c_data = result.matrix_to_host(ctx).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
-                })?;
-                let argmax_data = result.argmax_to_host(ctx).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
-                })?;
-
-                Ok((c_data.into_pyarray(py), argmax_data.into_pyarray(py)))
-            }
-            DeviceType::Cpu => {
-                let a_ptr = TensorView::data_ptr(&a_tensor) as *const f32;
-                let b_ptr = TensorView::data_ptr(&b_tensor) as *const f32;
-
-                let a_data = unsafe { std::slice::from_raw_parts(a_ptr, m * k) };
-                let b_data = unsafe { std::slice::from_raw_parts(b_ptr, k * n) };
-
-                let result: ::tropical_gemm::GemmWithArgmax<TropicalMinPlus<f32>> =
-                    ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(
-                        a_data, m, k, b_data, n,
-                    );
-
-                let c_scalars: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-                let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
-
-                Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
-            }
-            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Unsupported device type: {:?}",
-                a_device.device_type
-            ))),
-        }
-    }
-
-    /// MaxMul matrix multiplication using DLPack for zero-copy GPU tensor exchange.
-    #[pyfunction]
-    pub fn maxmul_matmul_dlpack<'py>(
-        py: Python<'py>,
-        a: Bound<'py, pyo3::PyAny>,
-        b: Bound<'py, pyo3::PyAny>,
-    ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
-        let a_tensor = extract_dlpack_tensor(py, &a)?;
-        let b_tensor = extract_dlpack_tensor(py, &b)?;
-
-        let a_device = TensorView::device(&a_tensor);
-        let b_device = TensorView::device(&b_tensor);
-
-        if a_device.device_type != b_device.device_type {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Tensors must be on the same device type: A is on {:?}, B is on {:?}",
-                a_device.device_type, b_device.device_type
-            )));
-        }
-
-        // Validate: both tensors must be on the same device ID (for multi-GPU)
-        if a_device.device_id != b_device.device_id {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Tensors must be on the same device: A is on device {}, B is on device {}",
-                a_device.device_id, b_device.device_id
-            )));
-        }
-
-        let a_dtype = TensorView::dtype(&a_tensor);
-        let b_dtype = TensorView::dtype(&b_tensor);
-        if a_dtype != b_dtype {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Tensors must have the same dtype: A is {:?}, B is {:?}",
-                a_dtype, b_dtype
-            )));
-        }
-
-        if a_dtype.code != DataTypeCode::Float || a_dtype.bits != 32 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Only f32 tensors are supported for DLPack interface",
-            ));
-        }
-
-        let a_shape = TensorView::shape(&a_tensor);
-        let b_shape = TensorView::shape(&b_tensor);
-
-        if a_shape.len() != 2 || b_shape.len() != 2 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Expected 2D tensors, got A with {} dims, B with {} dims",
-                a_shape.len(),
-                b_shape.len()
-            )));
-        }
-
-        let m = a_shape[0] as usize;
-        let k = a_shape[1] as usize;
-        let k2 = b_shape[0] as usize;
-        let n = b_shape[1] as usize;
-
-        if k != k2 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Dimension mismatch: A is {}x{}, B is {}x{}",
-                m, k, k2, n
-            )));
-        }
-
-        let a_strides = TensorView::strides(&a_tensor);
-        let b_strides = TensorView::strides(&b_tensor);
-
-        let a_contiguous = a_strides.is_none()
-            || a_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == k as i64);
-        let b_contiguous = b_strides.is_none()
-            || b_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == n as i64);
-
-        if !a_contiguous || !b_contiguous {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Tensors must be contiguous (call .contiguous() on PyTorch tensors)",
-            ));
-        }
-
-        match a_device.device_type {
-            DeviceType::Cuda | DeviceType::CudaHost => {
-                let a_ptr = TensorView::data_ptr(&a_tensor) as u64;
-                let b_ptr = TensorView::data_ptr(&b_tensor) as u64;
-
-                let a_ext = unsafe { ExternalGpuMatrix::from_raw(a_ptr, m, k) };
-                let b_ext = unsafe { ExternalGpuMatrix::from_raw(b_ptr, k, n) };
-
-                let ctx = get_global_context().map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
-                })?;
-
-                let result = unsafe {
-                    launch_gemm_external_with_argmax_f32(
-                        ctx,
-                        "tropical_maxmul_f32_nn_with_argmax",
-                        &a_ext,
-                        &b_ext,
-                        m,
-                        k,
-                        n,
-                    )
-                }
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
-                })?;
-
-                // TODO(#34): Avoid D2H transfer by returning DLPack capsules directly.
-                let c_data = result.matrix_to_host(ctx).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
-                })?;
-                let argmax_data = result.argmax_to_host(ctx).map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA D2H error: {}", e))
-                })?;
-
-                Ok((c_data.into_pyarray(py), argmax_data.into_pyarray(py)))
-            }
-            DeviceType::Cpu => {
-                let a_ptr = TensorView::data_ptr(&a_tensor) as *const f32;
-                let b_ptr = TensorView::data_ptr(&b_tensor) as *const f32;
-
-                let a_data = unsafe { std::slice::from_raw_parts(a_ptr, m * k) };
-                let b_data = unsafe { std::slice::from_raw_parts(b_ptr, k * n) };
-
-                let result: ::tropical_gemm::GemmWithArgmax<TropicalMaxMul<f32>> =
-                    ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(
-                        a_data, m, k, b_data, n,
-                    );
-
-                let c_scalars: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-                let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
-
-                Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
+                Ok((
+                    c_scalars.into_pyarray(py).into_any().unbind(),
+                    argmax_i32.into_pyarray(py).into_any().unbind(),
+                ))
             }
             _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Unsupported device type: {:?}",

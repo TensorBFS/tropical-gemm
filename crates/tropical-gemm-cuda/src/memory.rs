@@ -168,6 +168,17 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     pub fn as_slice_mut(&mut self) -> &mut CudaSlice<T> {
         &mut self.data
     }
+
+    /// Get the raw device pointer (for DLPack export).
+    pub fn device_ptr(&self) -> CUdeviceptr {
+        use cudarc::driver::DevicePtr;
+        *self.data.device_ptr()
+    }
+
+    /// Consume self and return the inner CudaSlice (for ownership transfer).
+    pub fn into_inner(self) -> CudaSlice<T> {
+        self.data
+    }
 }
 
 /// A GPU matrix paired with argmax indices (for backward propagation).
@@ -234,6 +245,14 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     #[inline]
     pub fn argmax_to_host_col_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
         self.argmax_to_host(ctx)
+    }
+
+    /// Consume self and return the matrix and argmax separately.
+    ///
+    /// This is useful for DLPack export where each tensor needs to be wrapped
+    /// independently for ownership transfer.
+    pub fn into_parts(self) -> (GpuMatrix<T>, GpuMatrix<ArgmaxIndex>) {
+        (self.matrix, self.argmax)
     }
 }
 

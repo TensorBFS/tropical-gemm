@@ -380,7 +380,7 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
                 "or use TropicalMaxPlusMatmul for CPU execution."
             )
 
-        # Use Rust CUDA backend via DLPack (zero-copy for inputs)
+        # Use Rust CUDA backend via DLPack (zero-copy for inputs and outputs)
         a_contig = a.detach()
         if not a_contig.is_contiguous():
             a_contig = a_contig.contiguous()
@@ -388,13 +388,12 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
         if not b_contig.is_contiguous():
             b_contig = b_contig.contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_dlpack(a_contig, b_contig)
+        # Returns DLPack capsules - data stays on GPU
+        c_capsule, argmax_capsule = tropical_gemm.maxplus_matmul_dlpack(a_contig, b_contig)
 
-        # Reshape results (numpy arrays from Rust)
-        c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(
-            device=a.device, dtype=torch.int64
-        )
+        # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
+        c = torch.from_dlpack(c_capsule).reshape(m, n)
+        argmax = torch.from_dlpack(argmax_capsule).reshape(m, n).to(torch.int64)
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -447,7 +446,7 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
                 "or use TropicalMinPlusMatmul for CPU execution."
             )
 
-        # Use Rust CUDA backend via DLPack
+        # Use Rust CUDA backend via DLPack (zero-copy for inputs and outputs)
         a_contig = a.detach()
         if not a_contig.is_contiguous():
             a_contig = a_contig.contiguous()
@@ -455,12 +454,12 @@ class TropicalMinPlusMatmulGPU(torch.autograd.Function):
         if not b_contig.is_contiguous():
             b_contig = b_contig.contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_dlpack(a_contig, b_contig)
+        # Returns DLPack capsules - data stays on GPU
+        c_capsule, argmax_capsule = tropical_gemm.minplus_matmul_dlpack(a_contig, b_contig)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(
-            device=a.device, dtype=torch.int64
-        )
+        # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
+        c = torch.from_dlpack(c_capsule).reshape(m, n)
+        argmax = torch.from_dlpack(argmax_capsule).reshape(m, n).to(torch.int64)
 
         ctx.save_for_backward(argmax)
         ctx.k = k
@@ -514,7 +513,7 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
                 "or use TropicalMaxMulMatmul for CPU execution."
             )
 
-        # Use Rust CUDA backend via DLPack
+        # Use Rust CUDA backend via DLPack (zero-copy for inputs and outputs)
         a_contig = a.detach()
         if not a_contig.is_contiguous():
             a_contig = a_contig.contiguous()
@@ -522,12 +521,12 @@ class TropicalMaxMulMatmulGPU(torch.autograd.Function):
         if not b_contig.is_contiguous():
             b_contig = b_contig.contiguous()
 
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_dlpack(a_contig, b_contig)
+        # Returns DLPack capsules - data stays on GPU
+        c_capsule, argmax_capsule = tropical_gemm.maxmul_matmul_dlpack(a_contig, b_contig)
 
-        c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(a.device)
-        argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(
-            device=a.device, dtype=torch.int64
-        )
+        # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
+        c = torch.from_dlpack(c_capsule).reshape(m, n)
+        argmax = torch.from_dlpack(argmax_capsule).reshape(m, n).to(torch.int64)
 
         # Save original tensors for multiplicative backward
         ctx.save_for_backward(a.detach(), b.detach(), argmax)
