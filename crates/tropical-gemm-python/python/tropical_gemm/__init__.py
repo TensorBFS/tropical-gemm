@@ -58,6 +58,22 @@ from tropical_gemm._core import (
     maxplus_matmul_i64,
     minplus_matmul_i64,
     maxmul_matmul_i64,
+    # 2D output variants (f32)
+    maxplus_matmul_2d,
+    minplus_matmul_2d,
+    maxmul_matmul_2d,
+    # 2D output variants (f64)
+    maxplus_matmul_2d_f64,
+    minplus_matmul_2d_f64,
+    maxmul_matmul_2d_f64,
+    # 2D output variants (i32)
+    maxplus_matmul_2d_i32,
+    minplus_matmul_2d_i32,
+    maxmul_matmul_2d_i32,
+    # 2D output variants (i64)
+    maxplus_matmul_2d_i64,
+    minplus_matmul_2d_i64,
+    maxmul_matmul_2d_i64,
     # CUDA availability
     cuda_available,
 )
@@ -73,7 +89,7 @@ if cuda_available():
         maxmul_matmul_gpu_with_argmax,
     )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # f32 operations
@@ -107,6 +123,22 @@ __all__ = [
     "maxplus_matmul_i64",
     "minplus_matmul_i64",
     "maxmul_matmul_i64",
+    # 2D output variants (f32)
+    "maxplus_matmul_2d",
+    "minplus_matmul_2d",
+    "maxmul_matmul_2d",
+    # 2D output variants (f64)
+    "maxplus_matmul_2d_f64",
+    "minplus_matmul_2d_f64",
+    "maxmul_matmul_2d_f64",
+    # 2D output variants (i32)
+    "maxplus_matmul_2d_i32",
+    "minplus_matmul_2d_i32",
+    "maxmul_matmul_2d_i32",
+    # 2D output variants (i64)
+    "maxplus_matmul_2d_i64",
+    "minplus_matmul_2d_i64",
+    "maxmul_matmul_2d_i64",
     # CUDA
     "cuda_available",
 ]

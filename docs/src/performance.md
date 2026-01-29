@@ -172,6 +172,52 @@ output = tropical_matmul(large_batch_a, large_batch_b)
 outputs = [tropical_matmul(a, b) for a, b in zip(small_as, small_bs)]
 ```
 
+## Python Threading
+
+### GIL Release During Compute
+
+All CPU functions release Python's GIL during heavy computation, allowing other Python threads to run concurrently:
+
+```python
+import threading
+import tropical_gemm
+import numpy as np
+
+def background_task():
+    # This can run while tropical_gemm computes
+    print("Background task running")
+
+a = np.random.randn(1000, 1000).astype(np.float32)
+b = np.random.randn(1000, 1000).astype(np.float32)
+
+# Start background thread
+t = threading.Thread(target=background_task)
+t.start()
+
+# GIL is released during compute - background thread can run
+c = tropical_gemm.maxplus_matmul(a, b)
+
+t.join()
+```
+
+This is particularly useful in:
+- Web servers (Flask, FastAPI) handling concurrent requests
+- GUI applications that need to remain responsive
+- Async applications using concurrent.futures
+
+### Zero-Copy with 2D Functions
+
+The `*_matmul_2d` functions return properly shaped 2D arrays without reshaping overhead:
+
+```python
+# Recommended: Use 2D functions for cleaner code
+c = tropical_gemm.maxplus_matmul_2d(a, b)  # shape: (m, n)
+
+# Older pattern requiring reshape
+c_flat = tropical_gemm.maxplus_matmul(a, b)  # shape: (m*n,)
+c = c_flat.reshape(m, n)
+```
+
 ## Memory Considerations
 
 ### Argmax Memory

@@ -57,6 +57,10 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_backward_b_f32",
     "tropical_backward_a_f64",
     "tropical_backward_b_f64",
+    // Batched GEMM with argmax kernels (f32 only)
+    "tropical_maxplus_f32_nn_batched_with_argmax",
+    "tropical_minplus_f32_nn_batched_with_argmax",
+    "tropical_maxmul_f32_nn_batched_with_argmax",
 ];
 
 /// CUDA context for tropical GEMM operations.

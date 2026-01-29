@@ -472,13 +472,15 @@ def test_gpu_maxplus_forward():
     """Test GPU MaxPlus forward pass matches CPU."""
     torch.manual_seed(42)
 
-    a = torch.randn(4, 3)
-    b = torch.randn(3, 5)
+    a_cpu = torch.randn(4, 3)
+    b_cpu = torch.randn(3, 5)
+    a_gpu = a_cpu.cuda()
+    b_gpu = b_cpu.cuda()
 
-    c_cpu = tropical_maxplus_matmul(a, b)
-    c_gpu = tropical_maxplus_matmul_gpu(a, b)
+    c_cpu = tropical_maxplus_matmul(a_cpu, b_cpu)
+    c_gpu = tropical_maxplus_matmul_gpu(a_gpu, b_gpu)
 
-    assert torch.allclose(c_cpu, c_gpu, atol=1e-4), f"GPU result differs from CPU"
+    assert torch.allclose(c_cpu, c_gpu.cpu(), atol=1e-4), f"GPU result differs from CPU"
 
 
 @pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
@@ -486,13 +488,15 @@ def test_gpu_minplus_forward():
     """Test GPU MinPlus forward pass matches CPU."""
     torch.manual_seed(42)
 
-    a = torch.randn(4, 3)
-    b = torch.randn(3, 5)
+    a_cpu = torch.randn(4, 3)
+    b_cpu = torch.randn(3, 5)
+    a_gpu = a_cpu.cuda()
+    b_gpu = b_cpu.cuda()
 
-    c_cpu = tropical_minplus_matmul(a, b)
-    c_gpu = tropical_minplus_matmul_gpu(a, b)
+    c_cpu = tropical_minplus_matmul(a_cpu, b_cpu)
+    c_gpu = tropical_minplus_matmul_gpu(a_gpu, b_gpu)
 
-    assert torch.allclose(c_cpu, c_gpu, atol=1e-4), f"GPU result differs from CPU"
+    assert torch.allclose(c_cpu, c_gpu.cpu(), atol=1e-4), f"GPU result differs from CPU"
 
 
 @pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
@@ -500,8 +504,8 @@ def test_gpu_maxplus_gradient():
     """Test GPU MaxPlus backward pass."""
     torch.manual_seed(42)
 
-    a = torch.tensor([[1.0, 10.0], [5.0, 2.0]], requires_grad=True)
-    b = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    a = torch.tensor([[1.0, 10.0], [5.0, 2.0]], device="cuda", requires_grad=True)
+    b = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda", requires_grad=True)
 
     c = tropical_maxplus_matmul_gpu(a, b)
     loss = c.sum()
@@ -519,9 +523,9 @@ def test_gpu_optimization():
     """Test GPU optimization convergence."""
     torch.manual_seed(42)
 
-    a = torch.randn(3, 4, requires_grad=True)
-    b = torch.randn(4, 3, requires_grad=True)
-    target = torch.randn(3, 3)
+    a = torch.randn(3, 4, device="cuda", requires_grad=True)
+    b = torch.randn(4, 3, device="cuda", requires_grad=True)
+    target = torch.randn(3, 3, device="cuda")
 
     optimizer = torch.optim.Adam([a, b], lr=0.1)
 
@@ -678,8 +682,12 @@ def test_dlpack_gpu_tensor_zero_copy():
     b = torch.randn(50, 80, dtype=torch.float32, device='cuda')
 
     # This should use the zero-copy DLPack path with Rust CUDA backend
-    c_flat, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
-    c = torch.from_numpy(np.array(c_flat).reshape(100, 80))
+    # Returns DLPack capsules - data stays on GPU
+    c_capsule, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
+    c = torch.from_dlpack(c_capsule).reshape(100, 80)
+
+    # Verify result is on GPU
+    assert c.is_cuda, "Result should be on GPU"
 
     # Verify result matches CPU reference
     a_cpu = a.cpu()
@@ -687,7 +695,7 @@ def test_dlpack_gpu_tensor_zero_copy():
     c_ref_flat, _ = tropical_gemm.maxplus_matmul_with_argmax(a_cpu.numpy(), b_cpu.numpy())
     c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(100, 80))
 
-    assert torch.allclose(c, c_ref, atol=1e-5), "GPU DLPack path should match CPU reference"
+    assert torch.allclose(c.cpu(), c_ref, atol=1e-5), "GPU DLPack path should match CPU reference"
 
 
 @pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")

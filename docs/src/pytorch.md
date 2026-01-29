@@ -225,8 +225,8 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
 
         # Forward pass with argmax tracking
         c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        c_np = np.asarray(c_flat).reshape(m, n)  # zero-copy when possible
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
         # Save for backward
         ctx.save_for_backward(torch.from_numpy(argmax_np))
@@ -249,8 +249,8 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
         grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
         grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k, n)).to(grad_c.device)
 
         return grad_a, grad_b
 ```
