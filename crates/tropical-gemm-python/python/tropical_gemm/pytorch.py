@@ -616,8 +616,8 @@ class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
                 a_np, b_np
             )
 
-            c = torch.from_numpy(np.array(c_flat).reshape(batch, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch, m, n)).to(
+            c = torch.from_numpy(np.asarray(c_flat).reshape(batch, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch, m, n)).to(
                 device=a.device, dtype=torch.int64
             )
 
@@ -712,8 +712,8 @@ class TropicalMinPlusMatmulBatched(torch.autograd.Function):
                 a_np, b_np
             )
 
-            c = torch.from_numpy(np.array(c_flat).reshape(batch, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch, m, n)).to(
+            c = torch.from_numpy(np.asarray(c_flat).reshape(batch, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch, m, n)).to(
                 device=a.device, dtype=torch.int64
             )
 
@@ -814,8 +814,8 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
                 a_np, b_np
             )
 
-            c = torch.from_numpy(np.array(c_flat).reshape(batch, m, n)).to(a.device)
-            argmax = torch.from_numpy(np.array(argmax_flat).reshape(batch, m, n)).to(
+            c = torch.from_numpy(np.asarray(c_flat).reshape(batch, m, n)).to(a.device)
+            argmax = torch.from_numpy(np.asarray(argmax_flat).reshape(batch, m, n)).to(
                 device=a.device, dtype=torch.int64
             )
             # Save tensors on the same device as input for backward pass
