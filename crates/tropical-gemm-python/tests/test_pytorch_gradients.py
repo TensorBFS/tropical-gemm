@@ -682,8 +682,12 @@ def test_dlpack_gpu_tensor_zero_copy():
     b = torch.randn(50, 80, dtype=torch.float32, device='cuda')
 
     # This should use the zero-copy DLPack path with Rust CUDA backend
-    c_flat, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
-    c = torch.from_numpy(np.array(c_flat).reshape(100, 80))
+    # Returns DLPack capsules - data stays on GPU
+    c_capsule, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
+    c = torch.from_dlpack(c_capsule).reshape(100, 80)
+
+    # Verify result is on GPU
+    assert c.is_cuda, "Result should be on GPU"
 
     # Verify result matches CPU reference
     a_cpu = a.cpu()
@@ -691,7 +695,7 @@ def test_dlpack_gpu_tensor_zero_copy():
     c_ref_flat, _ = tropical_gemm.maxplus_matmul_with_argmax(a_cpu.numpy(), b_cpu.numpy())
     c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(100, 80))
 
-    assert torch.allclose(c, c_ref, atol=1e-5), "GPU DLPack path should match CPU reference"
+    assert torch.allclose(c.cpu(), c_ref, atol=1e-5), "GPU DLPack path should match CPU reference"
 
 
 @pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
