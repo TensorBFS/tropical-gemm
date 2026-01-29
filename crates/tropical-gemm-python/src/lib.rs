@@ -1115,10 +1115,11 @@ mod gpu {
     use super::*;
     use dlpark::ffi::{DataType, DataTypeCode, Device, DeviceType};
     use dlpark::{ManagerCtx, ManagedTensor, ShapeAndStrides, ToTensor, TensorView};
+    #[allow(deprecated)]
     use pyo3::IntoPy;
     use std::ffi::c_void;
     use tropical_gemm_cuda::{
-        get_context_for_device, get_global_context, launch_gemm_external_batched_with_argmax_f32,
+        get_context_for_device, launch_gemm_external_batched_with_argmax_f32,
         launch_gemm_external_with_argmax_f32, tropical_matmul_gpu,
         tropical_matmul_gpu_with_argmax, ExternalGpuMatrix, ExternalGpuTensor3,
         GpuMatrix, GpuTensor3,
