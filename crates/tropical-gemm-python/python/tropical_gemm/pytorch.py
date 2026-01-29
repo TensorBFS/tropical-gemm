@@ -21,8 +21,6 @@ Example:
     >>> loss.backward()
 """
 
-import warnings
-
 import numpy as np
 
 try:
@@ -622,8 +620,8 @@ class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
 
             # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
             c = torch.from_dlpack(c_capsule)
-            # Cast argmax to int64 for PyTorch indexing ops (scatter_add_, gather)
-            argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
+            # Keep argmax as int32 to preserve zero-copy semantics
+            argmax = torch.from_dlpack(argmax_capsule)
         else:
             # CPU path
             a_np = a.detach().cpu().numpy().astype(np.float32)
@@ -718,8 +716,8 @@ class TropicalMinPlusMatmulBatched(torch.autograd.Function):
 
             # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
             c = torch.from_dlpack(c_capsule)
-            # Cast argmax to int64 for PyTorch indexing ops (scatter_add_, gather)
-            argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
+            # Keep argmax as int32 to preserve zero-copy semantics
+            argmax = torch.from_dlpack(argmax_capsule)
         else:
             # CPU path
             a_np = a.detach().cpu().numpy().astype(np.float32)
@@ -818,8 +816,8 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
 
             # Convert DLPack capsules to PyTorch tensors (zero-copy on GPU)
             c = torch.from_dlpack(c_capsule)
-            # Cast argmax to int64 for PyTorch indexing ops (scatter_add_, gather)
-            argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
+            # Keep argmax as int32 to preserve zero-copy semantics
+            argmax = torch.from_dlpack(argmax_capsule)
             # Save tensors for backward pass
             ctx.save_for_backward(a.detach(), b.detach(), argmax)
         else:
