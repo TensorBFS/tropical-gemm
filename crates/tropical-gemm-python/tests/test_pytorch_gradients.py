@@ -1172,6 +1172,163 @@ def test_gpu_gradient_sparsity():
         "Total gradient should equal number of output elements"
 
 
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_numerical_gradient_maxplus():
+    """Verify GPU MaxPlus gradients using finite differences."""
+    torch.manual_seed(42)
+
+    m, k, n = 3, 4, 3
+    a = (torch.randn(m, k, device="cuda") * 3).requires_grad_(True)
+    b = (torch.randn(k, n, device="cuda") * 3).requires_grad_(True)
+
+    c = tropical_maxplus_matmul(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for i in range(m):
+        for j in range(k):
+            a_plus = a.detach().clone()
+            a_plus[i, j] += eps
+            a_minus = a.detach().clone()
+            a_minus[i, j] -= eps
+
+            c_plus = tropical_maxplus_matmul(a_plus, b.detach()).sum()
+            c_minus = tropical_maxplus_matmul(a_minus, b.detach()).sum()
+
+            numerical_grad_a[i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        "GPU MaxPlus numerical gradient mismatch"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_numerical_gradient_minplus():
+    """Verify GPU MinPlus gradients using finite differences."""
+    torch.manual_seed(42)
+
+    m, k, n = 3, 4, 3
+    a = (torch.randn(m, k, device="cuda") * 3).requires_grad_(True)
+    b = (torch.randn(k, n, device="cuda") * 3).requires_grad_(True)
+
+    c = tropical_minplus_matmul(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for i in range(m):
+        for j in range(k):
+            a_plus = a.detach().clone()
+            a_plus[i, j] += eps
+            a_minus = a.detach().clone()
+            a_minus[i, j] -= eps
+
+            c_plus = tropical_minplus_matmul(a_plus, b.detach()).sum()
+            c_minus = tropical_minplus_matmul(a_minus, b.detach()).sum()
+
+            numerical_grad_a[i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        "GPU MinPlus numerical gradient mismatch"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_numerical_gradient_maxmul():
+    """Verify GPU MaxMul gradients using finite differences."""
+    torch.manual_seed(42)
+
+    m, k, n = 3, 4, 3
+    # Use positive values for MaxMul
+    a = (torch.randn(m, k, device="cuda").abs() * 2 + 0.5).requires_grad_(True)
+    b = (torch.randn(k, n, device="cuda").abs() * 2 + 0.5).requires_grad_(True)
+
+    c = tropical_maxmul_matmul(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for i in range(m):
+        for j in range(k):
+            a_plus = a.detach().clone()
+            a_plus[i, j] += eps
+            a_minus = a.detach().clone()
+            a_minus[i, j] -= eps
+
+            c_plus = tropical_maxmul_matmul(a_plus, b.detach()).sum()
+            c_minus = tropical_maxmul_matmul(a_minus, b.detach()).sum()
+
+            numerical_grad_a[i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        "GPU MaxMul numerical gradient mismatch"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_minplus_optimization():
+    """Test that GPU MinPlus gradients enable optimization to converge."""
+    torch.manual_seed(42)
+
+    a = torch.randn(8, 6, device="cuda", requires_grad=True)
+    b = torch.randn(6, 10, device="cuda")
+    target = torch.randn(8, 10, device="cuda")
+
+    optimizer = torch.optim.SGD([a], lr=0.1)
+
+    initial_loss = None
+    for step in range(10):
+        optimizer.zero_grad()
+        c = tropical_minplus_matmul(a, b)
+        loss = torch.nn.functional.mse_loss(c, target)
+        if initial_loss is None:
+            initial_loss = loss.item()
+        loss.backward()
+        optimizer.step()
+
+    assert loss.item() < initial_loss, \
+        f"GPU MinPlus loss should decrease: {initial_loss} -> {loss.item()}"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_maxmul_optimization():
+    """Test that GPU MaxMul gradients enable optimization to converge."""
+    torch.manual_seed(42)
+
+    # Use positive values for MaxMul
+    a = (torch.randn(8, 6, device="cuda").abs() + 0.1).requires_grad_(True)
+    b = (torch.randn(6, 10, device="cuda").abs() + 0.1)
+    target = torch.randn(8, 10, device="cuda").abs() + 1.0
+
+    optimizer = torch.optim.SGD([a], lr=0.01)
+
+    initial_loss = None
+    for step in range(10):
+        optimizer.zero_grad()
+        c = tropical_maxmul_matmul(a, b)
+        loss = torch.nn.functional.mse_loss(c, target)
+        if initial_loss is None:
+            initial_loss = loss.item()
+        loss.backward()
+        optimizer.step()
+        # Keep values positive for MaxMul
+        with torch.no_grad():
+            a.clamp_(min=0.01)
+
+    assert loss.item() < initial_loss, \
+        f"GPU MaxMul loss should decrease: {initial_loss} -> {loss.item()}"
+
+
 # ============================================================================
 # Batched GPU Gradient Tests
 # ============================================================================
