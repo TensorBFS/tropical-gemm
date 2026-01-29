@@ -1545,19 +1545,19 @@ mod gpu {
     /// and performs the computation without copying data for GPU tensors.
     ///
     /// Args:
-    ///     a: Input tensor A of shape (M, K) - must support __dlpack__(), f32, CUDA
-    ///     b: Input tensor B of shape (K, N) - must support __dlpack__(), f32, CUDA
+    ///     a: Input tensor A of shape (M, K) - must support __dlpack__(), f32
+    ///     b: Input tensor B of shape (K, N) - must support __dlpack__(), f32
     ///
     /// Returns:
-    ///     Tuple of (C, argmax) as DLPack capsules where:
-    ///     - C: Result tensor of shape (M, N) as f32 CUDA tensor
-    ///     - argmax: Indices of shape (M, N) as i32 CUDA tensor
+    ///     Tuple of (C, argmax) where the type depends on input device:
     ///
-    ///     Use `torch.from_dlpack(capsule)` to convert to PyTorch tensors.
+    ///     For CUDA tensors: Returns DLPack capsules (data stays on GPU)
+    ///     - C: Result of shape (M*N,) as f32 - use `torch.from_dlpack(c).reshape(m, n)`
+    ///     - argmax: Indices of shape (M*N,) as i32 - use `torch.from_dlpack(argmax).reshape(m, n)`
     ///
-    /// Note:
-    ///     - For GPU tensors: Returns DLPack capsules (data stays on GPU)
-    ///     - For CPU tensors: Returns numpy arrays (use `.to(device)` to move to GPU)
+    ///     For CPU tensors: Returns numpy arrays (flattened)
+    ///     - C: Result of shape (M*N,) as f32 - use `torch.from_numpy(c).reshape(m, n)`
+    ///     - argmax: Indices of shape (M*N,) as i32 - use `torch.from_numpy(argmax).reshape(m, n)`
     #[pyfunction]
     pub fn maxplus_matmul_dlpack(
         py: Python<'_>,

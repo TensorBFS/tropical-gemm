@@ -37,89 +37,31 @@ import tropical_gemm
 GPU_AVAILABLE = tropical_gemm.cuda_available()
 
 
-# ===========================================================================
-# Helper: Use Rust CPU backend as fallback for GPU tensors without DLPack
-# ===========================================================================
-
-
-def _rust_cpu_maxplus_with_argmax(
-    a: torch.Tensor, b: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Use optimized Rust CPU backend for tropical max-plus matmul.
-
-    This is used as fallback when DLPack is not available. Transfers data
-    to CPU, uses Rust SIMD-optimized backend, then transfers back to device.
-    """
-    m, k = a.shape
-    n = b.shape[1]
-    device = a.device
-    dtype = a.dtype
-
-    a_np = a.detach().cpu().numpy().astype(np.float32)
-    b_np = b.detach().cpu().numpy().astype(np.float32)
-
-    if not a_np.flags["C_CONTIGUOUS"]:
-        a_np = np.ascontiguousarray(a_np)
-    if not b_np.flags["C_CONTIGUOUS"]:
-        b_np = np.ascontiguousarray(b_np)
-
-    c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
-
-    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
-    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
-
-    return c, argmax
-
-
-def _rust_cpu_minplus_with_argmax(
-    a: torch.Tensor, b: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Use optimized Rust CPU backend for tropical min-plus matmul."""
-    m, k = a.shape
-    n = b.shape[1]
-    device = a.device
-    dtype = a.dtype
-
-    a_np = a.detach().cpu().numpy().astype(np.float32)
-    b_np = b.detach().cpu().numpy().astype(np.float32)
-
-    if not a_np.flags["C_CONTIGUOUS"]:
-        a_np = np.ascontiguousarray(a_np)
-    if not b_np.flags["C_CONTIGUOUS"]:
-        b_np = np.ascontiguousarray(b_np)
-
-    c_flat, argmax_flat = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
-
-    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
-    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
-
-    return c, argmax
-
-
-def _rust_cpu_maxmul_with_argmax(
-    a: torch.Tensor, b: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Use optimized Rust CPU backend for tropical max-mul matmul."""
-    m, k = a.shape
-    n = b.shape[1]
-    device = a.device
-    dtype = a.dtype
-
-    a_np = a.detach().cpu().numpy().astype(np.float32)
-    b_np = b.detach().cpu().numpy().astype(np.float32)
-
-    if not a_np.flags["C_CONTIGUOUS"]:
-        a_np = np.ascontiguousarray(a_np)
-    if not b_np.flags["C_CONTIGUOUS"]:
-        b_np = np.ascontiguousarray(b_np)
-
-    c_flat, argmax_flat = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
-
-    c = torch.from_numpy(np.array(c_flat).reshape(m, n)).to(device=device, dtype=dtype)
-    argmax = torch.from_numpy(np.array(argmax_flat).reshape(m, n)).to(device)
-
-    return c, argmax
+def _get_dtype_funcs(dtype: torch.dtype):
+    """Get the appropriate Rust functions for the given dtype."""
+    if dtype == torch.float64:
+        return {
+            "maxplus": tropical_gemm.maxplus_matmul_with_argmax_f64,
+            "minplus": tropical_gemm.minplus_matmul_with_argmax_f64,
+            "maxmul": tropical_gemm.maxmul_matmul_with_argmax_f64,
+            "backward_a": tropical_gemm.backward_a_f64,
+            "backward_b": tropical_gemm.backward_b_f64,
+            "maxmul_backward_a": tropical_gemm.maxmul_backward_a_f64,
+            "maxmul_backward_b": tropical_gemm.maxmul_backward_b_f64,
+            "np_dtype": np.float64,
+        }
+    else:
+        # Default to f32 for float32 and other types
+        return {
+            "maxplus": tropical_gemm.maxplus_matmul_with_argmax,
+            "minplus": tropical_gemm.minplus_matmul_with_argmax,
+            "maxmul": tropical_gemm.maxmul_matmul_with_argmax,
+            "backward_a": tropical_gemm.backward_a,
+            "backward_b": tropical_gemm.backward_b,
+            "maxmul_backward_a": tropical_gemm.maxmul_backward_a,
+            "maxmul_backward_b": tropical_gemm.maxmul_backward_b,
+            "np_dtype": np.float32,
+        }
 
 
 # ===========================================================================
@@ -137,6 +79,8 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
     For each output C[i,j], the gradient flows back to:
     - A[i, argmax[i,j]]
     - B[argmax[i,j], j]
+
+    Supports both float32 and float64 inputs (uses appropriate Rust backend).
     """
 
     @staticmethod
@@ -153,10 +97,17 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
         """
         m, k = a.shape
         n = b.shape[1]
+        funcs = _get_dtype_funcs(a.dtype)
 
-        # Convert to contiguous numpy arrays
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        # Convert to contiguous numpy arrays (preserving dtype)
+        a_np = a.detach().cpu().numpy()
+        b_np = b.detach().cpu().numpy()
+
+        # Cast to appropriate dtype if needed (e.g., float16 -> float32)
+        if a_np.dtype != funcs["np_dtype"]:
+            a_np = a_np.astype(funcs["np_dtype"])
+        if b_np.dtype != funcs["np_dtype"]:
+            b_np = b_np.astype(funcs["np_dtype"])
 
         # Ensure contiguous layout
         if not a_np.flags["C_CONTIGUOUS"]:
@@ -164,18 +115,19 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
         if not b_np.flags["C_CONTIGUOUS"]:
             b_np = np.ascontiguousarray(b_np)
 
-        # Call the optimized Rust implementation (returns flattened arrays)
-        c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
+        # Call the optimized Rust implementation (returns flattened numpy arrays)
+        c_flat, argmax_flat = funcs["maxplus"](a_np, b_np)
 
-        # Reshape to 2D
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        # Reshape to 2D (c_flat and argmax_flat are already numpy arrays)
+        c_np = np.asarray(c_flat).reshape(m, n)
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
-        # Save argmax for backward pass
+        # Save for backward pass
         ctx.save_for_backward(torch.from_numpy(argmax_np))
         ctx.k = k
         ctx.m = m
         ctx.n = n
+        ctx.dtype = a.dtype
 
         return torch.from_numpy(c_np).to(a.device)
 
@@ -191,23 +143,28 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
         k = ctx.k
         m = ctx.m
         n = ctx.n
+        funcs = _get_dtype_funcs(ctx.dtype)
 
-        # Ensure contiguous numpy arrays
-        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        # Convert to numpy (preserving dtype for grad_c)
+        grad_c_np = grad_c.cpu().numpy()
         argmax_np = argmax.numpy().astype(np.int32)
+
+        # Cast to appropriate dtype if needed
+        if grad_c_np.dtype != funcs["np_dtype"]:
+            grad_c_np = grad_c_np.astype(funcs["np_dtype"])
 
         if not grad_c_np.flags["C_CONTIGUOUS"]:
             grad_c_np = np.ascontiguousarray(grad_c_np)
         if not argmax_np.flags["C_CONTIGUOUS"]:
             argmax_np = np.ascontiguousarray(argmax_np)
 
-        # Compute gradients using the Rust backend (returns flattened arrays)
-        grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
-        grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
+        # Compute gradients using the Rust backend (returns flattened numpy arrays)
+        grad_a_flat = funcs["backward_a"](grad_c_np, argmax_np, k)
+        grad_b_flat = funcs["backward_b"](grad_c_np, argmax_np, k)
 
-        # Reshape to 2D
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        # Reshape to 2D (grad_*_flat are already numpy arrays)
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k, n)).to(grad_c.device)
 
         return grad_a, grad_b
 
@@ -219,30 +176,38 @@ class TropicalMinPlusMatmul(torch.autograd.Function):
     Forward: C[i,j] = min_k(A[i,k] + B[k,j])
 
     Useful for shortest path computations in graphs.
+    Supports both float32 and float64 inputs.
     """
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         m, k = a.shape
         n = b.shape[1]
+        funcs = _get_dtype_funcs(a.dtype)
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        a_np = a.detach().cpu().numpy()
+        b_np = b.detach().cpu().numpy()
+
+        if a_np.dtype != funcs["np_dtype"]:
+            a_np = a_np.astype(funcs["np_dtype"])
+        if b_np.dtype != funcs["np_dtype"]:
+            b_np = b_np.astype(funcs["np_dtype"])
 
         if not a_np.flags["C_CONTIGUOUS"]:
             a_np = np.ascontiguousarray(a_np)
         if not b_np.flags["C_CONTIGUOUS"]:
             b_np = np.ascontiguousarray(b_np)
 
-        c_flat, argmax_flat = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
+        c_flat, argmax_flat = funcs["minplus"](a_np, b_np)
 
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        c_np = np.asarray(c_flat).reshape(m, n)
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
         ctx.save_for_backward(torch.from_numpy(argmax_np))
         ctx.k = k
         ctx.m = m
         ctx.n = n
+        ctx.dtype = a.dtype
 
         return torch.from_numpy(c_np).to(a.device)
 
@@ -252,20 +217,24 @@ class TropicalMinPlusMatmul(torch.autograd.Function):
         k = ctx.k
         m = ctx.m
         n = ctx.n
+        funcs = _get_dtype_funcs(ctx.dtype)
 
-        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        grad_c_np = grad_c.cpu().numpy()
         argmax_np = argmax.numpy().astype(np.int32)
+
+        if grad_c_np.dtype != funcs["np_dtype"]:
+            grad_c_np = grad_c_np.astype(funcs["np_dtype"])
 
         if not grad_c_np.flags["C_CONTIGUOUS"]:
             grad_c_np = np.ascontiguousarray(grad_c_np)
         if not argmax_np.flags["C_CONTIGUOUS"]:
             argmax_np = np.ascontiguousarray(argmax_np)
 
-        grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
-        grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
+        grad_a_flat = funcs["backward_a"](grad_c_np, argmax_np, k)
+        grad_b_flat = funcs["backward_b"](grad_c_np, argmax_np, k)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k, n)).to(grad_c.device)
 
         return grad_a, grad_b
 
@@ -282,25 +251,32 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
     - grad_B[k,j] = grad_C[i,j] * A[i,k] if k == argmax[i,j]
 
     Useful for max-probability computations (non-log space).
+    Supports both float32 and float64 inputs.
     """
 
     @staticmethod
     def forward(ctx, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         m, k = a.shape
         n = b.shape[1]
+        funcs = _get_dtype_funcs(a.dtype)
 
-        a_np = a.detach().cpu().numpy().astype(np.float32)
-        b_np = b.detach().cpu().numpy().astype(np.float32)
+        a_np = a.detach().cpu().numpy()
+        b_np = b.detach().cpu().numpy()
+
+        if a_np.dtype != funcs["np_dtype"]:
+            a_np = a_np.astype(funcs["np_dtype"])
+        if b_np.dtype != funcs["np_dtype"]:
+            b_np = b_np.astype(funcs["np_dtype"])
 
         if not a_np.flags["C_CONTIGUOUS"]:
             a_np = np.ascontiguousarray(a_np)
         if not b_np.flags["C_CONTIGUOUS"]:
             b_np = np.ascontiguousarray(b_np)
 
-        c_flat, argmax_flat = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
+        c_flat, argmax_flat = funcs["maxmul"](a_np, b_np)
 
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        c_np = np.asarray(c_flat).reshape(m, n)
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
         # Save inputs and argmax for backward (needed for multiplicative gradient)
         ctx.save_for_backward(
@@ -311,6 +287,7 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
         ctx.k = k
         ctx.m = m
         ctx.n = n
+        ctx.dtype = a.dtype
 
         return torch.from_numpy(c_np).to(a.device)
 
@@ -320,11 +297,15 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
         k_dim = ctx.k
         m = ctx.m
         n = ctx.n
+        funcs = _get_dtype_funcs(ctx.dtype)
 
-        grad_c_np = grad_c.cpu().numpy().astype(np.float32)
+        grad_c_np = grad_c.cpu().numpy()
         argmax_np = argmax.numpy().astype(np.int32)
-        a_np = a.numpy().astype(np.float32)
-        b_np = b.numpy().astype(np.float32)
+        a_np = a.numpy()
+        b_np = b.numpy()
+
+        if grad_c_np.dtype != funcs["np_dtype"]:
+            grad_c_np = grad_c_np.astype(funcs["np_dtype"])
 
         if not grad_c_np.flags["C_CONTIGUOUS"]:
             grad_c_np = np.ascontiguousarray(grad_c_np)
@@ -332,13 +313,13 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
             argmax_np = np.ascontiguousarray(argmax_np)
 
         # Use multiplicative backward rule
-        grad_a_flat = tropical_gemm.maxmul_backward_a(grad_c_np, argmax_np, b_np)
-        grad_b_flat = tropical_gemm.maxmul_backward_b(grad_c_np, argmax_np, a_np)
+        grad_a_flat = funcs["maxmul_backward_a"](grad_c_np, argmax_np, b_np)
+        grad_b_flat = funcs["maxmul_backward_b"](grad_c_np, argmax_np, a_np)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k_dim)).to(
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k_dim)).to(
             grad_c.device
         )
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k_dim, n)).to(
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k_dim, n)).to(
             grad_c.device
         )
 
@@ -358,9 +339,9 @@ class TropicalMaxPlusMatmulGPU(torch.autograd.Function):
     """
     GPU-accelerated MaxPlus tropical matrix multiplication.
 
-    Uses the optimized Rust CUDA backend via DLPack for zero-copy GPU tensor exchange.
-    Input tensors stay on GPU; only the forward pass output requires a D2H transfer
-    (Phase 1). The backward pass runs entirely on GPU using PyTorch scatter operations.
+    Uses the optimized Rust CUDA backend via DLPack for true zero-copy GPU tensor exchange.
+    Both inputs and outputs stay on GPU - no host transfers in the forward pass.
+    The backward pass runs entirely on GPU using PyTorch scatter operations.
     """
 
     @staticmethod
