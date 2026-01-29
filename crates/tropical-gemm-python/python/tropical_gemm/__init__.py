@@ -89,7 +89,7 @@ if cuda_available():
         maxmul_matmul_gpu_with_argmax,
     )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # f32 operations

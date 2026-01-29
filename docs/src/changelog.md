@@ -2,7 +2,7 @@
 
 All notable changes to tropical-gemm.
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
 - **2D output functions**: New `*_matmul_2d` variants that return properly shaped 2D arrays instead of flattened 1D output. Available for all semirings (maxplus, minplus, maxmul) and data types (f32, f64, i32, i64):
