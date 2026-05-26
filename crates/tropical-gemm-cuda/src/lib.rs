@@ -1,7 +1,23 @@
 //! CUDA backend for tropical matrix multiplication.
 //!
 //! This crate provides GPU-accelerated tropical GEMM operations using CUDA.
-//! All matrices use **column-major** storage (matching tropical-gemm's Mat type).
+//!
+//! # Storage layouts
+//!
+//! Two matrix types coexist in the public API and they use *different* memory
+//! orders by design:
+//!
+//! - [`GpuMatrix`] (owned, BLAS-style) is **column-major**. This matches the
+//!   CPU `tropical_gemm::Mat` type and the kernels' internal layout, so it is
+//!   the preferred type for native Rust callers.
+//! - [`ExternalGpuMatrix`] (non-owning, for DLPack / PyTorch interop) is
+//!   **row-major** (C-contiguous). The external kernel launchers
+//!   (`launch_gemm_external_*`) compensate for this by swapping operands and
+//!   M↔N internally, so callers never have to transpose externally-owned data.
+//!
+//! Both layouts produce identical results — the distinction only matters when
+//! you are constructing a matrix from raw GPU memory you already own. If you
+//! are unsure, prefer [`GpuMatrix`] and supply data in column-major order.
 //!
 //! # Quick Start
 //!

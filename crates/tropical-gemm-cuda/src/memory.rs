@@ -3,7 +3,7 @@
 use crate::context::CudaContext;
 use crate::error::{CudaError, Result};
 use cudarc::driver::sys::CUdeviceptr;
-use cudarc::driver::{CudaSlice, DeviceRepr, ValidAsZeroBits};
+use cudarc::driver::{CudaSlice, DeviceRepr, DeviceSlice, ValidAsZeroBits};
 use std::marker::PhantomData;
 
 /// Type alias for argmax indices (k-index that produced each C[i,j]).
@@ -181,6 +181,45 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     }
 }
 
+// Zero-copy ownership-transfer constructors. These do not require the heavier
+// `Default + Clone + ValidAsZeroBits` bounds used by `alloc`/`from_host`, so
+// they live in a separate impl block bounded only by `DeviceRepr`.
+impl<T: DeviceRepr> GpuMatrix<T> {
+    /// Wrap an already-resident GPU `CudaSlice` as a column-major matrix.
+    ///
+    /// This performs no copy: the caller transfers ownership of the slice and
+    /// gets back a `GpuMatrix` view with the same underlying allocation. It is
+    /// the symmetric counterpart to [`GpuMatrix::into_inner`] and intended for
+    /// downstream Rust crates that already hold GPU-resident data (e.g.
+    /// `omeinsum-rs`'s `CudaStorage`) and want to feed it into the tropical
+    /// GEMM API without round-tripping through host memory.
+    ///
+    /// The slice is interpreted as column-major (BLAS / Fortran convention),
+    /// matching the rest of [`GpuMatrix`]. For row-major external data
+    /// (e.g. PyTorch / DLPack), use [`ExternalGpuMatrix`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::DimensionMismatch`] if `slice.len() != rows * cols`.
+    pub fn from_cuda_slice(slice: CudaSlice<T>, rows: usize, cols: usize) -> Result<Self> {
+        if slice.len() != rows * cols {
+            return Err(CudaError::DimensionMismatch(format!(
+                "slice length {} does not match rows*cols ({} * {} = {})",
+                slice.len(),
+                rows,
+                cols,
+                rows * cols,
+            )));
+        }
+        Ok(Self {
+            data: slice,
+            rows,
+            cols,
+            _marker: PhantomData,
+        })
+    }
+}
+
 /// A GPU matrix paired with argmax indices (for backward propagation).
 ///
 /// This stores both the result of a tropical GEMM and the k-indices
@@ -253,6 +292,30 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     /// independently for ownership transfer.
     pub fn into_parts(self) -> (GpuMatrix<T>, GpuMatrix<ArgmaxIndex>) {
         (self.matrix, self.argmax)
+    }
+}
+
+// Zero-copy ownership-transfer constructor (symmetric to `into_parts`).
+impl<T: DeviceRepr> GpuMatrixWithArgmax<T> {
+    /// Wrap two already-resident GPU `CudaSlice`s as a `(matrix, argmax)` pair.
+    ///
+    /// Zero-copy counterpart to [`GpuMatrixWithArgmax::into_parts`]. Both slices
+    /// are interpreted as column-major with shape `rows × cols`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaError::DimensionMismatch`] if either slice length does not
+    /// equal `rows * cols`.
+    pub fn from_cuda_slices(
+        matrix: CudaSlice<T>,
+        argmax: CudaSlice<ArgmaxIndex>,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            matrix: GpuMatrix::from_cuda_slice(matrix, rows, cols)?,
+            argmax: GpuMatrix::from_cuda_slice(argmax, rows, cols)?,
+        })
     }
 }
 
@@ -569,5 +632,116 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuTensor3WithArgmax<T> 
     /// independently for ownership transfer.
     pub fn into_parts(self) -> (GpuTensor3<T>, GpuTensor3<ArgmaxIndex>) {
         (self.tensor, self.argmax)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Skip test gracefully when no CUDA device is present.
+    fn cuda_context_or_skip() -> Option<CudaContext> {
+        match std::panic::catch_unwind(CudaContext::new) {
+            Ok(Ok(ctx)) => Some(ctx),
+            Ok(Err(e)) => {
+                println!("CUDA not available ({e:?}), skipping test");
+                None
+            }
+            Err(_) => {
+                println!("CUDA libraries not found, skipping test");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn from_cuda_slice_roundtrip_preserves_data() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        let host: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        let slice = ctx.device().htod_sync_copy(&host).unwrap();
+
+        let mat = GpuMatrix::<f32>::from_cuda_slice(slice, 3, 4).unwrap();
+        assert_eq!(mat.rows(), 3);
+        assert_eq!(mat.cols(), 4);
+
+        let downloaded = mat.to_host(&ctx).unwrap();
+        assert_eq!(downloaded, host);
+    }
+
+    #[test]
+    fn from_cuda_slice_into_inner_is_symmetric() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        let host = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let original = GpuMatrix::from_host(&ctx, &host, 2, 3).unwrap();
+
+        // into_inner → from_cuda_slice round-trip with no data motion
+        let inner = original.into_inner();
+        let rebuilt = GpuMatrix::<f64>::from_cuda_slice(inner, 2, 3).unwrap();
+
+        let downloaded = rebuilt.to_host(&ctx).unwrap();
+        assert_eq!(downloaded, host);
+    }
+
+    #[test]
+    fn from_cuda_slice_rejects_dimension_mismatch() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        let slice = ctx.device().alloc_zeros::<f32>(10).unwrap();
+        match GpuMatrix::<f32>::from_cuda_slice(slice, 3, 4) {
+            Err(CudaError::DimensionMismatch(_)) => {}
+            Err(e) => panic!("expected DimensionMismatch, got {e:?}"),
+            Ok(_) => panic!("expected error for slice length 10 vs 3*4=12"),
+        }
+    }
+
+    #[test]
+    fn from_cuda_slices_pairs_matrix_and_argmax() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        let mat_host = vec![10.0f32, 20.0, 30.0, 40.0];
+        let arg_host: Vec<ArgmaxIndex> = vec![0, 1, 2, 3];
+
+        let mat_slice = ctx.device().htod_sync_copy(&mat_host).unwrap();
+        let arg_slice = ctx.device().htod_sync_copy(&arg_host).unwrap();
+
+        let pair = GpuMatrixWithArgmax::<f32>::from_cuda_slices(mat_slice, arg_slice, 2, 2).unwrap();
+
+        assert_eq!(pair.matrix_to_host(&ctx).unwrap(), mat_host);
+        assert_eq!(pair.argmax_to_host(&ctx).unwrap(), arg_host);
+    }
+
+    #[test]
+    fn from_cuda_slices_rejects_dimension_mismatch_on_either_buffer() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        // Matrix slice has wrong length.
+        let bad_mat = ctx.device().alloc_zeros::<f32>(3).unwrap();
+        let good_arg = ctx.device().alloc_zeros::<ArgmaxIndex>(4).unwrap();
+        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(bad_mat, good_arg, 2, 2) {
+            Err(CudaError::DimensionMismatch(_)) => {}
+            Err(e) => panic!("expected DimensionMismatch (bad matrix), got {e:?}"),
+            Ok(_) => panic!("expected error for matrix len 3 vs 2*2=4"),
+        }
+
+        // Argmax slice has wrong length.
+        let good_mat = ctx.device().alloc_zeros::<f32>(4).unwrap();
+        let bad_arg = ctx.device().alloc_zeros::<ArgmaxIndex>(3).unwrap();
+        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(good_mat, bad_arg, 2, 2) {
+            Err(CudaError::DimensionMismatch(_)) => {}
+            Err(e) => panic!("expected DimensionMismatch (bad argmax), got {e:?}"),
+            Ok(_) => panic!("expected error for argmax len 3 vs 2*2=4"),
+        }
     }
 }
