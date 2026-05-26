@@ -13,15 +13,28 @@ pub type ArgmaxIndex = i32;
 // Helper: validate dimensions
 // ============================================================================
 
-fn validate_dims<T>(data: &[T], rows: usize, cols: usize) -> Result<()> {
-    if data.len() != rows * cols {
+/// Validate that a buffer of `len` elements matches a `rows × cols` matrix.
+///
+/// Returns the matrix's total element count (`rows * cols`) on success so callers
+/// who need it (e.g. for downstream allocation sizing) can avoid re-computing it.
+/// Uses `checked_mul` so adversarial `(rows, cols)` cannot overflow `usize` —
+/// without this, debug builds would panic inside the very `format!` that builds
+/// the error message, and release builds would wrap and silently accept invalid
+/// shapes whose product happens to equal `len`.
+fn validate_dims_len(len: usize, rows: usize, cols: usize) -> Result<usize> {
+    let expected = rows.checked_mul(cols).ok_or_else(|| {
+        CudaError::DimensionMismatch(format!("rows * cols overflows usize: {rows} * {cols}"))
+    })?;
+    if len != expected {
         return Err(CudaError::DimensionMismatch(format!(
-            "Expected {} elements, got {}",
-            rows * cols,
-            data.len()
+            "Expected {expected} elements, got {len}"
         )));
     }
-    Ok(())
+    Ok(expected)
+}
+
+fn validate_dims<T>(data: &[T], rows: usize, cols: usize) -> Result<()> {
+    validate_dims_len(data.len(), rows, cols).map(|_| ())
 }
 
 /// A matrix stored in GPU memory.
@@ -60,7 +73,10 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     /// This method performs an O(rows×cols) transpose on the CPU before uploading to GPU.
     /// For performance-critical code, provide data in column-major order and use
     /// [`from_host`] instead.
-    #[deprecated(since = "0.4.0", note = "use from_host with column-major data instead; this method has O(m×n) transpose overhead")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "use `from_host` with column-major host data, or `from_cuda_slice` if your data is already on GPU; this method has O(m×n) transpose overhead"
+    )]
     pub fn from_host_row_major(
         ctx: &CudaContext,
         data: &[T],
@@ -124,7 +140,10 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     /// This method performs an O(rows×cols) transpose on the CPU after downloading from GPU.
     /// For performance-critical code, use [`to_host`] and handle the column-major layout
     /// in your application.
-    #[deprecated(since = "0.4.0", note = "use to_host for column-major data instead; this method has O(m×n) transpose overhead")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "use `to_host` for column-major data, or `into_inner` to recover the underlying `CudaSlice` and rewrap via `from_cuda_slice`; this method has O(m×n) transpose overhead"
+    )]
     pub fn to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
         let col_major = ctx.device().dtoh_sync_copy(&self.data)?;
         // Transpose from column-major to row-major
@@ -181,36 +200,50 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     }
 }
 
-// Zero-copy ownership-transfer constructors. These do not require the heavier
-// `Default + Clone + ValidAsZeroBits` bounds used by `alloc`/`from_host`, so
-// they live in a separate impl block bounded only by `DeviceRepr`.
-impl<T: DeviceRepr> GpuMatrix<T> {
+// Zero-copy ownership-transfer constructors live in this separate impl block
+// for organization (they're paired with their argmax variant below), but share
+// the same `Default + Clone + ValidAsZeroBits` bound as `from_host` / `alloc`
+// — loosening it would build `GpuMatrix<T>` values whose accessors (`to_host`,
+// `into_inner`, etc.) are then unreachable. If a future PR moves the
+// type-erased accessors into a `T: DeviceRepr` block, the bound here can be
+// relaxed in lockstep.
+impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     /// Wrap an already-resident GPU `CudaSlice` as a column-major matrix.
     ///
     /// This performs no copy: the caller transfers ownership of the slice and
     /// gets back a `GpuMatrix` view with the same underlying allocation. It is
     /// the symmetric counterpart to [`GpuMatrix::into_inner`] and intended for
-    /// downstream Rust crates that already hold GPU-resident data (e.g.
-    /// `omeinsum-rs`'s `CudaStorage`) and want to feed it into the tropical
-    /// GEMM API without round-tripping through host memory.
+    /// downstream Rust crates that already hold GPU-resident column-major data
+    /// and want to feed it into the tropical GEMM API without round-tripping
+    /// through host memory.
     ///
     /// The slice is interpreted as column-major (BLAS / Fortran convention),
     /// matching the rest of [`GpuMatrix`]. For row-major external data
-    /// (e.g. PyTorch / DLPack), use [`ExternalGpuMatrix`] instead.
+    /// (e.g. PyTorch / DLPack) — which `tropical-gemm-cuda` only ingests via a
+    /// **non-owning** view — see [`ExternalGpuMatrix`]; there is currently no
+    /// owned row-major zero-copy path.
     ///
     /// # Errors
     ///
-    /// Returns [`CudaError::DimensionMismatch`] if `slice.len() != rows * cols`.
-    pub fn from_cuda_slice(slice: CudaSlice<T>, rows: usize, cols: usize) -> Result<Self> {
-        if slice.len() != rows * cols {
+    /// Returns [`CudaError::DimensionMismatch`] if `rows * cols` overflows
+    /// `usize`, if `slice.len() != rows * cols`, or if the slice was allocated
+    /// on a different CUDA device than `ctx` — the latter would otherwise
+    /// surface as a `CUDA_ERROR_INVALID_DEVICE_POINTER` at the next kernel
+    /// launch, much further from the actual mistake.
+    pub fn from_cuda_slice(
+        ctx: &CudaContext,
+        slice: CudaSlice<T>,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Self> {
+        if slice.device().ordinal() != ctx.device().ordinal() {
             return Err(CudaError::DimensionMismatch(format!(
-                "slice length {} does not match rows*cols ({} * {} = {})",
-                slice.len(),
-                rows,
-                cols,
-                rows * cols,
+                "slice belongs to CUDA device {} but context is on device {}",
+                slice.device().ordinal(),
+                ctx.device().ordinal(),
             )));
         }
+        validate_dims_len(slice.len(), rows, cols)?;
         Ok(Self {
             data: slice,
             rows,
@@ -261,14 +294,20 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     }
 
     /// Copy the result matrix back to host in row-major order (deprecated).
-    #[deprecated(since = "0.4.0", note = "use matrix_to_host for column-major data instead")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "use `matrix_to_host` for column-major data, or `into_parts` + `from_cuda_slices` if your buffers are already on GPU"
+    )]
     pub fn matrix_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
         #[allow(deprecated)]
         self.matrix.to_host_row_major(ctx)
     }
 
     /// Copy the argmax indices back to host in row-major order (deprecated).
-    #[deprecated(since = "0.4.0", note = "use argmax_to_host for column-major data instead")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "use `argmax_to_host` for column-major data, or `into_parts` + `from_cuda_slices` if your buffers are already on GPU"
+    )]
     pub fn argmax_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
         #[allow(deprecated)]
         self.argmax.to_host_row_major(ctx)
@@ -296,25 +335,74 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
 }
 
 // Zero-copy ownership-transfer constructor (symmetric to `into_parts`).
-impl<T: DeviceRepr> GpuMatrixWithArgmax<T> {
+impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     /// Wrap two already-resident GPU `CudaSlice`s as a `(matrix, argmax)` pair.
     ///
     /// Zero-copy counterpart to [`GpuMatrixWithArgmax::into_parts`]. Both slices
-    /// are interpreted as column-major with shape `rows × cols`.
+    /// are interpreted as column-major with shape `rows × cols` and must live
+    /// on the same CUDA device as `ctx`.
+    ///
+    /// Validation runs **before** either slice is moved: if any check fails,
+    /// the caller gets both `CudaSlice`s back via the function's drop semantics
+    /// only after the error is constructed, and no half-wrapped state is left
+    /// for `?`-unwinding to free. (A failed wrap inside the function body
+    /// would otherwise consume the matrix slice into a temporary `GpuMatrix`
+    /// that gets dropped during unwind, silently freeing the caller's
+    /// allocation — see the lookalike pattern in
+    /// [`GpuMatrix::from_cuda_slice`].)
     ///
     /// # Errors
     ///
-    /// Returns [`CudaError::DimensionMismatch`] if either slice length does not
-    /// equal `rows * cols`.
+    /// Returns [`CudaError::DimensionMismatch`] if `rows * cols` overflows
+    /// `usize`, if either slice has the wrong length (the message distinguishes
+    /// `matrix` vs `argmax`), or if either slice was allocated on a different
+    /// CUDA device than `ctx`.
+    ///
+    /// **Type hazard.** When `T == ArgmaxIndex` (`i32`) — which is the case for
+    /// the integer-scalar argmax variants — `matrix` and `argmax` are both
+    /// `CudaSlice<i32>` and a positional swap at the call site type-checks.
+    /// Pass them in order.
     pub fn from_cuda_slices(
+        ctx: &CudaContext,
         matrix: CudaSlice<T>,
         argmax: CudaSlice<ArgmaxIndex>,
         rows: usize,
         cols: usize,
     ) -> Result<Self> {
+        let ctx_ord = ctx.device().ordinal();
+        if matrix.device().ordinal() != ctx_ord {
+            return Err(CudaError::DimensionMismatch(format!(
+                "matrix: slice belongs to CUDA device {} but context is on device {ctx_ord}",
+                matrix.device().ordinal(),
+            )));
+        }
+        if argmax.device().ordinal() != ctx_ord {
+            return Err(CudaError::DimensionMismatch(format!(
+                "argmax: slice belongs to CUDA device {} but context is on device {ctx_ord}",
+                argmax.device().ordinal(),
+            )));
+        }
+        validate_dims_len(matrix.len(), rows, cols).map_err(|e| match e {
+            CudaError::DimensionMismatch(m) => CudaError::DimensionMismatch(format!("matrix: {m}")),
+            other => other,
+        })?;
+        validate_dims_len(argmax.len(), rows, cols).map_err(|e| match e {
+            CudaError::DimensionMismatch(m) => CudaError::DimensionMismatch(format!("argmax: {m}")),
+            other => other,
+        })?;
         Ok(Self {
-            matrix: GpuMatrix::from_cuda_slice(matrix, rows, cols)?,
-            argmax: GpuMatrix::from_cuda_slice(argmax, rows, cols)?,
+            matrix: GpuMatrix {
+                data: matrix,
+                rows,
+                cols,
+                _marker: PhantomData,
+            },
+            argmax: GpuMatrix {
+                data: argmax,
+                rows,
+                cols,
+                _marker: PhantomData,
+            },
         })
     }
 }
@@ -663,7 +751,7 @@ mod tests {
         let host: Vec<f32> = (0..12).map(|i| i as f32).collect();
         let slice = ctx.device().htod_sync_copy(&host).unwrap();
 
-        let mat = GpuMatrix::<f32>::from_cuda_slice(slice, 3, 4).unwrap();
+        let mat = GpuMatrix::<f32>::from_cuda_slice(&ctx, slice, 3, 4).unwrap();
         assert_eq!(mat.rows(), 3);
         assert_eq!(mat.cols(), 4);
 
@@ -682,7 +770,7 @@ mod tests {
 
         // into_inner → from_cuda_slice round-trip with no data motion
         let inner = original.into_inner();
-        let rebuilt = GpuMatrix::<f64>::from_cuda_slice(inner, 2, 3).unwrap();
+        let rebuilt = GpuMatrix::<f64>::from_cuda_slice(&ctx, inner, 2, 3).unwrap();
 
         let downloaded = rebuilt.to_host(&ctx).unwrap();
         assert_eq!(downloaded, host);
@@ -695,10 +783,32 @@ mod tests {
         };
 
         let slice = ctx.device().alloc_zeros::<f32>(10).unwrap();
-        match GpuMatrix::<f32>::from_cuda_slice(slice, 3, 4) {
+        match GpuMatrix::<f32>::from_cuda_slice(&ctx, slice, 3, 4) {
             Err(CudaError::DimensionMismatch(_)) => {}
             Err(e) => panic!("expected DimensionMismatch, got {e:?}"),
             Ok(_) => panic!("expected error for slice length 10 vs 3*4=12"),
+        }
+    }
+
+    #[test]
+    fn from_cuda_slice_rejects_rows_cols_overflow() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        // Allocate any nonzero slice. rows*cols overflows usize, so the error
+        // must come from validate_dims_len's checked_mul — NOT from the length
+        // comparison (which would otherwise read a wrapped product).
+        let slice = ctx.device().alloc_zeros::<f32>(4).unwrap();
+        match GpuMatrix::<f32>::from_cuda_slice(&ctx, slice, usize::MAX, 2) {
+            Err(CudaError::DimensionMismatch(msg)) => {
+                assert!(
+                    msg.contains("overflow"),
+                    "expected overflow error, got: {msg}"
+                );
+            }
+            Err(e) => panic!("expected DimensionMismatch(overflow), got {e:?}"),
+            Ok(_) => panic!("expected overflow rejection"),
         }
     }
 
@@ -714,7 +824,8 @@ mod tests {
         let mat_slice = ctx.device().htod_sync_copy(&mat_host).unwrap();
         let arg_slice = ctx.device().htod_sync_copy(&arg_host).unwrap();
 
-        let pair = GpuMatrixWithArgmax::<f32>::from_cuda_slices(mat_slice, arg_slice, 2, 2).unwrap();
+        let pair =
+            GpuMatrixWithArgmax::<f32>::from_cuda_slices(&ctx, mat_slice, arg_slice, 2, 2).unwrap();
 
         assert_eq!(pair.matrix_to_host(&ctx).unwrap(), mat_host);
         assert_eq!(pair.argmax_to_host(&ctx).unwrap(), arg_host);
@@ -726,11 +837,17 @@ mod tests {
             return;
         };
 
-        // Matrix slice has wrong length.
+        // Matrix slice has wrong length. Error message must attribute the
+        // failure to the matrix buffer specifically — a future refactor that
+        // collapses both checks or reverses their order would silently break
+        // call-site diagnosis.
         let bad_mat = ctx.device().alloc_zeros::<f32>(3).unwrap();
         let good_arg = ctx.device().alloc_zeros::<ArgmaxIndex>(4).unwrap();
-        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(bad_mat, good_arg, 2, 2) {
-            Err(CudaError::DimensionMismatch(_)) => {}
+        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(&ctx, bad_mat, good_arg, 2, 2) {
+            Err(CudaError::DimensionMismatch(msg)) => assert!(
+                msg.starts_with("matrix:"),
+                "expected 'matrix:' attribution, got: {msg}"
+            ),
             Err(e) => panic!("expected DimensionMismatch (bad matrix), got {e:?}"),
             Ok(_) => panic!("expected error for matrix len 3 vs 2*2=4"),
         }
@@ -738,8 +855,11 @@ mod tests {
         // Argmax slice has wrong length.
         let good_mat = ctx.device().alloc_zeros::<f32>(4).unwrap();
         let bad_arg = ctx.device().alloc_zeros::<ArgmaxIndex>(3).unwrap();
-        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(good_mat, bad_arg, 2, 2) {
-            Err(CudaError::DimensionMismatch(_)) => {}
+        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(&ctx, good_mat, bad_arg, 2, 2) {
+            Err(CudaError::DimensionMismatch(msg)) => assert!(
+                msg.starts_with("argmax:"),
+                "expected 'argmax:' attribution, got: {msg}"
+            ),
             Err(e) => panic!("expected DimensionMismatch (bad argmax), got {e:?}"),
             Ok(_) => panic!("expected error for argmax len 3 vs 2*2=4"),
         }

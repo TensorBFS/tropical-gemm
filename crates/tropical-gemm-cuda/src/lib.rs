@@ -15,9 +15,14 @@
 //!   (`launch_gemm_external_*`) compensate for this by swapping operands and
 //!   M↔N internally, so callers never have to transpose externally-owned data.
 //!
-//! Both layouts produce identical results — the distinction only matters when
-//! you are constructing a matrix from raw GPU memory you already own. If you
-//! are unsure, prefer [`GpuMatrix`] and supply data in column-major order.
+//! The two paths produce correct kernel output **when each is fed data in its
+//! native order** — there is no runtime check, so picking the wrong constructor
+//! silently transposes. If you are unsure, prefer [`GpuMatrix`] and supply data
+//! in column-major order.
+//!
+//! Every other owned type in this crate — [`GpuTensor3`],
+//! [`GpuTensor3WithArgmax`], the `&[T]` slices accepted by top-level helpers
+//! like [`tropical_matmul_gpu`] — also follows the column-major convention.
 //!
 //! # Quick Start
 //!
