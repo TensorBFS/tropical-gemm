@@ -114,7 +114,10 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
 
     /// Allocate a zeroed GPU matrix.
     pub fn alloc(ctx: &CudaContext, rows: usize, cols: usize) -> Result<Self> {
-        let gpu_data = ctx.device().alloc_zeros::<T>(rows * cols)?;
+        let len = rows.checked_mul(cols).ok_or_else(|| {
+            CudaError::DimensionMismatch(format!("rows * cols overflows usize: {rows} * {cols}"))
+        })?;
+        let gpu_data = ctx.device().alloc_zeros::<T>(len)?;
         Ok(Self {
             data: gpu_data,
             rows,
@@ -142,7 +145,7 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     /// in your application.
     #[deprecated(
         since = "0.4.0",
-        note = "use `to_host` for column-major data, or `into_inner` to recover the underlying `CudaSlice` and rewrap via `from_cuda_slice`; this method has O(m×n) transpose overhead"
+        note = "if you need host data, use `to_host` (column-major) and transpose at the consumer; if you only wanted a GPU handle you should not have been calling a `to_host_*` method — see `into_inner` / `from_cuda_slice` for the zero-copy path. This method has O(m×n) transpose overhead."
     )]
     pub fn to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
         let col_major = ctx.device().dtoh_sync_copy(&self.data)?;
@@ -230,6 +233,13 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     /// on a different CUDA device than `ctx` — the latter would otherwise
     /// surface as a `CUDA_ERROR_INVALID_DEVICE_POINTER` at the next kernel
     /// launch, much further from the actual mistake.
+    ///
+    /// # Ownership on error
+    ///
+    /// `slice` is taken by value; on any error it is dropped at function exit,
+    /// which calls `cuMemFree` on the underlying allocation. There is no path
+    /// to recover the slice on failure — validate `rows`, `cols`, and the
+    /// slice's device before calling if you need to retain it on rejection.
     pub fn from_cuda_slice(
         ctx: &CudaContext,
         slice: CudaSlice<T>,
@@ -296,7 +306,7 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     /// Copy the result matrix back to host in row-major order (deprecated).
     #[deprecated(
         since = "0.4.0",
-        note = "use `matrix_to_host` for column-major data, or `into_parts` + `from_cuda_slices` if your buffers are already on GPU"
+        note = "if you need host data, use `matrix_to_host` (column-major) and transpose at the consumer; for staying on GPU see `into_parts` + `GpuMatrix::into_inner` (the zero-copy path doesn't produce host data)"
     )]
     pub fn matrix_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<T>> {
         #[allow(deprecated)]
@@ -306,7 +316,7 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     /// Copy the argmax indices back to host in row-major order (deprecated).
     #[deprecated(
         since = "0.4.0",
-        note = "use `argmax_to_host` for column-major data, or `into_parts` + `from_cuda_slices` if your buffers are already on GPU"
+        note = "if you need host data, use `argmax_to_host` (column-major) and transpose at the consumer; for staying on GPU see `into_parts` + `GpuMatrix::into_inner` (the zero-copy path doesn't produce host data)"
     )]
     pub fn argmax_to_host_row_major(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
         #[allow(deprecated)]
@@ -342,14 +352,24 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     /// are interpreted as column-major with shape `rows × cols` and must live
     /// on the same CUDA device as `ctx`.
     ///
-    /// Validation runs **before** either slice is moved: if any check fails,
-    /// the caller gets both `CudaSlice`s back via the function's drop semantics
-    /// only after the error is constructed, and no half-wrapped state is left
-    /// for `?`-unwinding to free. (A failed wrap inside the function body
-    /// would otherwise consume the matrix slice into a temporary `GpuMatrix`
-    /// that gets dropped during unwind, silently freeing the caller's
-    /// allocation — see the lookalike pattern in
-    /// [`GpuMatrix::from_cuda_slice`].)
+    /// All validation runs **before** either slice is wrapped: both raw
+    /// `CudaSlice`s remain live as plain locals until the final `Ok(Self {…})`,
+    /// so a failure path does not leave a half-wrapped `GpuMatrix` to be torn
+    /// down by `?`-unwinding. (A naïve `from_cuda_slice(matrix)? +
+    /// from_cuda_slice(argmax)?` would consume `matrix` into a `GpuMatrix` on
+    /// the first call; if the second call failed, the wrapped `matrix` would
+    /// be dropped during unwind, freeing the caller's allocation alongside a
+    /// destructor on a wrapper that should never have existed.)
+    ///
+    /// # Ownership on error
+    ///
+    /// Both `matrix` and `argmax` are taken by value; on any error they are
+    /// dropped at function exit, which calls `cuMemFree` on both underlying
+    /// allocations. The "no half-wrapped state" guarantee above means there is
+    /// only one destructor per slice (not one for the slice + one for a
+    /// partial wrap), but it does **not** mean the slices survive the call —
+    /// validate `rows`, `cols`, and both slices' devices before calling if you
+    /// need to retain them on rejection.
     ///
     /// # Errors
     ///
@@ -617,7 +637,15 @@ pub struct GpuTensor3<T: DeviceRepr> {
 impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuTensor3<T> {
     /// Allocate a zeroed batched GPU tensor.
     pub fn alloc(ctx: &CudaContext, batch: usize, rows: usize, cols: usize) -> Result<Self> {
-        let gpu_data = ctx.device().alloc_zeros::<T>(batch * rows * cols)?;
+        let len = batch
+            .checked_mul(rows)
+            .and_then(|n| n.checked_mul(cols))
+            .ok_or_else(|| {
+                CudaError::DimensionMismatch(format!(
+                    "batch * rows * cols overflows usize: {batch} * {rows} * {cols}"
+                ))
+            })?;
+        let gpu_data = ctx.device().alloc_zeros::<T>(len)?;
         Ok(Self {
             data: gpu_data,
             batch,
@@ -787,6 +815,25 @@ mod tests {
             Err(CudaError::DimensionMismatch(_)) => {}
             Err(e) => panic!("expected DimensionMismatch, got {e:?}"),
             Ok(_) => panic!("expected error for slice length 10 vs 3*4=12"),
+        }
+    }
+
+    #[test]
+    fn alloc_rejects_rows_cols_overflow() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        // `rows * cols` overflows usize. Before the fix, debug builds would
+        // panic inside alloc_zeros and release builds would wrap to a tiny
+        // length and silently accept the shape.
+        match GpuMatrix::<f32>::alloc(&ctx, usize::MAX, 2) {
+            Err(CudaError::DimensionMismatch(msg)) => assert!(
+                msg.contains("overflow"),
+                "expected overflow error, got: {msg}"
+            ),
+            Err(e) => panic!("expected DimensionMismatch(overflow), got {e:?}"),
+            Ok(_) => panic!("expected overflow rejection"),
         }
     }
 
