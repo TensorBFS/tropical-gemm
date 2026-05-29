@@ -1,7 +1,28 @@
 //! CUDA backend for tropical matrix multiplication.
 //!
 //! This crate provides GPU-accelerated tropical GEMM operations using CUDA.
-//! All matrices use **column-major** storage (matching tropical-gemm's Mat type).
+//!
+//! # Storage layouts
+//!
+//! Two matrix types coexist in the public API and they use *different* memory
+//! orders by design:
+//!
+//! - [`GpuMatrix`] (owned, BLAS-style) is **column-major**. This matches the
+//!   CPU `tropical_gemm::Mat` type and the kernels' internal layout, so it is
+//!   the preferred type for native Rust callers.
+//! - [`ExternalGpuMatrix`] (non-owning, for DLPack / PyTorch interop) is
+//!   **row-major** (C-contiguous). The external kernel launchers
+//!   (`launch_gemm_external_*`) compensate for this by swapping operands and
+//!   M↔N internally, so callers never have to transpose externally-owned data.
+//!
+//! The two paths produce correct kernel output **when each is fed data in its
+//! native order** — there is no runtime check, so picking the wrong constructor
+//! silently transposes. If you are unsure, prefer [`GpuMatrix`] and supply data
+//! in column-major order.
+//!
+//! Every other owned type in this crate — [`GpuTensor3`],
+//! [`GpuTensor3WithArgmax`], the `&[T]` slices accepted by top-level helpers
+//! like [`tropical_matmul_gpu`] — also follows the column-major convention.
 //!
 //! # Quick Start
 //!
@@ -41,6 +62,28 @@
 //! The convenience functions (`tropical_matmul_gpu`, etc.) use a lazily-initialized
 //! global context that persists across calls. This avoids the ~7 second NVRTC
 //! compilation overhead on each call.
+//!
+//! # Integer scalar types and data range
+//!
+//! For integer scalars (`i32`, `i64`) the tropical zero (`-inf` / `+inf`) is
+//! represented by a large in-band sentinel ([`SENTINEL_I32`] = 1e9,
+//! [`SENTINEL_I64`] = 2^60): MaxPlus uses `-SENTINEL`, MinPlus uses `+SENTINEL`.
+//! Tropical multiply is a plain integer add with no per-element guard, so input
+//! data must stay well clear of the sentinel:
+//!
+//! - **Fully reliable while `|data| < |S|/4`** ([`MAX_RELIABLE_DATA_I32`] ≈ 2.5e8,
+//!   [`MAX_RELIABLE_DATA_I64`] ≈ 2.9e17 — both one below `|S|/4`, which is excluded).
+//!   Results are correct and tropical-zero outputs are detectable with a threshold test.
+//! - For `|S|/4 ≤ |data| < |S|/3` results are still correct, but a genuine finite
+//!   result may dip past the `|S|/2` threshold and be misread as a tropical zero.
+//! - For `|data| ≥ |S|/3` a real contribution can be masked by a `sentinel + data`
+//!   term and the result is silently **wrong** — switch to `i64`, or scale data down.
+//!
+//! Detect a tropical-zero output entry with a threshold (e.g. `v <= -SENTINEL_I32/2`
+//! for MaxPlus), not `v == -SENTINEL_I32`: the value drifts to `sentinel + data`
+//! rather than landing exactly on the sentinel. The boundaries above are measured
+//! in `examples/int_range_limits.rs`. (`f32`/`f64` use real IEEE infinities and
+//! have none of these limits.)
 
 mod context;
 mod error;
@@ -143,6 +186,34 @@ pub use memory::{
     ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, ExternalGpuTensor3, GpuMatrix,
     GpuMatrixWithArgmax, GpuTensor3, GpuTensor3WithArgmax,
 };
+
+// ============================================================================
+// Integer data-range constants
+// ============================================================================
+// See the crate-level "Integer scalar types and data range" docs for the full
+// story. These mirror NEG_INF_I32/INF_I32/NEG_INF_I64 in the kernel source
+// (kernels/tropical_gemm.cu) — keep the two in sync.
+
+/// Magnitude of the `i32` tropical-zero sentinel. The MaxPlus zero (`-inf`) is
+/// `-SENTINEL_I32` and the MinPlus zero (`+inf`) is `+SENTINEL_I32`.
+pub const SENTINEL_I32: i32 = 1_000_000_000;
+
+/// Magnitude of the `i64` tropical-zero sentinel (`2^60`). See [`SENTINEL_I32`].
+pub const SENTINEL_I64: i64 = 1 << 60;
+
+/// Largest input-data magnitude for which `i32` integer GEMM is fully reliable
+/// (`SENTINEL_I32 / 4 - 1` = 249_999_999, ≈ 2.5e8). The bound is *strict*
+/// (`|data| < |S|/4`): at exactly `|data| = |S|/4` a genuine finite result equals
+/// `-|S|/2`, which lands on the inclusive `|v| >= |S|/2` detection threshold and
+/// would be misread as a tropical zero — so `|S|/4` itself is excluded. Above this
+/// a result can be silently wrong; see the crate-level "Integer scalar types and
+/// data range" docs.
+pub const MAX_RELIABLE_DATA_I32: i32 = SENTINEL_I32 / 4 - 1;
+
+/// Largest input-data magnitude for which `i64` integer GEMM is fully reliable
+/// (`SENTINEL_I64 / 4 - 1` ≈ 2.9e17). See [`MAX_RELIABLE_DATA_I32`] for why the
+/// bound excludes `|S|/4` itself.
+pub const MAX_RELIABLE_DATA_I64: i64 = SENTINEL_I64 / 4 - 1;
 
 use cudarc::driver::{DeviceRepr, ValidAsZeroBits};
 
@@ -841,7 +912,7 @@ where
 pub fn tropical_backward_a_gpu_kernel(
     ctx: &CudaContext,
     grad_c: &GpuMatrix<f32>,
-    argmax: &cudarc::driver::CudaSlice<i32>,
+    argmax: &cudarc::driver::CudaSlice<ArgmaxIndex>,
     m: usize,
     k: usize,
     n: usize,
@@ -901,7 +972,7 @@ pub fn tropical_backward_a_gpu_kernel(
 pub fn tropical_backward_b_gpu_kernel(
     ctx: &CudaContext,
     grad_c: &GpuMatrix<f32>,
-    argmax: &cudarc::driver::CudaSlice<i32>,
+    argmax: &cudarc::driver::CudaSlice<ArgmaxIndex>,
     m: usize,
     k: usize,
     n: usize,
@@ -1072,8 +1143,11 @@ mod tests {
     use tropical_gemm::types::{TropicalMaxPlus, TropicalMinPlus};
 
     /// Helper to check if CUDA is available
-    fn cuda_context_or_skip() -> Option<CudaContext> {
-        let result = std::panic::catch_unwind(|| CudaContext::new());
+    fn cuda_context_or_skip() -> Option<&'static CudaContext> {
+        // One context shared across the whole test binary: NVRTC compiles once
+        // instead of per-test (~7s each). catch_unwind because cudarc panics
+        // rather than returning Err when libcuda is absent.
+        let result = std::panic::catch_unwind(crate::get_global_context);
         match result {
             Ok(Ok(ctx)) => Some(ctx),
             Ok(Err(e)) => {
@@ -1313,7 +1387,7 @@ mod tests {
                 for j in 0..n {
                     let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1386,7 +1460,7 @@ mod tests {
                 for j in 0..n {
                     let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1459,7 +1533,7 @@ mod tests {
                 for i in 0..m {
                     let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1958,11 +2032,11 @@ mod tests {
     fn test_tropical_gemm_gpu_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
             // Create matrices with incompatible dimensions
-            let a = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap();
-            let b = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // 2x3, not 3x2
-            let mut c = GpuMatrix::alloc(&ctx, 2, 3).unwrap();
+            let a = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let b = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // 2x3, not 3x2
+            let mut c = GpuMatrix::alloc(ctx, 2, 3).unwrap();
 
-            let result = tropical_gemm_gpu::<TropicalMaxPlus<f32>>(&ctx, &a, &b, &mut c);
+            let result = tropical_gemm_gpu::<TropicalMaxPlus<f32>>(ctx, &a, &b, &mut c);
             assert!(result.is_err());
         }
     }
@@ -1970,10 +2044,10 @@ mod tests {
     #[test]
     fn test_tropical_matmul_gpu_with_ctx_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let a = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap();
-            let b = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // Wrong dimensions
+            let a = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let b = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // Wrong dimensions
 
-            let result = tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(&ctx, &a, &b);
+            let result = tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(ctx, &a, &b);
             assert!(result.is_err());
         }
     }
@@ -1982,7 +2056,7 @@ mod tests {
     fn test_gpu_memory_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
             // Try to create matrix with wrong data size
-            let result = GpuMatrix::<f32>::from_host_row_major(&ctx, &vec![1.0f32; 5], 2, 3);
+            let result = GpuMatrix::<f32>::from_host_row_major(ctx, &vec![1.0f32; 5], 2, 3);
             assert!(result.is_err());
         }
     }
@@ -1990,7 +2064,7 @@ mod tests {
     #[test]
     fn test_gpu_memory_col_major_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let result = GpuMatrix::<f32>::from_host_col_major(&ctx, &vec![1.0f32; 5], 2, 3);
+            let result = GpuMatrix::<f32>::from_host_col_major(ctx, &vec![1.0f32; 5], 2, 3);
             assert!(result.is_err());
         }
     }
@@ -1998,7 +2072,7 @@ mod tests {
     #[test]
     fn test_gpu_matrix_accessors() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let mat = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let mat = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
             assert_eq!(mat.rows(), 2);
             assert_eq!(mat.cols(), 3);
             assert_eq!(mat.ld(), 2); // Column-major leading dimension = rows
@@ -2008,7 +2082,7 @@ mod tests {
     #[test]
     fn test_gpu_matrix_with_argmax_accessors() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let mat = GpuMatrixWithArgmax::<f32>::alloc(&ctx, 2, 3).unwrap();
+            let mat = GpuMatrixWithArgmax::<f32>::alloc(ctx, 2, 3).unwrap();
             assert_eq!(mat.rows(), 2);
             assert_eq!(mat.cols(), 3);
         }
@@ -2018,8 +2092,8 @@ mod tests {
     fn test_gpu_matrix_col_major_roundtrip() {
         if let Some(ctx) = cuda_context_or_skip() {
             let data: Vec<f32> = (0..6).map(|i| i as f32).collect();
-            let mat = GpuMatrix::from_host_col_major(&ctx, &data, 2, 3).unwrap();
-            let back = mat.to_host_col_major(&ctx).unwrap();
+            let mat = GpuMatrix::from_host_col_major(ctx, &data, 2, 3).unwrap();
+            let back = mat.to_host_col_major(ctx).unwrap();
             assert_eq!(data, back);
         }
     }

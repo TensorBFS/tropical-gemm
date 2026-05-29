@@ -12,13 +12,33 @@
 #define INF_F64 __longlong_as_double(0x7ff0000000000000LL)
 #define NEG_INF_F64 __longlong_as_double(0xfff0000000000000LL)
 
-// Integer "infinity" constants (sentinel values for tropical zero)
-// Use sqrt(typemin) to avoid overflow: sqrt(x) + sqrt(x) = 2*sqrt(x) << x
-// sqrt(2^31) ≈ 46340, sqrt(2^63) ≈ 3037000499
-#define INF_I32 46340
-#define NEG_INF_I32 (-46340)
-#define INF_I64 3037000499LL
-#define NEG_INF_I64 (-3037000499LL)
+// Integer "infinity" constants (sentinel values for the tropical zero).
+// Integers can't hold a true -inf/+inf, so we stand it in with a large-magnitude
+// value S. Multiply is a bare add (no per-element guard, no output clamp): the
+// tropical zero is just this big number, and `S + data` stays deep in sentinel
+// territory, so it keeps absorbing in every max/min. The literal value drifts
+// (you get `S + data`, not exactly `S`) — that is harmless; detect a tropical-zero
+// result with a threshold (`<= NEG_INF_I32/2` / `>= INF_I32/2`), not `== S`.
+//
+// SAFE DATA RANGE (measured, see examples/int_range_limits.rs):
+//   keep |data| < |S|/4  ->  i32: < 2.5e8,  i64: < 2^58 (~2.9e17).
+// In this range every result is correct AND a tropical-zero output is reliably
+// detected by the threshold test (value <= NEG_INF_I32/2, etc.). Two softer
+// limits lie just beyond:
+//   * |S|/4 <= |data| < |S|/3 : values are still correct, but a finite result can
+//     dip past the S/2 threshold and be misread as the tropical zero.
+//   * |data| >= |S|/3 : a real path (weight up to 2*|data|) can be masked by a
+//     "no-edge + data" term (= S + data) and silently lost -> WRONG result.
+// Overflow is never the issue: the largest intermediate is 2*S, and 2e9 < INT_MAX
+// / 2^61 < INT64_MAX regardless of |data|. If your data exceeds the i32 bound,
+// switch to i64 (~2.9e17 of headroom).
+//
+// These values are mirrored as SENTINEL_I32 / SENTINEL_I64 (and MAX_RELIABLE_DATA_*)
+// in the Rust crate root (src/lib.rs) — keep the two in sync.
+#define INF_I32 (1000000000)
+#define NEG_INF_I32 (-1000000000)
+#define INF_I64 (1LL << 60)
+#define NEG_INF_I64 (-(1LL << 60))
 
 // Memory layout helpers
 #define OFFSET_COL(row, col, ld) ((col) * (ld) + (row))
@@ -29,25 +49,13 @@ __device__ __forceinline__ int min_i32(int a, int b) { return a < b ? a : b; }
 __device__ __forceinline__ long long max_i64(long long a, long long b) { return a > b ? a : b; }
 __device__ __forceinline__ long long min_i64(long long a, long long b) { return a < b ? a : b; }
 
-// Saturating addition for MaxPlus (propagates -infinity)
-__device__ __forceinline__ int saturating_add_maxplus_i32(int a, int b) {
-    if (a == NEG_INF_I32 || b == NEG_INF_I32) return NEG_INF_I32;
-    return a + b;
-}
-__device__ __forceinline__ long long saturating_add_maxplus_i64(long long a, long long b) {
-    if (a == NEG_INF_I64 || b == NEG_INF_I64) return NEG_INF_I64;
-    return a + b;
-}
-
-// Saturating addition for MinPlus (propagates +infinity)
-__device__ __forceinline__ int saturating_add_minplus_i32(int a, int b) {
-    if (a == INF_I32 || b == INF_I32) return INF_I32;
-    return a + b;
-}
-__device__ __forceinline__ long long saturating_add_minplus_i64(long long a, long long b) {
-    if (a == INF_I64 || b == INF_I64) return INF_I64;
-    return a + b;
-}
+// Tropical multiply for integer MaxPlus/MinPlus is a bare add: no per-element
+// guard, no output clamp. The tropical zero is the large sentinel above, so
+// `S + data` stays in sentinel territory and keeps absorbing in every max/min
+// (its literal value drifts to `S + data`, which is harmless — see the data-range
+// note above). This is ~2.4x faster than the old per-multiply saturating guard.
+__device__ __forceinline__ int add_i32(int a, int b) { return a + b; }
+__device__ __forceinline__ long long add_i64(long long a, long long b) { return a + b; }
 
 // Simple multiplication for MaxMul integer types
 // For MaxMul: zero = 0, one = 1, add = max, mul = *
@@ -58,6 +66,19 @@ __device__ __forceinline__ int mul_i32(int a, int b) {
 __device__ __forceinline__ long long mul_i64(long long a, long long b) {
     return a * b;
 }
+
+// Drifted tropical-zero detection for argmax canonicalization. A no-contribution
+// output cell's value sits in "infinity territory" (past S/2) after the
+// guard-free add drifts it (`S + data`). Used ONLY at the O(M*N) write-out (not
+// in the inner loop) to reset such a cell's argmax to the seed 0, so the result
+// is a deterministic, repo-wide value instead of a data-dependent k.
+// maxmul's 0 is a true absorbing zero (0 * x = 0, never drifts) -> zero_never.
+__device__ __forceinline__ bool zero_maxplus_i32(int v)        { return v <= NEG_INF_I32 / 2; }
+__device__ __forceinline__ bool zero_minplus_i32(int v)        { return v >= INF_I32 / 2; }
+__device__ __forceinline__ bool zero_never_i32(int v)          { (void)v; return false; }
+__device__ __forceinline__ bool zero_maxplus_i64(long long v)  { return v <= NEG_INF_I64 / 2; }
+__device__ __forceinline__ bool zero_minplus_i64(long long v)  { return v >= INF_I64 / 2; }
+__device__ __forceinline__ bool zero_never_i64(long long v)    { (void)v; return false; }
 
 // atomicAdd for double (not supported on all architectures)
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 600
@@ -302,7 +323,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 // I32 GEMM KERNEL MACRO
 // ============================================================================
 // Block sizes for i32: 64x32x64, Thread sizes: 4x4 (same as f32)
-// Uses function-based multiply for saturating arithmetic
+// Multiply is a bare add (MUL_FN); the tropical zero is a large sentinel.
 
 #define TROPICAL_GEMM_I32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN)           \
 extern "C" __global__ void KERNEL_NAME(                                        \
@@ -528,7 +549,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const float* __restrict__ A,                                               \
     const float* __restrict__ B,                                               \
     float* __restrict__ C,                                                     \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 64;                                               \
@@ -647,7 +668,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const double* __restrict__ A,                                              \
     const double* __restrict__ B,                                              \
     double* __restrict__ C,                                                    \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 32;                                               \
@@ -761,12 +782,12 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 // I32 GEMM WITH ARGMAX KERNEL MACRO
 // ============================================================================
 
-#define TROPICAL_GEMM_ARGMAX_I32(KERNEL_NAME, INIT_VAL, COMPARE_OP, MUL_FN)    \
+#define TROPICAL_GEMM_ARGMAX_I32(KERNEL_NAME, INIT_VAL, COMPARE_OP, MUL_FN, ZERO_FN) \
 extern "C" __global__ void KERNEL_NAME(                                        \
     const int* __restrict__ A,                                                 \
     const int* __restrict__ B,                                                 \
     int* __restrict__ C,                                                       \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 64;                                               \
@@ -870,7 +891,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
                 int out_idx = OFFSET_COL(row, col, M);                         \
                 int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
                 C[out_idx] = accum[local_idx];                                 \
-                argmax[out_idx] = accum_idx[local_idx];                        \
+                argmax[out_idx] = ZERO_FN(accum[local_idx]) ? 0 : accum_idx[local_idx]; \
             }                                                                  \
         }                                                                      \
     }                                                                          \
@@ -880,12 +901,12 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 // I64 GEMM WITH ARGMAX KERNEL MACRO
 // ============================================================================
 
-#define TROPICAL_GEMM_ARGMAX_I64(KERNEL_NAME, INIT_VAL, COMPARE_OP, MUL_FN)    \
+#define TROPICAL_GEMM_ARGMAX_I64(KERNEL_NAME, INIT_VAL, COMPARE_OP, MUL_FN, ZERO_FN) \
 extern "C" __global__ void KERNEL_NAME(                                        \
     const long long* __restrict__ A,                                           \
     const long long* __restrict__ B,                                           \
     long long* __restrict__ C,                                                 \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 32;                                               \
@@ -989,7 +1010,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
                 int out_idx = OFFSET_COL(row, col, M);                         \
                 int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
                 C[out_idx] = accum[local_idx];                                 \
-                argmax[out_idx] = accum_idx[local_idx];                        \
+                argmax[out_idx] = ZERO_FN(accum[local_idx]) ? 0 : accum_idx[local_idx]; \
             }                                                                  \
         }                                                                      \
     }                                                                          \
@@ -1002,7 +1023,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 #define TROPICAL_BACKWARD_A(KERNEL_NAME, TYPE, ATOMIC_ADD)                     \
 extern "C" __global__ void KERNEL_NAME(                                        \
     const TYPE* __restrict__ grad_c,                                           \
-    const int* __restrict__ argmax,                                            \
+    const unsigned int* __restrict__ argmax,                                   \
     TYPE* __restrict__ grad_a,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
@@ -1010,7 +1031,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     int total = M * N;                                                         \
     if (idx < total) {                                                         \
         int i = idx % M;                                                       \
-        int k = argmax[idx];                                                   \
+        int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
             ATOMIC_ADD(&grad_a[i + k * M], grad_c[idx]);                       \
         }                                                                      \
@@ -1020,7 +1041,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 #define TROPICAL_BACKWARD_B(KERNEL_NAME, TYPE, ATOMIC_ADD)                     \
 extern "C" __global__ void KERNEL_NAME(                                        \
     const TYPE* __restrict__ grad_c,                                           \
-    const int* __restrict__ argmax,                                            \
+    const unsigned int* __restrict__ argmax,                                   \
     TYPE* __restrict__ grad_b,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
@@ -1028,7 +1049,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     int total = M * N;                                                         \
     if (idx < total) {                                                         \
         int j = idx / M;                                                       \
-        int k = argmax[idx];                                                   \
+        int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
             ATOMIC_ADD(&grad_b[k + j * K], grad_c[idx]);                       \
         }                                                                      \
@@ -1060,24 +1081,25 @@ TROPICAL_GEMM_ARGMAX_F64(tropical_minplus_f64_nn_with_argmax, INF_F64,     <, +)
 TROPICAL_GEMM_ARGMAX_F64(tropical_maxmul_f64_nn_with_argmax,  0.0,         >, *)
 
 // --- I32 Basic GEMM Kernels ---
-TROPICAL_GEMM_I32(tropical_maxplus_i32_nn, NEG_INF_I32, max_i32, saturating_add_maxplus_i32)
-TROPICAL_GEMM_I32(tropical_minplus_i32_nn, INF_I32,     min_i32, saturating_add_minplus_i32)
+TROPICAL_GEMM_I32(tropical_maxplus_i32_nn, NEG_INF_I32, max_i32, add_i32)
+TROPICAL_GEMM_I32(tropical_minplus_i32_nn, INF_I32,     min_i32, add_i32)
 TROPICAL_GEMM_I32(tropical_maxmul_i32_nn,  0,           max_i32, mul_i32)
 
 // --- I64 Basic GEMM Kernels ---
-TROPICAL_GEMM_I64(tropical_maxplus_i64_nn, NEG_INF_I64, max_i64, saturating_add_maxplus_i64)
-TROPICAL_GEMM_I64(tropical_minplus_i64_nn, INF_I64,     min_i64, saturating_add_minplus_i64)
+TROPICAL_GEMM_I64(tropical_maxplus_i64_nn, NEG_INF_I64, max_i64, add_i64)
+TROPICAL_GEMM_I64(tropical_minplus_i64_nn, INF_I64,     min_i64, add_i64)
 TROPICAL_GEMM_I64(tropical_maxmul_i64_nn,  0LL,         max_i64, mul_i64)
 
 // --- I32 GEMM with Argmax Kernels ---
-TROPICAL_GEMM_ARGMAX_I32(tropical_maxplus_i32_nn_with_argmax, NEG_INF_I32, >, saturating_add_maxplus_i32)
-TROPICAL_GEMM_ARGMAX_I32(tropical_minplus_i32_nn_with_argmax, INF_I32,     <, saturating_add_minplus_i32)
-TROPICAL_GEMM_ARGMAX_I32(tropical_maxmul_i32_nn_with_argmax,  0,           >, mul_i32)
+// ZERO_FN canonicalizes a drifted tropical-zero cell's argmax to 0 at write-out.
+TROPICAL_GEMM_ARGMAX_I32(tropical_maxplus_i32_nn_with_argmax, NEG_INF_I32, >, add_i32, zero_maxplus_i32)
+TROPICAL_GEMM_ARGMAX_I32(tropical_minplus_i32_nn_with_argmax, INF_I32,     <, add_i32, zero_minplus_i32)
+TROPICAL_GEMM_ARGMAX_I32(tropical_maxmul_i32_nn_with_argmax,  0,           >, mul_i32, zero_never_i32)
 
 // --- I64 GEMM with Argmax Kernels ---
-TROPICAL_GEMM_ARGMAX_I64(tropical_maxplus_i64_nn_with_argmax, NEG_INF_I64, >, saturating_add_maxplus_i64)
-TROPICAL_GEMM_ARGMAX_I64(tropical_minplus_i64_nn_with_argmax, INF_I64,     <, saturating_add_minplus_i64)
-TROPICAL_GEMM_ARGMAX_I64(tropical_maxmul_i64_nn_with_argmax,  0LL,         >, mul_i64)
+TROPICAL_GEMM_ARGMAX_I64(tropical_maxplus_i64_nn_with_argmax, NEG_INF_I64, >, add_i64, zero_maxplus_i64)
+TROPICAL_GEMM_ARGMAX_I64(tropical_minplus_i64_nn_with_argmax, INF_I64,     <, add_i64, zero_minplus_i64)
+TROPICAL_GEMM_ARGMAX_I64(tropical_maxmul_i64_nn_with_argmax,  0LL,         >, mul_i64, zero_never_i64)
 
 // --- Backward Pass Kernels (float/double only, no integer gradients) ---
 TROPICAL_BACKWARD_A(tropical_backward_a_f32, float,  atomicAdd)
@@ -1096,7 +1118,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const float* __restrict__ A,                                               \
     const float* __restrict__ B,                                               \
     float* __restrict__ C,                                                     \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K,                                                       \
     int strideA, int strideB, int strideC                                      \
 ) {                                                                            \
