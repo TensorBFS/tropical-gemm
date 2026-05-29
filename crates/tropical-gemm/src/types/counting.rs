@@ -115,6 +115,14 @@ impl<T: TropicalScalar, C: TropicalScalar> TropicalWithArgmax for CountingTropic
             )
         }
     }
+
+    #[inline(always)]
+    fn is_no_contribution(&self) -> bool {
+        // CountingTropical uses MaxPlus value semantics (zero = -∞), so a
+        // no-contribution cell's value drifts under the guard-free `+` exactly
+        // like TropicalMaxPlus and must be canonicalized the same way.
+        self.value.is_drifted_neg_zero()
+    }
 }
 
 impl<T: TropicalScalar, C: TropicalScalar> SimdTropical for CountingTropical<T, C> {

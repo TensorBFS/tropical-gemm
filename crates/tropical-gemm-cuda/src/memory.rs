@@ -756,8 +756,11 @@ mod tests {
     use super::*;
 
     /// Skip test gracefully when no CUDA device is present.
-    fn cuda_context_or_skip() -> Option<CudaContext> {
-        match std::panic::catch_unwind(CudaContext::new) {
+    fn cuda_context_or_skip() -> Option<&'static CudaContext> {
+        // One context shared across the whole test binary: NVRTC compiles once
+        // instead of per-test (~7s each). catch_unwind because cudarc panics
+        // rather than returning Err when libcuda is absent.
+        match std::panic::catch_unwind(crate::get_global_context) {
             Ok(Ok(ctx)) => Some(ctx),
             Ok(Err(e)) => {
                 println!("CUDA not available ({e:?}), skipping test");
@@ -779,11 +782,11 @@ mod tests {
         let host: Vec<f32> = (0..12).map(|i| i as f32).collect();
         let slice = ctx.device().htod_sync_copy(&host).unwrap();
 
-        let mat = GpuMatrix::<f32>::from_cuda_slice(&ctx, slice, 3, 4).unwrap();
+        let mat = GpuMatrix::<f32>::from_cuda_slice(ctx, slice, 3, 4).unwrap();
         assert_eq!(mat.rows(), 3);
         assert_eq!(mat.cols(), 4);
 
-        let downloaded = mat.to_host(&ctx).unwrap();
+        let downloaded = mat.to_host(ctx).unwrap();
         assert_eq!(downloaded, host);
     }
 
@@ -794,13 +797,13 @@ mod tests {
         };
 
         let host = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let original = GpuMatrix::from_host(&ctx, &host, 2, 3).unwrap();
+        let original = GpuMatrix::from_host(ctx, &host, 2, 3).unwrap();
 
         // into_inner → from_cuda_slice round-trip with no data motion
         let inner = original.into_inner();
-        let rebuilt = GpuMatrix::<f64>::from_cuda_slice(&ctx, inner, 2, 3).unwrap();
+        let rebuilt = GpuMatrix::<f64>::from_cuda_slice(ctx, inner, 2, 3).unwrap();
 
-        let downloaded = rebuilt.to_host(&ctx).unwrap();
+        let downloaded = rebuilt.to_host(ctx).unwrap();
         assert_eq!(downloaded, host);
     }
 
@@ -811,7 +814,7 @@ mod tests {
         };
 
         let slice = ctx.device().alloc_zeros::<f32>(10).unwrap();
-        match GpuMatrix::<f32>::from_cuda_slice(&ctx, slice, 3, 4) {
+        match GpuMatrix::<f32>::from_cuda_slice(ctx, slice, 3, 4) {
             Err(CudaError::DimensionMismatch(_)) => {}
             Err(e) => panic!("expected DimensionMismatch, got {e:?}"),
             Ok(_) => panic!("expected error for slice length 10 vs 3*4=12"),
@@ -827,7 +830,7 @@ mod tests {
         // `rows * cols` overflows usize. Before the fix, debug builds would
         // panic inside alloc_zeros and release builds would wrap to a tiny
         // length and silently accept the shape.
-        match GpuMatrix::<f32>::alloc(&ctx, usize::MAX, 2) {
+        match GpuMatrix::<f32>::alloc(ctx, usize::MAX, 2) {
             Err(CudaError::DimensionMismatch(msg)) => assert!(
                 msg.contains("overflow"),
                 "expected overflow error, got: {msg}"
@@ -847,7 +850,7 @@ mod tests {
         // must come from validate_dims_len's checked_mul — NOT from the length
         // comparison (which would otherwise read a wrapped product).
         let slice = ctx.device().alloc_zeros::<f32>(4).unwrap();
-        match GpuMatrix::<f32>::from_cuda_slice(&ctx, slice, usize::MAX, 2) {
+        match GpuMatrix::<f32>::from_cuda_slice(ctx, slice, usize::MAX, 2) {
             Err(CudaError::DimensionMismatch(msg)) => {
                 assert!(
                     msg.contains("overflow"),
@@ -872,10 +875,10 @@ mod tests {
         let arg_slice = ctx.device().htod_sync_copy(&arg_host).unwrap();
 
         let pair =
-            GpuMatrixWithArgmax::<f32>::from_cuda_slices(&ctx, mat_slice, arg_slice, 2, 2).unwrap();
+            GpuMatrixWithArgmax::<f32>::from_cuda_slices(ctx, mat_slice, arg_slice, 2, 2).unwrap();
 
-        assert_eq!(pair.matrix_to_host(&ctx).unwrap(), mat_host);
-        assert_eq!(pair.argmax_to_host(&ctx).unwrap(), arg_host);
+        assert_eq!(pair.matrix_to_host(ctx).unwrap(), mat_host);
+        assert_eq!(pair.argmax_to_host(ctx).unwrap(), arg_host);
     }
 
     #[test]
@@ -890,7 +893,7 @@ mod tests {
         // call-site diagnosis.
         let bad_mat = ctx.device().alloc_zeros::<f32>(3).unwrap();
         let good_arg = ctx.device().alloc_zeros::<ArgmaxIndex>(4).unwrap();
-        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(&ctx, bad_mat, good_arg, 2, 2) {
+        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(ctx, bad_mat, good_arg, 2, 2) {
             Err(CudaError::DimensionMismatch(msg)) => assert!(
                 msg.starts_with("matrix:"),
                 "expected 'matrix:' attribution, got: {msg}"
@@ -902,7 +905,7 @@ mod tests {
         // Argmax slice has wrong length.
         let good_mat = ctx.device().alloc_zeros::<f32>(4).unwrap();
         let bad_arg = ctx.device().alloc_zeros::<ArgmaxIndex>(3).unwrap();
-        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(&ctx, good_mat, bad_arg, 2, 2) {
+        match GpuMatrixWithArgmax::<f32>::from_cuda_slices(ctx, good_mat, bad_arg, 2, 2) {
             Err(CudaError::DimensionMismatch(msg)) => assert!(
                 msg.starts_with("argmax:"),
                 "expected 'argmax:' attribution, got: {msg}"

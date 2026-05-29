@@ -71,6 +71,11 @@ impl<T: TropicalScalar> TropicalWithArgmax for TropicalMinPlus<T> {
             (rhs, rhs_idx)
         }
     }
+
+    #[inline(always)]
+    fn is_no_contribution(&self) -> bool {
+        self.0.is_drifted_pos_zero()
+    }
 }
 
 impl<T: TropicalScalar> SimdTropical for TropicalMinPlus<T> {

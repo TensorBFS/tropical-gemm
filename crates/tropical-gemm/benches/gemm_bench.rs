@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tropical_gemm::prelude::*;
+use tropical_gemm::TropicalScalar; // for `neg_infinity()` (not in the prelude)
 
 fn bench_tropical_gemm_f32(c: &mut Criterion) {
     let mut group = c.benchmark_group("TropicalGemm_f32");
@@ -75,6 +76,28 @@ fn bench_with_argmax(c: &mut Criterion) {
                 bench.iter(|| {
                     black_box(tropical_matmul_with_argmax::<TropicalMaxPlus<f64>>(
                         &a, n, n, &b, n,
+                    ))
+                });
+            },
+        );
+
+        // Integer (i32) argmax — the path the write-back canonicalization touches.
+        // Make every 8th row of A the tropical zero (`-∞`) so its whole output row
+        // is a "no contribution" cell; otherwise the canonicalization branch never
+        // fires and the bench would only measure the guard-free add.
+        let neg = <i32 as TropicalScalar>::neg_infinity();
+        let ai: Vec<i32> = (0..n * n)
+            .map(|i| if (i / n) % 8 == 0 { neg } else { (i % 100) as i32 })
+            .collect();
+        let bi: Vec<i32> = (0..n * n).map(|i| ((i + 50) % 100) as i32).collect();
+
+        group.bench_with_input(
+            BenchmarkId::new("MaxPlus_i32_with_argmax", n),
+            &n,
+            |bench, &n| {
+                bench.iter(|| {
+                    black_box(tropical_matmul_with_argmax::<TropicalMaxPlus<i32>>(
+                        &ai, n, n, &bi, n,
                     ))
                 });
             },
