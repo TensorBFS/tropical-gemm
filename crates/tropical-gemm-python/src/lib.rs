@@ -49,7 +49,7 @@ fn maxplus_matmul<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<f32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
     });
@@ -90,7 +90,7 @@ fn minplus_matmul<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<f32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
     });
@@ -132,7 +132,7 @@ fn maxplus_matmul_with_argmax<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_scalars, argmax_i32) = py.allow_threads(|| {
+    let (c_scalars, argmax_i32) = py.detach(|| {
         let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
             tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(&a_data, m, k, &b_data, n);
         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
@@ -180,7 +180,7 @@ fn minplus_matmul_with_argmax<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_scalars, argmax_i32) = py.allow_threads(|| {
+    let (c_scalars, argmax_i32) = py.detach(|| {
         let result: GemmWithArgmax<TropicalMinPlus<f32>> =
             tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(&a_data, m, k, &b_data, n);
         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
@@ -224,7 +224,7 @@ fn backward_a<'py>(
     let argmax_data = argmax.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_a = py.allow_threads(|| {
+    let grad_a = py.detach(|| {
         let mut grad_a = vec![0.0f32; m * k];
         for i in 0..m {
             for j in 0..n {
@@ -271,7 +271,7 @@ fn backward_b<'py>(
     let argmax_data = argmax.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_b = py.allow_threads(|| {
+    let grad_b = py.detach(|| {
         let mut grad_b = vec![0.0f32; k * n];
         for i in 0..m {
             for j in 0..n {
@@ -328,7 +328,7 @@ fn maxplus_matmul_2d<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<f32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
     });
@@ -364,7 +364,7 @@ fn minplus_matmul_2d<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<f32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
     });
@@ -400,7 +400,7 @@ fn maxmul_matmul_2d<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<f32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
     });
@@ -436,7 +436,7 @@ fn maxmul_matmul<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<f32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
     });
@@ -469,7 +469,7 @@ fn maxmul_matmul_with_argmax<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_scalars, argmax_i32) = py.allow_threads(|| {
+    let (c_scalars, argmax_i32) = py.detach(|| {
         let result: GemmWithArgmax<TropicalMaxMul<f32>> =
             tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(&a_data, m, k, &b_data, n);
         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
@@ -509,7 +509,7 @@ fn maxplus_matmul_f64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<f64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
     });
@@ -542,7 +542,7 @@ fn minplus_matmul_f64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<f64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
     });
@@ -575,7 +575,7 @@ fn maxmul_matmul_f64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<f64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
     });
@@ -610,7 +610,7 @@ fn maxplus_matmul_2d_f64<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<f64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
     });
@@ -643,7 +643,7 @@ fn minplus_matmul_2d_f64<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<f64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
     });
@@ -676,7 +676,7 @@ fn maxmul_matmul_2d_f64<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<f64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
     });
@@ -711,7 +711,7 @@ fn maxplus_matmul_with_argmax_f64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_scalars, argmax_i32) = py.allow_threads(|| {
+    let (c_scalars, argmax_i32) = py.detach(|| {
         let result: GemmWithArgmax<TropicalMaxPlus<f64>> =
             tropical_matmul_with_argmax::<TropicalMaxPlus<f64>>(&a_data, m, k, &b_data, n);
         let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
@@ -747,7 +747,7 @@ fn minplus_matmul_with_argmax_f64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_scalars, argmax_i32) = py.allow_threads(|| {
+    let (c_scalars, argmax_i32) = py.detach(|| {
         let result: GemmWithArgmax<TropicalMinPlus<f64>> =
             tropical_matmul_with_argmax::<TropicalMinPlus<f64>>(&a_data, m, k, &b_data, n);
         let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
@@ -783,7 +783,7 @@ fn maxmul_matmul_with_argmax_f64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_scalars, argmax_i32) = py.allow_threads(|| {
+    let (c_scalars, argmax_i32) = py.detach(|| {
         let result: GemmWithArgmax<TropicalMaxMul<f64>> =
             tropical_matmul_with_argmax::<TropicalMaxMul<f64>>(&a_data, m, k, &b_data, n);
         let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
@@ -811,7 +811,7 @@ fn backward_a_f64<'py>(
     let argmax_data = argmax.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_a = py.allow_threads(|| {
+    let grad_a = py.detach(|| {
         let mut grad_a = vec![0.0f64; m * k];
         for i in 0..m {
             for j in 0..n {
@@ -845,7 +845,7 @@ fn backward_b_f64<'py>(
     let argmax_data = argmax.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_b = py.allow_threads(|| {
+    let grad_b = py.detach(|| {
         let mut grad_b = vec![0.0f64; k * n];
         for i in 0..m {
             for j in 0..n {
@@ -891,7 +891,7 @@ fn maxmul_backward_a<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_a = py.allow_threads(|| {
+    let grad_a = py.detach(|| {
         let mut grad_a = vec![0.0f32; m * k];
         for i in 0..m {
             for j in 0..n {
@@ -931,7 +931,7 @@ fn maxmul_backward_b<'py>(
     let a_data = a.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_b = py.allow_threads(|| {
+    let grad_b = py.detach(|| {
         let mut grad_b = vec![0.0f32; k * n];
         for i in 0..m {
             for j in 0..n {
@@ -968,7 +968,7 @@ fn maxmul_backward_a_f64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_a = py.allow_threads(|| {
+    let grad_a = py.detach(|| {
         let mut grad_a = vec![0.0f64; m * k];
         for i in 0..m {
             for j in 0..n {
@@ -1004,7 +1004,7 @@ fn maxmul_backward_b_f64<'py>(
     let a_data = a.as_slice()?.to_vec();
 
     // Release GIL during compute
-    let grad_b = py.allow_threads(|| {
+    let grad_b = py.detach(|| {
         let mut grad_b = vec![0.0f64; k * n];
         for i in 0..m {
             for j in 0..n {
@@ -1050,7 +1050,7 @@ fn maxplus_matmul_i32<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<i32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
     });
@@ -1083,7 +1083,7 @@ fn minplus_matmul_i32<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<i32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
     });
@@ -1116,7 +1116,7 @@ fn maxmul_matmul_i32<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<i32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
     });
@@ -1151,7 +1151,7 @@ fn maxplus_matmul_2d_i32<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<i32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
     });
@@ -1184,7 +1184,7 @@ fn minplus_matmul_2d_i32<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<i32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
     });
@@ -1217,7 +1217,7 @@ fn maxmul_matmul_2d_i32<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<i32>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
     });
@@ -1256,7 +1256,7 @@ fn maxplus_matmul_i64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<i64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
     });
@@ -1289,7 +1289,7 @@ fn minplus_matmul_i64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<i64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
     });
@@ -1322,7 +1322,7 @@ fn maxmul_matmul_i64<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<i64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
     });
@@ -1357,7 +1357,7 @@ fn maxplus_matmul_2d_i64<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxPlus<i64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
     });
@@ -1390,7 +1390,7 @@ fn minplus_matmul_2d_i64<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMinPlus<i64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
     });
@@ -1423,7 +1423,7 @@ fn maxmul_matmul_2d_i64<'py>(
     let a_data = a.as_slice()?.to_vec();
     let b_data = b.as_slice()?.to_vec();
 
-    let c_scalars = py.allow_threads(|| {
+    let c_scalars = py.detach(|| {
         let c_data = tropical_matmul::<TropicalMaxMul<i64>>(&a_data, m, k, &b_data, n);
         c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
     });
@@ -1479,7 +1479,7 @@ fn maxplus_matmul_batched_with_argmax<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_result, argmax_result) = py.allow_threads(|| {
+    let (c_result, argmax_result) = py.detach(|| {
         let stride_a = m * k;
         let stride_b = k * n;
         let stride_c = m * n;
@@ -1550,7 +1550,7 @@ fn minplus_matmul_batched_with_argmax<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_result, argmax_result) = py.allow_threads(|| {
+    let (c_result, argmax_result) = py.detach(|| {
         let stride_a = m * k;
         let stride_b = k * n;
         let stride_c = m * n;
@@ -1621,7 +1621,7 @@ fn maxmul_matmul_batched_with_argmax<'py>(
     let b_data = b.as_slice()?.to_vec();
 
     // Release GIL during heavy compute
-    let (c_result, argmax_result) = py.allow_threads(|| {
+    let (c_result, argmax_result) = py.detach(|| {
         let stride_a = m * k;
         let stride_b = k * n;
         let stride_c = m * n;
@@ -1657,10 +1657,9 @@ fn maxmul_matmul_batched_with_argmax<'py>(
 #[cfg(feature = "cuda")]
 mod gpu {
     use super::*;
-    use dlpark::ffi::{DataType, DataTypeCode, Device, DeviceType};
-    use dlpark::{ManagerCtx, ManagedTensor, ShapeAndStrides, ToTensor, TensorView};
-    #[allow(deprecated)]
-    use pyo3::IntoPy;
+    use pyo3_dlpack::{
+        cuda_device, dtype_f32, dtype_u32, DLDeviceType, IntoDLPack, PyTensor, TensorInfo,
+    };
     use std::ffi::c_void;
     use tropical_gemm_cuda::{
         get_context_for_device, launch_gemm_external_batched_with_argmax_f32,
@@ -1673,7 +1672,7 @@ mod gpu {
     // DLPack wrapper types for GPU tensor export
     // ========================================================================
 
-    /// Wrapper for GpuTensor3<f32> that implements ToTensor for DLPack export.
+    /// Wrapper for GpuTensor3<f32> that implements IntoDLPack for DLPack export.
     ///
     /// This wrapper owns the GPU tensor and provides the necessary metadata
     /// for DLPack tensor exchange. The tensor data remains on GPU.
@@ -1694,45 +1693,27 @@ mod gpu {
         }
     }
 
-    impl ToTensor for DLPackGpuTensor3F32 {
-        fn data_ptr(&self) -> *mut c_void {
-            self.tensor.device_ptr() as *mut c_void
-        }
-
-        fn shape_and_strides(&self) -> ShapeAndStrides {
-            // Row-major (C-contiguous) strides for 3D tensor
-            ShapeAndStrides::new_contiguous(&self.shape)
-        }
-
-        fn device(&self) -> Device {
-            Device {
-                device_type: DeviceType::Cuda,
-                device_id: self.device_id,
-            }
-        }
-
-        fn dtype(&self) -> DataType {
-            DataType {
-                code: DataTypeCode::Float,
-                bits: 32,
-                lanes: 1,
-            }
-        }
-
-        fn byte_offset(&self) -> u64 {
-            0
+    impl IntoDLPack for DLPackGpuTensor3F32 {
+        fn tensor_info(&self) -> TensorInfo {
+            // Row-major (C-contiguous) 3D tensor on CUDA.
+            TensorInfo::contiguous(
+                self.tensor.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_f32(),
+                self.shape.to_vec(),
+            )
         }
     }
 
-    /// Wrapper for GpuTensor3<i32> (argmax indices) that implements ToTensor.
-    struct DLPackGpuTensor3I32 {
-        tensor: GpuTensor3<i32>,
+    /// Wrapper for GpuTensor3<u32> (argmax indices) that implements IntoDLPack.
+    struct DLPackGpuTensor3U32 {
+        tensor: GpuTensor3<u32>,
         shape: [i64; 3],
         device_id: i32,
     }
 
-    impl DLPackGpuTensor3I32 {
-        fn new(tensor: GpuTensor3<i32>, device_id: i32) -> Self {
+    impl DLPackGpuTensor3U32 {
+        fn new(tensor: GpuTensor3<u32>, device_id: i32) -> Self {
             let shape = [
                 tensor.batch() as i64,
                 tensor.rows() as i64,
@@ -1742,36 +1723,18 @@ mod gpu {
         }
     }
 
-    impl ToTensor for DLPackGpuTensor3I32 {
-        fn data_ptr(&self) -> *mut c_void {
-            self.tensor.device_ptr() as *mut c_void
-        }
-
-        fn shape_and_strides(&self) -> ShapeAndStrides {
-            ShapeAndStrides::new_contiguous(&self.shape)
-        }
-
-        fn device(&self) -> Device {
-            Device {
-                device_type: DeviceType::Cuda,
-                device_id: self.device_id,
-            }
-        }
-
-        fn dtype(&self) -> DataType {
-            DataType {
-                code: DataTypeCode::Int,
-                bits: 32,
-                lanes: 1,
-            }
-        }
-
-        fn byte_offset(&self) -> u64 {
-            0
+    impl IntoDLPack for DLPackGpuTensor3U32 {
+        fn tensor_info(&self) -> TensorInfo {
+            TensorInfo::contiguous(
+                self.tensor.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_u32(),
+                self.shape.to_vec(),
+            )
         }
     }
 
-    /// Wrapper for GpuMatrix<f32> (2D) that implements ToTensor for DLPack export.
+    /// Wrapper for GpuMatrix<f32> (2D) that implements IntoDLPack for DLPack export.
     struct DLPackGpuMatrixF32 {
         matrix: GpuMatrix<f32>,
         shape: [i64; 2],
@@ -1785,89 +1748,58 @@ mod gpu {
         }
     }
 
-    impl ToTensor for DLPackGpuMatrixF32 {
-        fn data_ptr(&self) -> *mut c_void {
-            self.matrix.device_ptr() as *mut c_void
-        }
-
-        fn shape_and_strides(&self) -> ShapeAndStrides {
-            // Row-major (C-contiguous) strides for 2D matrix
-            ShapeAndStrides::new_contiguous(&self.shape)
-        }
-
-        fn device(&self) -> Device {
-            Device {
-                device_type: DeviceType::Cuda,
-                device_id: self.device_id,
-            }
-        }
-
-        fn dtype(&self) -> DataType {
-            DataType {
-                code: DataTypeCode::Float,
-                bits: 32,
-                lanes: 1,
-            }
-        }
-
-        fn byte_offset(&self) -> u64 {
-            0
+    impl IntoDLPack for DLPackGpuMatrixF32 {
+        fn tensor_info(&self) -> TensorInfo {
+            // Row-major (C-contiguous) 2D matrix on CUDA.
+            TensorInfo::contiguous(
+                self.matrix.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_f32(),
+                self.shape.to_vec(),
+            )
         }
     }
 
-    /// Wrapper for GpuMatrix<i32> (2D argmax) that implements ToTensor for DLPack export.
-    struct DLPackGpuMatrixI32 {
-        matrix: GpuMatrix<i32>,
+    /// Wrapper for GpuMatrix<u32> (2D argmax) that implements IntoDLPack for DLPack export.
+    struct DLPackGpuMatrixU32 {
+        matrix: GpuMatrix<u32>,
         shape: [i64; 2],
         device_id: i32,
     }
 
-    impl DLPackGpuMatrixI32 {
-        fn new(matrix: GpuMatrix<i32>, device_id: i32) -> Self {
+    impl DLPackGpuMatrixU32 {
+        fn new(matrix: GpuMatrix<u32>, device_id: i32) -> Self {
             let shape = [matrix.rows() as i64, matrix.cols() as i64];
             Self { matrix, shape, device_id }
         }
     }
 
-    impl ToTensor for DLPackGpuMatrixI32 {
-        fn data_ptr(&self) -> *mut c_void {
-            self.matrix.device_ptr() as *mut c_void
-        }
-
-        fn shape_and_strides(&self) -> ShapeAndStrides {
-            ShapeAndStrides::new_contiguous(&self.shape)
-        }
-
-        fn device(&self) -> Device {
-            Device {
-                device_type: DeviceType::Cuda,
-                device_id: self.device_id,
-            }
-        }
-
-        fn dtype(&self) -> DataType {
-            DataType {
-                code: DataTypeCode::Int,
-                bits: 32,
-                lanes: 1,
-            }
-        }
-
-        fn byte_offset(&self) -> u64 {
-            0
+    impl IntoDLPack for DLPackGpuMatrixU32 {
+        fn tensor_info(&self) -> TensorInfo {
+            TensorInfo::contiguous(
+                self.matrix.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_u32(),
+                self.shape.to_vec(),
+            )
         }
     }
 
-    /// Helper function to extract ManagedTensor from a Python object.
+    /// Helper function to extract a PyTensor from a Python object.
     /// Calls __dlpack__() if available, otherwise tries direct extraction.
-    fn extract_dlpack_tensor(_py: Python, obj: &Bound<'_, pyo3::PyAny>) -> PyResult<ManagedTensor> {
-        // Try to call __dlpack__() method to get the capsule
-        if let Ok(capsule) = obj.call_method0("__dlpack__") {
-            // Extract ManagedTensor from the returned capsule
-            capsule.extract::<ManagedTensor>()
+    fn extract_dlpack_tensor(py: Python<'_>, obj: &Bound<'_, pyo3::PyAny>) -> PyResult<PyTensor> {
+        // Objects implementing the DLPack protocol expose __dlpack__();
+        // PyTensor::from_pyany calls it and consumes the returned capsule.
+        if obj.hasattr("__dlpack__")? {
+            PyTensor::from_pyany(py, obj)
         } else {
-            // Fallback: try direct extraction (for objects that are already capsules)
-            obj.extract::<ManagedTensor>()
+            // Fallback: the object is already a DLPack capsule.
+            let capsule = obj.cast::<pyo3::types::PyCapsule>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "Expected a DLPack tensor (with __dlpack__) or a DLPack capsule",
+                )
+            })?;
+            PyTensor::from_capsule(capsule)
         }
     }
 
@@ -2107,7 +2039,7 @@ mod gpu {
         py: Python<'_>,
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         dlpack_2d_impl(py, a, b, "tropical_maxplus_f32_nn_with_argmax", Algebra::MaxPlus)
     }
 
@@ -2119,7 +2051,7 @@ mod gpu {
         py: Python<'_>,
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         dlpack_2d_impl(py, a, b, "tropical_minplus_f32_nn_with_argmax", Algebra::MinPlus)
     }
 
@@ -2131,7 +2063,7 @@ mod gpu {
         py: Python<'_>,
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         dlpack_2d_impl(py, a, b, "tropical_maxmul_f32_nn_with_argmax", Algebra::MaxMul)
     }
 
@@ -2152,20 +2084,21 @@ mod gpu {
         b: Bound<'_, pyo3::PyAny>,
         kernel_name: &'static str,
         algebra: Algebra,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         // Extract tensor info from DLPack
         let a_tensor = extract_dlpack_tensor(py, &a)?;
         let b_tensor = extract_dlpack_tensor(py, &b)?;
 
         // Get device info
-        let a_device = TensorView::device(&a_tensor);
-        let b_device = TensorView::device(&b_tensor);
+        let a_device = a_tensor.device();
+        let b_device = b_tensor.device();
 
         // Validate: both tensors must be on the same device type
         if a_device.device_type != b_device.device_type {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Tensors must be on the same device type: A is on {:?}, B is on {:?}",
-                a_device.device_type, b_device.device_type
+                a_device.device_type_enum(),
+                b_device.device_type_enum()
             )));
         }
 
@@ -2180,8 +2113,8 @@ mod gpu {
         let device_id = a_device.device_id;
 
         // Get dtype and validate
-        let a_dtype = TensorView::dtype(&a_tensor);
-        let b_dtype = TensorView::dtype(&b_tensor);
+        let a_dtype = a_tensor.dtype();
+        let b_dtype = b_tensor.dtype();
         if a_dtype != b_dtype {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Tensors must have the same dtype: A is {:?}, B is {:?}",
@@ -2190,15 +2123,15 @@ mod gpu {
         }
 
         // Validate dtype is f32
-        if a_dtype.code != DataTypeCode::Float || a_dtype.bits != 32 {
+        if !a_dtype.is_f32() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "Only f32 tensors are supported for DLPack interface",
             ));
         }
 
         // Get shapes
-        let a_shape = TensorView::shape(&a_tensor);
-        let b_shape = TensorView::shape(&b_tensor);
+        let a_shape = a_tensor.shape();
+        let b_shape = b_tensor.shape();
 
         if a_shape.len() != 2 || b_shape.len() != 2 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -2229,8 +2162,8 @@ mod gpu {
         }
 
         // Check strides for contiguity
-        let a_strides = TensorView::strides(&a_tensor);
-        let b_strides = TensorView::strides(&b_tensor);
+        let a_strides = a_tensor.strides();
+        let b_strides = b_tensor.strides();
 
         // For row-major (C-contiguous): strides should be [cols, 1]
         let a_contiguous = a_strides.is_none()
@@ -2244,11 +2177,11 @@ mod gpu {
             ));
         }
 
-        match a_device.device_type {
-            DeviceType::Cuda => {
+        match a_device.device_type_enum() {
+            Some(DLDeviceType::Cuda) => {
                 // GPU path: zero-copy using DLPack
-                let a_ptr = TensorView::data_ptr(&a_tensor) as u64;
-                let b_ptr = TensorView::data_ptr(&b_tensor) as u64;
+                let a_ptr = a_tensor.data_ptr() as u64;
+                let b_ptr = b_tensor.data_ptr() as u64;
 
                 // Create external matrix views
                 let a_ext = unsafe { ExternalGpuMatrix::from_raw(a_ptr, m, k) };
@@ -2272,25 +2205,26 @@ mod gpu {
 
                 // Wrap in DLPack-compatible wrappers with correct device_id
                 let c_dlpack = DLPackGpuMatrixF32::new(c_matrix, device_id);
-                let argmax_dlpack = DLPackGpuMatrixI32::new(argmax_matrix, device_id);
+                let argmax_dlpack = DLPackGpuMatrixU32::new(argmax_matrix, device_id);
 
-                // Convert to DLPack capsules using ManagerCtx
-                let c_capsule = ManagerCtx::new(c_dlpack).into_py(py);
-                let argmax_capsule = ManagerCtx::new(argmax_dlpack).into_py(py);
+                // Export as DLPack capsules (ownership of the GPU tensors moves
+                // into the capsules; data stays on the device).
+                let c_capsule = c_dlpack.into_dlpack(py)?;
+                let argmax_capsule = argmax_dlpack.into_dlpack(py)?;
 
                 Ok((c_capsule, argmax_capsule))
             }
-            DeviceType::CudaHost => {
+            Some(DLDeviceType::CudaHost) => {
                 // CudaHost (pinned memory) is not supported - the pointer is a host pointer
                 // that cannot be used directly by CUDA kernels without explicit handling
                 Err(pyo3::exceptions::PyValueError::new_err(
                     "CudaHost (pinned memory) tensors are not supported. Use regular CUDA tensors.",
                 ))
             }
-            DeviceType::Cpu => {
+            Some(DLDeviceType::Cpu) => {
                 // CPU path: use existing CPU backend, return numpy arrays as PyObject
-                let a_ptr = TensorView::data_ptr(&a_tensor) as *const f32;
-                let b_ptr = TensorView::data_ptr(&b_tensor) as *const f32;
+                let a_ptr = a_tensor.data_ptr() as *const f32;
+                let b_ptr = b_tensor.data_ptr() as *const f32;
 
                 let a_data = unsafe { std::slice::from_raw_parts(a_ptr, m * k) };
                 let b_data = unsafe { std::slice::from_raw_parts(b_ptr, k * n) };
@@ -2332,7 +2266,7 @@ mod gpu {
             }
             _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Unsupported device type: {:?}",
-                a_device.device_type
+                a_device.device_type_enum()
             ))),
         }
     }
@@ -2379,7 +2313,7 @@ mod gpu {
         py: Python<'_>,
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         batched_dlpack_impl(py, a, b, "tropical_maxplus_f32_nn_batched_with_argmax")
     }
 
@@ -2391,7 +2325,7 @@ mod gpu {
         py: Python<'_>,
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         batched_dlpack_impl(py, a, b, "tropical_minplus_f32_nn_batched_with_argmax")
     }
 
@@ -2403,7 +2337,7 @@ mod gpu {
         py: Python<'_>,
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         batched_dlpack_impl(py, a, b, "tropical_maxmul_f32_nn_batched_with_argmax")
     }
 
@@ -2416,27 +2350,27 @@ mod gpu {
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
         kernel_name: &'static str,
-    ) -> PyResult<(PyObject, PyObject)> {
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         // Extract tensor info from DLPack
         let a_tensor = extract_dlpack_tensor(py, &a)?;
         let b_tensor = extract_dlpack_tensor(py, &b)?;
 
         // Get device info
-        let a_device = TensorView::device(&a_tensor);
-        let b_device = TensorView::device(&b_tensor);
+        let a_device = a_tensor.device();
+        let b_device = b_tensor.device();
 
         // Validate: must be on CUDA device (not CudaHost/pinned memory)
-        if a_device.device_type != DeviceType::Cuda {
+        if !a_device.is_cuda() {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "Tensor A must be on CUDA device, got {:?}. Use CPU batched functions for CPU tensors.",
-                a_device.device_type
+                a_device.device_type_enum()
             )));
         }
 
-        if b_device.device_type != DeviceType::Cuda {
+        if !b_device.is_cuda() {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "Tensor B must be on CUDA device, got {:?}. Use CPU batched functions for CPU tensors.",
-                b_device.device_type
+                b_device.device_type_enum()
             )));
         }
 
@@ -2450,8 +2384,8 @@ mod gpu {
         let device_id = a_device.device_id;
 
         // Get dtype and validate
-        let a_dtype = TensorView::dtype(&a_tensor);
-        let b_dtype = TensorView::dtype(&b_tensor);
+        let a_dtype = a_tensor.dtype();
+        let b_dtype = b_tensor.dtype();
         if a_dtype != b_dtype {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Tensors must have the same dtype: A is {:?}, B is {:?}",
@@ -2459,15 +2393,15 @@ mod gpu {
             )));
         }
 
-        if a_dtype.code != DataTypeCode::Float || a_dtype.bits != 32 {
+        if !a_dtype.is_f32() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "Only f32 tensors are supported for batched DLPack interface",
             ));
         }
 
         // Get shapes - must be 3D
-        let a_shape = TensorView::shape(&a_tensor);
-        let b_shape = TensorView::shape(&b_tensor);
+        let a_shape = a_tensor.shape();
+        let b_shape = b_tensor.shape();
 
         if a_shape.len() != 3 || b_shape.len() != 3 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -2507,8 +2441,8 @@ mod gpu {
         }
 
         // Check strides for contiguity (row-major per batch)
-        let a_strides = TensorView::strides(&a_tensor);
-        let b_strides = TensorView::strides(&b_tensor);
+        let a_strides = a_tensor.strides();
+        let b_strides = b_tensor.strides();
 
         // For 3D row-major (C-contiguous): strides should be [m*k, k, 1]
         let a_contiguous = a_strides.is_none()
@@ -2527,8 +2461,8 @@ mod gpu {
         }
 
         // GPU path: zero-copy using DLPack
-        let a_ptr = TensorView::data_ptr(&a_tensor) as u64;
-        let b_ptr = TensorView::data_ptr(&b_tensor) as u64;
+        let a_ptr = a_tensor.data_ptr() as u64;
+        let b_ptr = b_tensor.data_ptr() as u64;
 
         // Create external 3D tensor views
         let a_ext = unsafe { ExternalGpuTensor3::from_raw_contiguous(a_ptr, batch, m, k) };
@@ -2552,12 +2486,12 @@ mod gpu {
 
         // Wrap in DLPack-compatible wrappers with correct device_id
         let c_dlpack = DLPackGpuTensor3F32::new(c_tensor, device_id);
-        let argmax_dlpack = DLPackGpuTensor3I32::new(argmax_tensor, device_id);
+        let argmax_dlpack = DLPackGpuTensor3U32::new(argmax_tensor, device_id);
 
-        // Convert to DLPack capsules using ManagerCtx
-        // ManagerCtx owns the tensor and exports it as a DLPack capsule
-        let c_capsule = ManagerCtx::new(c_dlpack).into_py(py);
-        let argmax_capsule = ManagerCtx::new(argmax_dlpack).into_py(py);
+        // Export as DLPack capsules (ownership of the GPU tensors moves into the
+        // capsules; data stays on the device).
+        let c_capsule = c_dlpack.into_dlpack(py)?;
+        let argmax_capsule = argmax_dlpack.into_dlpack(py)?;
 
         Ok((c_capsule, argmax_capsule))
     }
