@@ -1140,7 +1140,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const float* A_batch = A + batch_idx * strideA;                            \
     const float* B_batch = B + batch_idx * strideB;                            \
     float* C_batch = C + batch_idx * strideC;                                  \
-    int* argmax_batch = argmax + batch_idx * strideC;                          \
+    unsigned int* argmax_batch = argmax + batch_idx * strideC;                          \
                                                                                \
     const int tid = threadIdx.y * bszm + threadIdx.x;                          \
                                                                                \
