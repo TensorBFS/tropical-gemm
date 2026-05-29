@@ -354,7 +354,7 @@ where
 // Argmax methods on Mat
 impl<S> Mat<S>
 where
-    S: TropicalWithArgmax<Index = i32> + KernelDispatch,
+    S: TropicalWithArgmax<Index = u32> + KernelDispatch,
     S::Scalar: Copy,
 {
     /// Perform tropical matrix multiplication with argmax tracking.

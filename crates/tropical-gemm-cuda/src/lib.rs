@@ -912,7 +912,7 @@ where
 pub fn tropical_backward_a_gpu_kernel(
     ctx: &CudaContext,
     grad_c: &GpuMatrix<f32>,
-    argmax: &cudarc::driver::CudaSlice<i32>,
+    argmax: &cudarc::driver::CudaSlice<ArgmaxIndex>,
     m: usize,
     k: usize,
     n: usize,
@@ -972,7 +972,7 @@ pub fn tropical_backward_a_gpu_kernel(
 pub fn tropical_backward_b_gpu_kernel(
     ctx: &CudaContext,
     grad_c: &GpuMatrix<f32>,
-    argmax: &cudarc::driver::CudaSlice<i32>,
+    argmax: &cudarc::driver::CudaSlice<ArgmaxIndex>,
     m: usize,
     k: usize,
     n: usize,
@@ -1387,7 +1387,7 @@ mod tests {
                 for j in 0..n {
                     let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1460,7 +1460,7 @@ mod tests {
                 for j in 0..n {
                     let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1533,7 +1533,7 @@ mod tests {
                 for i in 0..m {
                     let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,

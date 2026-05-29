@@ -399,16 +399,16 @@ where
     /// Returns data in column-major order.
     pub fn to_mat_with_argmax(&self, ctx: &CudaContext) -> Result<MatWithArgmax<S>>
     where
-        S: tropical_gemm::TropicalWithArgmax<Index = i32>,
+        S: tropical_gemm::TropicalWithArgmax<Index = u32>,
         S::Scalar: Copy,
     {
         let values_data = self.inner.matrix_to_host(ctx)?;
         let argmax_data = self.inner.argmax_to_host(ctx)?;
 
         let values = Mat::from_col_major(&values_data, self.nrows(), self.ncols());
-        // GPU argmax buffers are already `i32` (ArgmaxIndex), matching the core
-        // crate's `MatWithArgmax::argmax: Vec<i32>` since the u32 -> i32 migration.
-        let argmax: Vec<i32> = argmax_data;
+        // GPU argmax buffers are `u32` (`ArgmaxIndex`), matching the core crate's
+        // `MatWithArgmax::argmax: Vec<u32>` — no conversion needed.
+        let argmax: Vec<u32> = argmax_data;
 
         Ok(MatWithArgmax { values, argmax })
     }

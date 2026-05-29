@@ -549,7 +549,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const float* __restrict__ A,                                               \
     const float* __restrict__ B,                                               \
     float* __restrict__ C,                                                     \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 64;                                               \
@@ -668,7 +668,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const double* __restrict__ A,                                              \
     const double* __restrict__ B,                                              \
     double* __restrict__ C,                                                    \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 32;                                               \
@@ -787,7 +787,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int* __restrict__ A,                                                 \
     const int* __restrict__ B,                                                 \
     int* __restrict__ C,                                                       \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 64;                                               \
@@ -906,7 +906,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const long long* __restrict__ A,                                           \
     const long long* __restrict__ B,                                           \
     long long* __restrict__ C,                                                 \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K                                                        \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 32;                                               \
@@ -1023,7 +1023,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 #define TROPICAL_BACKWARD_A(KERNEL_NAME, TYPE, ATOMIC_ADD)                     \
 extern "C" __global__ void KERNEL_NAME(                                        \
     const TYPE* __restrict__ grad_c,                                           \
-    const int* __restrict__ argmax,                                            \
+    const unsigned int* __restrict__ argmax,                                   \
     TYPE* __restrict__ grad_a,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
@@ -1031,7 +1031,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     int total = M * N;                                                         \
     if (idx < total) {                                                         \
         int i = idx % M;                                                       \
-        int k = argmax[idx];                                                   \
+        int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
             ATOMIC_ADD(&grad_a[i + k * M], grad_c[idx]);                       \
         }                                                                      \
@@ -1041,7 +1041,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 #define TROPICAL_BACKWARD_B(KERNEL_NAME, TYPE, ATOMIC_ADD)                     \
 extern "C" __global__ void KERNEL_NAME(                                        \
     const TYPE* __restrict__ grad_c,                                           \
-    const int* __restrict__ argmax,                                            \
+    const unsigned int* __restrict__ argmax,                                   \
     TYPE* __restrict__ grad_b,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
@@ -1049,7 +1049,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     int total = M * N;                                                         \
     if (idx < total) {                                                         \
         int j = idx / M;                                                       \
-        int k = argmax[idx];                                                   \
+        int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
             ATOMIC_ADD(&grad_b[k + j * K], grad_c[idx]);                       \
         }                                                                      \
@@ -1118,7 +1118,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const float* __restrict__ A,                                               \
     const float* __restrict__ B,                                               \
     float* __restrict__ C,                                                     \
-    int* __restrict__ argmax,                                                  \
+    unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K,                                                       \
     int strideA, int strideB, int strideC                                      \
 ) {                                                                            \

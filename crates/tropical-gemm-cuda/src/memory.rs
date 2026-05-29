@@ -7,7 +7,11 @@ use cudarc::driver::{CudaSlice, DeviceRepr, DeviceSlice, ValidAsZeroBits};
 use std::marker::PhantomData;
 
 /// Type alias for argmax indices (k-index that produced each C[i,j]).
-pub type ArgmaxIndex = i32;
+///
+/// Unsigned to match the CPU core's `u32` argmax index and the downstream
+/// consumer (omeinsum-rs). k-indices are non-negative; a no-contribution cell
+/// is canonicalized to the seed `0` in the argmax-kernel epilogue.
+pub type ArgmaxIndex = u32;
 
 // ============================================================================
 // Helper: validate dimensions
@@ -378,9 +382,9 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrixWithArgmax<T> {
     /// `matrix` vs `argmax`), or if either slice was allocated on a different
     /// CUDA device than `ctx`.
     ///
-    /// **Type hazard.** When `T == ArgmaxIndex` (`i32`) — which is the case for
-    /// the integer-scalar argmax variants — `matrix` and `argmax` are both
-    /// `CudaSlice<i32>` and a positional swap at the call site type-checks.
+    /// **Type hazard.** When `T == ArgmaxIndex` (`u32`) — which is the case for
+    /// the `u32`-scalar argmax variants — `matrix` and `argmax` are both
+    /// `CudaSlice<u32>` and a positional swap at the call site type-checks.
     /// Pass them in order.
     pub fn from_cuda_slices(
         ctx: &CudaContext,

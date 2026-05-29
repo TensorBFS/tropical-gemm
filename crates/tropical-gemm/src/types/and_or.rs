@@ -60,10 +60,10 @@ impl TropicalSemiring for TropicalAndOr {
 }
 
 impl TropicalWithArgmax for TropicalAndOr {
-    type Index = i32;
+    type Index = u32;
 
     #[inline(always)]
-    fn tropical_add_argmax(self, self_idx: i32, rhs: Self, rhs_idx: i32) -> (Self, i32) {
+    fn tropical_add_argmax(self, self_idx: u32, rhs: Self, rhs_idx: u32) -> (Self, u32) {
         // For OR, return index of first true (or last if both false)
         if self.0 {
             (self, self_idx)
@@ -291,12 +291,12 @@ mod tests {
     fn test_argmax_chain() {
         // Simulate accumulating through k iterations - find first true
         let mut acc = TropicalAndOr::tropical_zero();
-        let mut idx = 0i32;
+        let mut idx = 0u32;
 
         let values = [false, false, true, false]; // First true at index 2
         for (k, &val) in values.iter().enumerate() {
             let candidate = TropicalAndOr::new(val);
-            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as i32);
+            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as u32);
         }
 
         assert!(acc.0);

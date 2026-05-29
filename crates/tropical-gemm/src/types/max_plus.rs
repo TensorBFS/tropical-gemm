@@ -61,10 +61,10 @@ impl<T: TropicalScalar> TropicalSemiring for TropicalMaxPlus<T> {
 }
 
 impl<T: TropicalScalar> TropicalWithArgmax for TropicalMaxPlus<T> {
-    type Index = i32;
+    type Index = u32;
 
     #[inline(always)]
-    fn tropical_add_argmax(self, self_idx: i32, rhs: Self, rhs_idx: i32) -> (Self, i32) {
+    fn tropical_add_argmax(self, self_idx: u32, rhs: Self, rhs_idx: u32) -> (Self, u32) {
         if self.0 >= rhs.0 {
             (self, self_idx)
         } else {
@@ -189,12 +189,12 @@ mod tests {
     fn test_argmax_chain() {
         // Simulate accumulating through k iterations
         let mut acc = TropicalMaxPlus::tropical_zero();
-        let mut idx = 0i32;
+        let mut idx = 0u32;
 
         let values = [3.0, 7.0, 2.0, 5.0]; // Max is at index 1
         for (k, &val) in values.iter().enumerate() {
             let candidate = TropicalMaxPlus::new(val);
-            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as i32);
+            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as u32);
         }
 
         assert_eq!(acc.0, 7.0);

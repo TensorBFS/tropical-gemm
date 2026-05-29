@@ -28,7 +28,7 @@ impl<T: TropicalSemiring> Microkernel<T> for PortableKernel {
     }
 }
 
-impl<T: TropicalWithArgmax<Index = i32>> MicrokernelWithArgmax<T> for PortableKernel {
+impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableKernel {
     unsafe fn execute_with_argmax(
         &self,
         mr: usize,
@@ -38,7 +38,7 @@ impl<T: TropicalWithArgmax<Index = i32>> MicrokernelWithArgmax<T> for PortableKe
         a: *const T::Scalar,
         b: *const T::Scalar,
         c: *mut T,
-        argmax: *mut i32,
+        argmax: *mut u32,
         ldc: usize,
     ) {
         let core_kernel = crate::core::PortableMicrokernel;
@@ -81,7 +81,7 @@ mod tests {
         let a: [f64; 8] = [1.0, 2.0, 0.0, 0.0, 10.0, 20.0, 0.0, 0.0];
         let b: [f64; 8] = [1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0];
         let mut c = [TropicalMaxPlus::tropical_zero(); 4];
-        let mut argmax = [0i32; 4];
+        let mut argmax = [0u32; 4];
         let ldc = 2;
         let k_offset = 0;
 

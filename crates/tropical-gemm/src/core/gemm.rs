@@ -140,7 +140,7 @@ pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T>>(
 ///
 /// # Safety
 /// Same requirements as `tropical_gemm_portable`
-pub unsafe fn tropical_gemm_with_argmax_portable<T: TropicalWithArgmax<Index = i32>>(
+pub unsafe fn tropical_gemm_with_argmax_portable<T: TropicalWithArgmax<Index = u32>>(
     m: usize,
     n: usize,
     k: usize,
@@ -165,7 +165,7 @@ pub unsafe fn tropical_gemm_with_argmax_portable<T: TropicalWithArgmax<Index = i
 /// # Safety
 /// Same requirements as `tropical_gemm_portable`
 pub unsafe fn tropical_gemm_with_argmax_inner<
-    T: TropicalWithArgmax<Index = i32>,
+    T: TropicalWithArgmax<Index = u32>,
     K: MicrokernelWithArgmax<T>,
 >(
     m: usize,
@@ -516,7 +516,7 @@ mod tests {
         for i in 0..m {
             for j in 0..n {
                 assert!(result.get(i, j).0.is_finite());
-                assert!(result.get_argmax(i, j) < k as i32);
+                assert!(result.get_argmax(i, j) < k as u32);
             }
         }
     }

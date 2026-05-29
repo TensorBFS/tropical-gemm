@@ -136,7 +136,7 @@ fn maxplus_matmul_with_argmax<'py>(
         let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
             tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(&a_data, m, k, &b_data, n);
         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-        let argmax: Vec<i32> = result.argmax.clone();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
         (c, argmax)
     });
 
@@ -184,7 +184,7 @@ fn minplus_matmul_with_argmax<'py>(
         let result: GemmWithArgmax<TropicalMinPlus<f32>> =
             tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(&a_data, m, k, &b_data, n);
         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-        let argmax: Vec<i32> = result.argmax.clone();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
         (c, argmax)
     });
 
@@ -473,7 +473,7 @@ fn maxmul_matmul_with_argmax<'py>(
         let result: GemmWithArgmax<TropicalMaxMul<f32>> =
             tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(&a_data, m, k, &b_data, n);
         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-        let argmax: Vec<i32> = result.argmax.clone();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
         (c, argmax)
     });
 
@@ -715,7 +715,7 @@ fn maxplus_matmul_with_argmax_f64<'py>(
         let result: GemmWithArgmax<TropicalMaxPlus<f64>> =
             tropical_matmul_with_argmax::<TropicalMaxPlus<f64>>(&a_data, m, k, &b_data, n);
         let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
-        let argmax: Vec<i32> = result.argmax.clone();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
         (c, argmax)
     });
 
@@ -751,7 +751,7 @@ fn minplus_matmul_with_argmax_f64<'py>(
         let result: GemmWithArgmax<TropicalMinPlus<f64>> =
             tropical_matmul_with_argmax::<TropicalMinPlus<f64>>(&a_data, m, k, &b_data, n);
         let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
-        let argmax: Vec<i32> = result.argmax.clone();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
         (c, argmax)
     });
 
@@ -787,7 +787,7 @@ fn maxmul_matmul_with_argmax_f64<'py>(
         let result: GemmWithArgmax<TropicalMaxMul<f64>> =
             tropical_matmul_with_argmax::<TropicalMaxMul<f64>>(&a_data, m, k, &b_data, n);
         let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
-        let argmax: Vec<i32> = result.argmax.clone();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
         (c, argmax)
     });
 
@@ -1498,7 +1498,7 @@ fn maxplus_matmul_batched_with_argmax<'py>(
                 c_result[i * stride_c + j] = val.value();
             }
             for (j, &idx) in result.argmax.iter().enumerate() {
-                argmax_result[i * stride_c + j] = idx;
+                argmax_result[i * stride_c + j] = idx as i32;
             }
         }
 
@@ -1569,7 +1569,7 @@ fn minplus_matmul_batched_with_argmax<'py>(
                 c_result[i * stride_c + j] = val.value();
             }
             for (j, &idx) in result.argmax.iter().enumerate() {
-                argmax_result[i * stride_c + j] = idx;
+                argmax_result[i * stride_c + j] = idx as i32;
             }
         }
 
@@ -1640,7 +1640,7 @@ fn maxmul_matmul_batched_with_argmax<'py>(
                 c_result[i * stride_c + j] = val.value();
             }
             for (j, &idx) in result.argmax.iter().enumerate() {
-                argmax_result[i * stride_c + j] = idx;
+                argmax_result[i * stride_c + j] = idx as i32;
             }
         }
 
@@ -2302,7 +2302,7 @@ mod gpu {
                                 a_data, m, k, b_data, n,
                             );
                         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-                        let argmax: Vec<i32> = result.argmax.clone();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
                         (c, argmax)
                     }
                     Algebra::MinPlus => {
@@ -2311,7 +2311,7 @@ mod gpu {
                                 a_data, m, k, b_data, n,
                             );
                         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-                        let argmax: Vec<i32> = result.argmax.clone();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
                         (c, argmax)
                     }
                     Algebra::MaxMul => {
@@ -2320,7 +2320,7 @@ mod gpu {
                                 a_data, m, k, b_data, n,
                             );
                         let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-                        let argmax: Vec<i32> = result.argmax.clone();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
                         (c, argmax)
                     }
                 };

@@ -6,11 +6,11 @@ use crate::types::TropicalWithArgmax;
 /// C[i,j] = ⊕_{k} A[i,k] ⊗ B[k,j]
 /// argmax[i,j] = argmax_k (A[i,k] ⊗ B[k,j])
 #[derive(Debug, Clone)]
-pub struct GemmWithArgmax<T: TropicalWithArgmax<Index = i32>> {
+pub struct GemmWithArgmax<T: TropicalWithArgmax<Index = u32>> {
     /// The result matrix values.
     pub values: Vec<T>,
     /// The argmax indices for each element.
-    pub argmax: Vec<i32>,
+    pub argmax: Vec<u32>,
     /// Number of rows in the result.
     pub m: usize,
     /// Number of columns in the result.
@@ -19,13 +19,13 @@ pub struct GemmWithArgmax<T: TropicalWithArgmax<Index = i32>> {
     pub ld: usize,
 }
 
-impl<T: TropicalWithArgmax<Index = i32>> GemmWithArgmax<T> {
+impl<T: TropicalWithArgmax<Index = u32>> GemmWithArgmax<T> {
     /// Create a new result container with tropical zeros.
     pub fn new(m: usize, n: usize) -> Self {
         let size = m * n;
         Self {
             values: vec![T::tropical_zero(); size],
-            argmax: vec![0i32; size],
+            argmax: vec![0u32; size],
             m,
             n,
             ld: n,
@@ -38,7 +38,7 @@ impl<T: TropicalWithArgmax<Index = i32>> GemmWithArgmax<T> {
         let size = m * ld;
         Self {
             values: vec![T::tropical_zero(); size],
-            argmax: vec![0i32; size],
+            argmax: vec![0u32; size],
             m,
             n,
             ld,
@@ -54,7 +54,7 @@ impl<T: TropicalWithArgmax<Index = i32>> GemmWithArgmax<T> {
 
     /// Get argmax at (i, j).
     #[inline]
-    pub fn get_argmax(&self, i: usize, j: usize) -> i32 {
+    pub fn get_argmax(&self, i: usize, j: usize) -> u32 {
         debug_assert!(i < self.m && j < self.n);
         self.argmax[i * self.ld + j]
     }
@@ -68,14 +68,14 @@ impl<T: TropicalWithArgmax<Index = i32>> GemmWithArgmax<T> {
 
     /// Get mutable reference to argmax at (i, j).
     #[inline]
-    pub fn get_argmax_mut(&mut self, i: usize, j: usize) -> &mut i32 {
+    pub fn get_argmax_mut(&mut self, i: usize, j: usize) -> &mut u32 {
         debug_assert!(i < self.m && j < self.n);
         &mut self.argmax[i * self.ld + j]
     }
 
     /// Get raw pointers to the data.
     #[inline]
-    pub fn as_mut_ptrs(&mut self) -> (*mut T, *mut i32) {
+    pub fn as_mut_ptrs(&mut self) -> (*mut T, *mut u32) {
         (self.values.as_mut_ptr(), self.argmax.as_mut_ptr())
     }
 
@@ -83,7 +83,7 @@ impl<T: TropicalWithArgmax<Index = i32>> GemmWithArgmax<T> {
     ///
     /// This is useful for backward pass computation.
     #[inline]
-    pub fn argmax_slice(&self) -> &[i32] {
+    pub fn argmax_slice(&self) -> &[u32] {
         &self.argmax
     }
 
