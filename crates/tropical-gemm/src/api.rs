@@ -78,7 +78,7 @@ pub fn tropical_matmul<T: TropicalSemiring + KernelDispatch>(
 /// assert_eq!(result.m, 2);
 /// assert_eq!(result.n, 2);
 /// ```
-pub fn tropical_matmul_with_argmax<T: TropicalWithArgmax<Index = u32> + KernelDispatch>(
+pub fn tropical_matmul_with_argmax<T: TropicalWithArgmax<Index = i32> + KernelDispatch>(
     a: &[T::Scalar],
     m: usize,
     k: usize,
@@ -328,7 +328,7 @@ where
 ///
 /// # Returns
 /// Vector of batch_size GemmWithArgmax results
-pub fn tropical_matmul_batched_with_argmax<T: TropicalWithArgmax<Index = u32> + KernelDispatch>(
+pub fn tropical_matmul_batched_with_argmax<T: TropicalWithArgmax<Index = i32> + KernelDispatch>(
     a_batch: &[Vec<T::Scalar>],
     b_batch: &[Vec<T::Scalar>],
     m: usize,
@@ -562,7 +562,7 @@ where
 /// ```
 pub fn tropical_backward_a<T: Copy + Default + std::ops::AddAssign>(
     grad_c: &[T],
-    argmax: &[u32],
+    argmax: &[i32],
     m: usize,
     k: usize,
     n: usize,
@@ -626,7 +626,7 @@ pub fn tropical_backward_a<T: Copy + Default + std::ops::AddAssign>(
 /// ```
 pub fn tropical_backward_b<T: Copy + Default + std::ops::AddAssign>(
     grad_c: &[T],
-    argmax: &[u32],
+    argmax: &[i32],
     m: usize,
     k: usize,
     n: usize,
@@ -665,7 +665,7 @@ pub fn tropical_backward_b<T: Copy + Default + std::ops::AddAssign>(
 /// Vector of gradients dL/dA[i], each of size m×k
 pub fn tropical_backward_a_batched<T: Copy + Default + std::ops::AddAssign + Send + Sync>(
     grad_c_batch: &[Vec<T>],
-    argmax_batch: &[Vec<u32>],
+    argmax_batch: &[Vec<i32>],
     m: usize,
     k: usize,
     n: usize,
@@ -712,7 +712,7 @@ pub fn tropical_backward_a_batched<T: Copy + Default + std::ops::AddAssign + Sen
 /// Vector of gradients dL/dB[i], each of size k×n
 pub fn tropical_backward_b_batched<T: Copy + Default + std::ops::AddAssign + Send + Sync>(
     grad_c_batch: &[Vec<T>],
-    argmax_batch: &[Vec<u32>],
+    argmax_batch: &[Vec<i32>],
     m: usize,
     k: usize,
     n: usize,

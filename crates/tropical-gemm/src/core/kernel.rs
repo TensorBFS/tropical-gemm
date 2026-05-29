@@ -34,7 +34,7 @@ pub trait Microkernel<T: TropicalSemiring> {
 }
 
 /// Trait for microkernels that track argmax during computation.
-pub trait MicrokernelWithArgmax<T: TropicalWithArgmax<Index = u32>>: Microkernel<T> {
+pub trait MicrokernelWithArgmax<T: TropicalWithArgmax<Index = i32>>: Microkernel<T> {
     /// Execute the microkernel with argmax tracking.
     ///
     /// Same as `execute`, but also fills `argmax` with the k-index that
@@ -52,7 +52,7 @@ pub trait MicrokernelWithArgmax<T: TropicalWithArgmax<Index = u32>>: Microkernel
         a: *const T::Scalar,
         b: *const T::Scalar,
         c: *mut T,
-        argmax: *mut u32,
+        argmax: *mut i32,
         ldc: usize,
     );
 }
@@ -115,7 +115,7 @@ impl<T: TropicalSemiring> Microkernel<T> for PortableMicrokernel {
     }
 }
 
-impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableMicrokernel {
+impl<T: TropicalWithArgmax<Index = i32>> MicrokernelWithArgmax<T> for PortableMicrokernel {
     unsafe fn execute_with_argmax(
         &self,
         mr: usize,
@@ -125,7 +125,7 @@ impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableMi
         a: *const T::Scalar,
         b: *const T::Scalar,
         c: *mut T,
-        argmax: *mut u32,
+        argmax: *mut i32,
         ldc: usize,
     ) {
         const MR: usize = 4;
@@ -133,7 +133,7 @@ impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableMi
 
         // Initialize accumulators from C and existing argmax
         let mut acc = [[T::tropical_zero(); NR]; MR];
-        let mut idx = [[0u32; NR]; MR];
+        let mut idx = [[0i32; NR]; MR];
         for i in 0..mr {
             for j in 0..nr {
                 acc[i][j] = *c.add(i * ldc + j);
@@ -143,7 +143,7 @@ impl<T: TropicalWithArgmax<Index = u32>> MicrokernelWithArgmax<T> for PortableMi
 
         // Main loop with argmax tracking
         for p in 0..k {
-            let current_k = (k_offset + p) as u32;
+            let current_k = (k_offset + p) as i32;
             for i in 0..mr {
                 let a_val = T::from_scalar(*a.add(p * MR + i));
                 for j in 0..nr {
@@ -283,7 +283,7 @@ mod tests {
         let b: [f64; 12] = [1.0, 2.0, 0.0, 0.0, 3.0, 4.0, 0.0, 0.0, 5.0, 6.0, 0.0, 0.0];
 
         let mut c = [TropicalMaxPlus::tropical_zero(); 4];
-        let mut argmax = [0u32; 4];
+        let mut argmax = [0i32; 4];
         let ldc = 2;
         let k_offset = 0;
 
@@ -330,7 +330,7 @@ mod tests {
         let b: [f64; 8] = [1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0];
 
         let mut c = [TropicalMaxPlus::tropical_zero(); 4];
-        let mut argmax = [0u32; 4];
+        let mut argmax = [0i32; 4];
         let ldc = 2;
         let k_offset = 5; // Start from global k=5
 

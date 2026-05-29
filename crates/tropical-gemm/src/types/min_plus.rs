@@ -60,10 +60,10 @@ impl<T: TropicalScalar> TropicalSemiring for TropicalMinPlus<T> {
 }
 
 impl<T: TropicalScalar> TropicalWithArgmax for TropicalMinPlus<T> {
-    type Index = u32;
+    type Index = i32;
 
     #[inline(always)]
-    fn tropical_add_argmax(self, self_idx: u32, rhs: Self, rhs_idx: u32) -> (Self, u32) {
+    fn tropical_add_argmax(self, self_idx: i32, rhs: Self, rhs_idx: i32) -> (Self, i32) {
         // For min, we track argmin
         if self.0 <= rhs.0 {
             (self, self_idx)
@@ -198,12 +198,12 @@ mod tests {
     fn test_argmin_chain() {
         // Simulate accumulating through k iterations - find minimum
         let mut acc = TropicalMinPlus::tropical_zero(); // +inf
-        let mut idx = 0u32;
+        let mut idx = 0i32;
 
         let values = [8.0, 3.0, 9.0, 5.0]; // Min is at index 1
         for (k, &val) in values.iter().enumerate() {
             let candidate = TropicalMinPlus::new(val);
-            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as u32);
+            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as i32);
         }
 
         assert_eq!(acc.0, 3.0);

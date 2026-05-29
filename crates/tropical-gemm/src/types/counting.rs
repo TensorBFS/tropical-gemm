@@ -96,10 +96,10 @@ impl<T: TropicalScalar, C: TropicalScalar> TropicalSemiring for CountingTropical
 }
 
 impl<T: TropicalScalar, C: TropicalScalar> TropicalWithArgmax for CountingTropical<T, C> {
-    type Index = u32;
+    type Index = i32;
 
     #[inline(always)]
-    fn tropical_add_argmax(self, self_idx: u32, rhs: Self, rhs_idx: u32) -> (Self, u32) {
+    fn tropical_add_argmax(self, self_idx: i32, rhs: Self, rhs_idx: i32) -> (Self, i32) {
         if self.value > rhs.value {
             (self, self_idx)
         } else if self.value < rhs.value {
@@ -344,13 +344,13 @@ mod tests {
     #[test]
     fn test_argmax_chain() {
         let mut acc = CountingTropical::<f64>::tropical_zero();
-        let mut idx = 0u32;
+        let mut idx = 0i32;
 
         // Values with different counts
         let values = [(3.0, 1.0), (7.0, 2.0), (7.0, 3.0), (5.0, 1.0)];
         for (k, &(val, count)) in values.iter().enumerate() {
             let candidate = CountingTropical::new(val, count);
-            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as u32);
+            (acc, idx) = acc.tropical_add_argmax(idx, candidate, k as i32);
         }
 
         // Max value is 7.0, first encountered at k=1

@@ -40,10 +40,10 @@ pub struct MatWithArgmax<S: crate::TropicalWithArgmax> {
     /// The result matrix values.
     pub values: Mat<S>,
     /// The argmax indices (which k produced each C[i,j]).
-    pub argmax: Vec<u32>,
+    pub argmax: Vec<i32>,
 }
 
-impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
+impl<S: crate::TropicalWithArgmax<Index = i32>> MatWithArgmax<S> {
     /// Get the value at position (i, j).
     pub fn get(&self, i: usize, j: usize) -> S {
         self.values[(i, j)]
@@ -59,7 +59,7 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
     }
 
     /// Get the argmax index at position (i, j).
-    pub fn get_argmax(&self, i: usize, j: usize) -> u32 {
+    pub fn get_argmax(&self, i: usize, j: usize) -> i32 {
         // Column-major indexing
         self.argmax[j * self.values.nrows() + i]
     }
@@ -78,7 +78,7 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
     ///
     /// This is useful for backward pass computation.
     #[inline]
-    pub fn argmax_slice(&self) -> &[u32] {
+    pub fn argmax_slice(&self) -> &[i32] {
         &self.argmax
     }
 

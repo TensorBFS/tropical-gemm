@@ -182,7 +182,7 @@ impl<'a, S: TropicalSemiring + KernelDispatch> MatRef<'a, S> {
 // Argmax methods (separate impl block for different trait bounds)
 impl<'a, S> MatRef<'a, S>
 where
-    S: TropicalWithArgmax<Index = u32> + KernelDispatch,
+    S: TropicalWithArgmax<Index = i32> + KernelDispatch,
 {
     /// Perform tropical matrix multiplication with argmax tracking.
     ///
