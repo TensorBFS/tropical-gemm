@@ -781,9 +781,9 @@ mod tests {
 
     /// Skip test gracefully when no CUDA device is present.
     fn cuda_context_or_skip() -> Option<&'static CudaContext> {
-        // One context shared across the whole test binary: NVRTC compiles once
-        // instead of per-test (~7s each). catch_unwind because cudarc panics
-        // rather than returning Err when libcuda is absent.
+        // One context shared across the whole test binary: kernels compile once (then
+        // load from the on-disk cubin cache) instead of per-test. catch_unwind because
+        // cudarc panics rather than returning Err when libcuda is absent.
         match std::panic::catch_unwind(crate::get_global_context) {
             Ok(Ok(ctx)) => Some(ctx),
             Ok(Err(e)) => {

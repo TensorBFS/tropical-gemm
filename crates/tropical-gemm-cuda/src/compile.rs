@@ -27,6 +27,11 @@ use std::ffi::{CStr, CString};
 /// cudarc's `use_fast_math` only emits `--fmad=true`, a no-op for our max/min/+
 /// kernels and the lone `a*b` in MaxMul. Add `"--fmad=true"` here only if exact
 /// parity with the C reference's build is wanted.
+///
+/// No `-O3` is passed, and none is needed: NVRTC compiles device code optimized by default
+/// (`-dopt=on` is implicit unless `-G` is given). The `-O3` in the C reference's `nvcc -O3`
+/// is a *host*-compiler flag and does not apply to these pure-device kernels; device-side
+/// optimization (ptxas) defaults to `-O3` in both NVRTC's CUBIN path and offline `nvcc`.
 pub(crate) fn compile_flags(major: i32, minor: i32) -> Vec<String> {
     vec![format!("--gpu-architecture=sm_{major}{minor}")]
 }

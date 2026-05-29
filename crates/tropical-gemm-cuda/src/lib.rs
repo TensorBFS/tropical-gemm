@@ -60,8 +60,10 @@
 //! # Performance
 //!
 //! The convenience functions (`tropical_matmul_gpu`, etc.) use a lazily-initialized
-//! global context that persists across calls. This avoids the ~7 second NVRTC
-//! compilation overhead on each call.
+//! global context that persists across calls, so kernel compilation happens at most once
+//! per process. Across processes the compiled kernels are cached on disk as a CUBIN (see
+//! [`CudaContext`]), so a warm `CudaContext::new()` is ~0.13s instead of the ~10s cold
+//! NVRTC compile.
 //!
 //! # Integer scalar types and data range
 //!
@@ -1153,9 +1155,9 @@ mod tests {
 
     /// Helper to check if CUDA is available
     fn cuda_context_or_skip() -> Option<&'static CudaContext> {
-        // One context shared across the whole test binary: NVRTC compiles once
-        // instead of per-test (~7s each). catch_unwind because cudarc panics
-        // rather than returning Err when libcuda is absent.
+        // One context shared across the whole test binary: kernels compile once (then
+        // load from the on-disk cubin cache) instead of per-test. catch_unwind because
+        // cudarc panics rather than returning Err when libcuda is absent.
         let result = std::panic::catch_unwind(crate::get_global_context);
         match result {
             Ok(Ok(ctx)) => Some(ctx),

@@ -2,6 +2,29 @@
 
 All notable changes to tropical-gemm.
 
+## [Unreleased]
+
+### Added
+- **CUDA: on-disk CUBIN cache (issue #41).** Kernels are compiled straight to a CUBIN
+  (native SASS) for the device's architecture and cached on disk
+  (`$XDG_CACHE_HOME` / `~/.cache/tropical-gemm/`), keyed on a stable hash of source +
+  compile flags + GPU arch + NVRTC version. A warm `CudaContext::new()` drops from ~10.7 s
+  to ~0.13 s (skips both the NVRTC compile and the driver's PTX→SASS JIT). The cache is
+  load-validated and self-healing.
+
+### Changed
+- **CUDA: migrated to cudarc 0.19.7.** `CUDARC_CUDA_VERSION` selects the CUDA toolkit at
+  build time, so `cargo check` works with no toolkit installed and no `nvcc` is needed at
+  build time.
+- **CUDA: `device_name()` now reports the real GPU model** (via `cuDeviceGetName`).
+
+### Notes
+- **CUDA throughput vs the C reference (issue #40).** Benchmarked on A40 (CUDA 12.8): the
+  kernels are at parity with [TropicalGemm_Cuda](https://github.com/ArrogantGao/TropicalGemm_Cuda)
+  (within ~1.5%, faster at small sizes). Arch flags / CUBIN do **not** change throughput;
+  the historical ~5% gap was a CUDA-12.2-era NVRTC codegen effect that newer toolchains have
+  since closed.
+
 ## [0.2.0]
 
 ### Added
