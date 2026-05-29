@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-f0ea1041.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -194,6 +194,14 @@ load-validated and self-healing.</li>
 </ul>
 <h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
 <ul>
+<li><strong>CUDA: interior/boundary-split tile loads (issue #40).</strong> The global→shared tile copies
+now give fully-interior blocks a bounds-check-free fast path; only edge blocks (last
+block-row/col, final K-tile) run the per-element <code>row &lt; M &amp;&amp; col &lt; K</code> predicate. The old
+code ran that predicate on every element of every block — the entire throughput gap vs the
+C reference. On A40/CUDA 12.8 the kernels go from ~3-6% slower to <strong>~3% faster</strong> than
+<a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a>, with identical
+results (full CUDA suite passes). The shared <code>LOAD_A_TILE</code> / <code>LOAD_B_TILE</code> /
+<code>STORE_C*_TILE</code> macros apply it across all f32/f64/i32/i64, argmax, and batched kernels.</li>
 <li><strong>CUDA: migrated to cudarc 0.19.7.</strong> <code>CUDARC_CUDA_VERSION</code> selects the CUDA toolkit at
 build time, so <code>cargo check</code> works with no toolkit installed and no <code>nvcc</code> is needed at
 build time.</li>
@@ -201,11 +209,10 @@ build time.</li>
 </ul>
 <h3 id="notes"><a class="header" href="#notes">Notes</a></h3>
 <ul>
-<li><strong>CUDA throughput vs the C reference (issue #40).</strong> Benchmarked on A40 (CUDA 12.8): the
-kernels are at parity with <a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a>
-(within ~1.5%, faster at small sizes). Arch flags / CUBIN do <strong>not</strong> change throughput;
-the historical ~5% gap was a CUDA-12.2-era NVRTC codegen effect that newer toolchains have
-since closed.</li>
+<li><strong>Arch flags do not affect CUDA throughput (issue #40).</strong> Compiling to an arch-targeted
+CUBIN (<code>-arch=sm_XX</code>) runs identically to driver-JIT’d PTX; the CUBIN build is purely a
+startup-latency win (issue #41). The throughput gap vs the C reference was the per-element
+bounds check above, not the toolchain or the CUDA version.</li>
 </ul>
 <h2 id="020"><a class="header" href="#020">[0.2.0]</a></h2>
 <h3 id="added-1"><a class="header" href="#added-1">Added</a></h3>

@@ -33,24 +33,25 @@ host transfers; warmup + 100 iters), against
 
 | Size | C ref (ms) | tropical-gemm (ms) | Ratio |
 |------|-----------:|-------------------:|------:|
-| 256  | 0.024 | 0.022 | 0.90x |
-| 512  | 0.045 | 0.042 | 0.93x |
-| 1024 | 0.267 | 0.262 | 0.98x |
-| 2048 | 1.632 | 1.646 | 1.01x |
-| 4096 | 12.36 | 12.54 | 1.015x |
+| 1024 | 0.272 | 0.263 | 0.97x |
+| 2048 | 1.702 | 1.654 | 0.97x |
+| 4096 | 13.40 | 13.01 | 0.97x |
 
-The kernels are **at parity** with the C reference — within ~1.5% at large sizes and
-~7-10% *faster* at small sizes. Two things worth knowing:
+The kernels are **~3% faster than the C reference** at large sizes (and more at small
+sizes). This followed fixing the one real difference between the two kernels (issue #40):
 
+- **Interior/boundary split in the tile loads.** Both kernels are the same tiled GEMM,
+  but the old code ran a per-element bounds check (`if (row < M && col < K)`) on *every*
+  element of *every* block. For a large matrix ~97% of blocks are fully interior and never
+  need it. Splitting interior blocks (bare loads) from boundary blocks (guarded) removed
+  that overhead and made the kernels ~7-8% faster — enough to pass the reference, which the
+  old code trailed by ~3-6%. (We end up ahead because the reference's store path re-reads
+  `C` and applies `alpha`/`beta`, while ours writes the accumulator directly.)
 - **Compiling to an arch-targeted CUBIN (`-arch=sm_XX`) does not change throughput.**
   Default PTX (driver-JIT'd at load) and an offline CUBIN run identically — on a current
-  driver the JIT runs ptxas and produces SASS equivalent to offline `nvcc`. (An earlier
-  edition of this page reported the C library ~13-16% faster; that comparison included
-  runtime-compile / transfer overhead, not pure kernel time.)
-- **The small gap is CUDA-version-dependent, not an arch-flag issue.** On CUDA 12.2 the
-  kernels are ~5-6% slower than the C reference at 2048-4096; on CUDA 12.8 that shrinks to
-  ~1.5%, because newer NVRTC generates faster code from the same kernel source (the C
-  reference itself is unchanged across toolkits).
+  driver the JIT runs ptxas and produces SASS equivalent to offline `nvcc`. The CUBIN build
+  is a startup-latency win (issue #41), not a throughput one. (An earlier edition of this
+  page blamed the gap on the CUDA toolkit version; that was wrong — it was the bounds-check.)
 
 > NVRTC compiles device code optimized by default (`-dopt=on` is implicit unless `-G` is
 > passed), so no `-O3` is needed — the `-O3` in `nvcc -O3` is a host-compiler flag and does

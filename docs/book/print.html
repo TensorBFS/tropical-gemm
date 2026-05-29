@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-f0ea1041.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -1597,26 +1597,27 @@ host transfers; warmup + 100 iters), against
 <tr><th>Size</th><th style="text-align: right">C ref (ms)</th><th style="text-align: right">tropical-gemm (ms)</th><th style="text-align: right">Ratio</th></tr>
 </thead>
 <tbody>
-<tr><td>256</td><td style="text-align: right">0.024</td><td style="text-align: right">0.022</td><td style="text-align: right">0.90x</td></tr>
-<tr><td>512</td><td style="text-align: right">0.045</td><td style="text-align: right">0.042</td><td style="text-align: right">0.93x</td></tr>
-<tr><td>1024</td><td style="text-align: right">0.267</td><td style="text-align: right">0.262</td><td style="text-align: right">0.98x</td></tr>
-<tr><td>2048</td><td style="text-align: right">1.632</td><td style="text-align: right">1.646</td><td style="text-align: right">1.01x</td></tr>
-<tr><td>4096</td><td style="text-align: right">12.36</td><td style="text-align: right">12.54</td><td style="text-align: right">1.015x</td></tr>
+<tr><td>1024</td><td style="text-align: right">0.272</td><td style="text-align: right">0.263</td><td style="text-align: right">0.97x</td></tr>
+<tr><td>2048</td><td style="text-align: right">1.702</td><td style="text-align: right">1.654</td><td style="text-align: right">0.97x</td></tr>
+<tr><td>4096</td><td style="text-align: right">13.40</td><td style="text-align: right">13.01</td><td style="text-align: right">0.97x</td></tr>
 </tbody>
 </table>
 </div>
-<p>The kernels are <strong>at parity</strong> with the C reference — within ~1.5% at large sizes and
-~7-10% <em>faster</em> at small sizes. Two things worth knowing:</p>
+<p>The kernels are <strong>~3% faster than the C reference</strong> at large sizes (and more at small
+sizes). This followed fixing the one real difference between the two kernels (issue #40):</p>
 <ul>
+<li><strong>Interior/boundary split in the tile loads.</strong> Both kernels are the same tiled GEMM,
+but the old code ran a per-element bounds check (<code>if (row &lt; M &amp;&amp; col &lt; K)</code>) on <em>every</em>
+element of <em>every</em> block. For a large matrix ~97% of blocks are fully interior and never
+need it. Splitting interior blocks (bare loads) from boundary blocks (guarded) removed
+that overhead and made the kernels ~7-8% faster — enough to pass the reference, which the
+old code trailed by ~3-6%. (We end up ahead because the reference’s store path re-reads
+<code>C</code> and applies <code>alpha</code>/<code>beta</code>, while ours writes the accumulator directly.)</li>
 <li><strong>Compiling to an arch-targeted CUBIN (<code>-arch=sm_XX</code>) does not change throughput.</strong>
 Default PTX (driver-JIT’d at load) and an offline CUBIN run identically — on a current
-driver the JIT runs ptxas and produces SASS equivalent to offline <code>nvcc</code>. (An earlier
-edition of this page reported the C library ~13-16% faster; that comparison included
-runtime-compile / transfer overhead, not pure kernel time.)</li>
-<li><strong>The small gap is CUDA-version-dependent, not an arch-flag issue.</strong> On CUDA 12.2 the
-kernels are ~5-6% slower than the C reference at 2048-4096; on CUDA 12.8 that shrinks to
-~1.5%, because newer NVRTC generates faster code from the same kernel source (the C
-reference itself is unchanged across toolkits).</li>
+driver the JIT runs ptxas and produces SASS equivalent to offline <code>nvcc</code>. The CUBIN build
+is a startup-latency win (issue #41), not a throughput one. (An earlier edition of this
+page blamed the gap on the CUDA toolkit version; that was wrong — it was the bounds-check.)</li>
 </ul>
 <blockquote>
 <p>NVRTC compiles device code optimized by default (<code>-dopt=on</code> is implicit unless <code>-G</code> is
@@ -2285,6 +2286,14 @@ load-validated and self-healing.</li>
 </ul>
 <h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
 <ul>
+<li><strong>CUDA: interior/boundary-split tile loads (issue #40).</strong> The global→shared tile copies
+now give fully-interior blocks a bounds-check-free fast path; only edge blocks (last
+block-row/col, final K-tile) run the per-element <code>row &lt; M &amp;&amp; col &lt; K</code> predicate. The old
+code ran that predicate on every element of every block — the entire throughput gap vs the
+C reference. On A40/CUDA 12.8 the kernels go from ~3-6% slower to <strong>~3% faster</strong> than
+<a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a>, with identical
+results (full CUDA suite passes). The shared <code>LOAD_A_TILE</code> / <code>LOAD_B_TILE</code> /
+<code>STORE_C*_TILE</code> macros apply it across all f32/f64/i32/i64, argmax, and batched kernels.</li>
 <li><strong>CUDA: migrated to cudarc 0.19.7.</strong> <code>CUDARC_CUDA_VERSION</code> selects the CUDA toolkit at
 build time, so <code>cargo check</code> works with no toolkit installed and no <code>nvcc</code> is needed at
 build time.</li>
@@ -2292,11 +2301,10 @@ build time.</li>
 </ul>
 <h3 id="notes"><a class="header" href="#notes">Notes</a></h3>
 <ul>
-<li><strong>CUDA throughput vs the C reference (issue #40).</strong> Benchmarked on A40 (CUDA 12.8): the
-kernels are at parity with <a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a>
-(within ~1.5%, faster at small sizes). Arch flags / CUBIN do <strong>not</strong> change throughput;
-the historical ~5% gap was a CUDA-12.2-era NVRTC codegen effect that newer toolchains have
-since closed.</li>
+<li><strong>Arch flags do not affect CUDA throughput (issue #40).</strong> Compiling to an arch-targeted
+CUBIN (<code>-arch=sm_XX</code>) runs identically to driver-JIT’d PTX; the CUBIN build is purely a
+startup-latency win (issue #41). The throughput gap vs the C reference was the per-element
+bounds check above, not the toolchain or the CUDA version.</li>
 </ul>
 <h2 id="020"><a class="header" href="#020">[0.2.0]</a></h2>
 <h3 id="added-1"><a class="header" href="#added-1">Added</a></h3>
