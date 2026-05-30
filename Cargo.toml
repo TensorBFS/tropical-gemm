@@ -20,7 +20,7 @@ tropical-gemm = { version = "0.2.0", path = "crates/tropical-gemm" }
 
 # External dependencies
 num-traits = "0.2"
-wide = "0.7"
+wide = "1"
 rayon = "1.10"
 # CUDA version is a deliberate VARIABLE — never hardcode a `cuda-XXXXX` feature here.
 # cudarc's build.rs selects the version as: (1) `CUDARC_CUDA_VERSION` env (e.g.
@@ -33,8 +33,8 @@ rayon = "1.10"
 #   • macOS dev (no nvcc): `fallback-latest` picks cudarc's newest supported version,
 #     purely so `cargo check` compiles (dynamic-loading → never actually runs CUDA).
 cudarc = { version = "0.19.7", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-version-from-build-system", "fallback-latest"] }
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Testing
-criterion = "0.5"
+criterion = "0.8"
 proptest = "1.0"

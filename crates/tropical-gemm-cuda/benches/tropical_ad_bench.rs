@@ -9,7 +9,8 @@
 //! GPU only, MaxPlus algebra only.
 //! Uses persistent CudaContext to exclude JIT compilation overhead.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use tropical_gemm::TropicalMaxPlus;
 use tropical_gemm_cuda::{
     tropical_backward_a_gpu, tropical_backward_a_gpu_kernel, tropical_backward_b_gpu,

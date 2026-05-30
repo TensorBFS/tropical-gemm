@@ -50,7 +50,11 @@ impl Microkernel<TropicalMaxPlus<f32>> for NeonMaxPlusF32Kernel {
             for i in 0..mr {
                 let a_broadcast = f32x4::splat(a_vals[i]);
                 let product = a_broadcast + b_vec;
-                acc[i] = acc[i].max(product);
+                // fast_max → vmaxq_f32 (single instr). wide 1.x's plain max()
+                // emits the NaN-aware vmaxnmq_f32 instead, which is slower on
+                // several cores; our finite/-inf inputs never produce NaN, so
+                // pin the plain single-instruction path explicitly.
+                acc[i] = acc[i].fast_max(product);
             }
         }
 
@@ -110,7 +114,8 @@ impl Microkernel<TropicalMaxPlus<f64>> for NeonMaxPlusF64Kernel {
             for i in 0..mr {
                 let a_broadcast = f64x2::splat(a_vals[i]);
                 let product = a_broadcast + b_vec;
-                acc[i] = acc[i].max(product);
+                // fast_max → vmaxq_f64; see f32 kernel for why fast is safe here.
+                acc[i] = acc[i].fast_max(product);
             }
         }
 
@@ -168,7 +173,10 @@ impl Microkernel<TropicalMinPlus<f32>> for NeonMinPlusF32Kernel {
             for i in 0..mr {
                 let a_broadcast = f32x4::splat(a_vals[i]);
                 let product = a_broadcast + b_vec;
-                acc[i] = acc[i].min(product);
+                // fast_min → vminq_f32; wide's plain min() uses NaN-aware
+                // vminnmq_f32. MinPlus inputs are finite/+inf, so the NaN
+                // handling is unnecessary work here.
+                acc[i] = acc[i].fast_min(product);
             }
         }
 
