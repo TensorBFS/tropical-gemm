@@ -255,8 +255,8 @@ where
     ///
     /// let ctx = CudaContext::new()?;
     /// let mats = vec![
-    ///     Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2),
-    ///     Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2),
+    ///     Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2),
+    ///     Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2),
     /// ];
     /// let gpu_mats = GpuMat::from_mats(&ctx, &mats)?;
     /// ```
@@ -686,10 +686,10 @@ mod tests {
         };
 
         // Create batch of CPU matrices
-        let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
-        let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-        let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2);
+        let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         // Upload batch to GPU
         let a_gpu = GpuMat::from_mats(ctx, &[a1, a2]).unwrap();
@@ -722,10 +722,10 @@ mod tests {
             }
         };
 
-        let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[6.0, 5.0, 4.0, 3.0, 2.0, 1.0], 2, 3);
-        let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
-        let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[6.0, 3.0, 5.0, 2.0, 4.0, 1.0], 2, 3);
+        let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
+        let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         // Upload to GPU
         let a_gpu = GpuMat::from_mats(ctx, &[a1, a2]).unwrap();

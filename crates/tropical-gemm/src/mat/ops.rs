@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_mat_ref_mul_matref() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         // Column-major: 2×2 matrix [[1,2],[3,4]] stored as [1,3,2,4]
         let b_data = [1.0f64, 3.0, 2.0, 4.0];
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 2, 2);
@@ -119,8 +119,8 @@ mod tests {
 
     #[test]
     fn test_mat_mul_mat() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         let c = &a * &b;
 
@@ -129,8 +129,8 @@ mod tests {
 
     #[test]
     fn test_mat_mul_consuming() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         let c = a * b;
 
