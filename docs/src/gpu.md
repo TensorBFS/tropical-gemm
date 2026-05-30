@@ -4,9 +4,10 @@ tropical-gemm-cuda provides NVIDIA GPU acceleration via CUDA.
 
 ## Requirements
 
-- NVIDIA GPU (compute capability 3.5+)
-- CUDA Toolkit 11.0 or later
-- `nvcc` in PATH
+- NVIDIA GPU (kernels are compiled for your device's compute capability; tested on Ampere `sm_86`)
+- NVIDIA driver + CUDA runtime libraries (`libcuda`, `libnvrtc`) available at runtime
+- **No build-time CUDA toolkit / `nvcc` required** — cudarc dynamic-loads CUDA at runtime.
+  Set `CUDARC_CUDA_VERSION` (e.g. `12080` for CUDA 12.8) to match the toolkit you run against.
 
 ## Basic Usage
 
@@ -42,8 +43,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Context Reuse
 
-The `CudaContext` compiles CUDA kernels on first use. **Always reuse contexts**
-to avoid repeated compilation:
+`CudaContext::new()` compiles all kernels on first use and **caches the resulting CUBIN on
+disk**, so the compile cost is paid once per machine (cold ~10 s) and later runs load the
+cubin directly (warm ~0.13 s). Still **reuse a single context** within a process:
 
 ```rust
 // GOOD: Reuse context

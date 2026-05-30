@@ -99,6 +99,100 @@ __device__ double atomicAddDouble(double* address, double val) {
 #endif
 
 // ============================================================================
+// BOUNDARY-AWARE TILE I/O HELPERS
+// ============================================================================
+// The global<->shared tile copies are identical across every GEMM kernel, so
+// they live here once. Interior blocks (not the last block-row/col, not the
+// final K-tile) load and store WITHOUT a per-element bounds check; only edge
+// blocks take the guarded path. That predicate -- which the old code ran on
+// every element of every block -- was the entire ~5% slowdown vs the C
+// reference on large matrices (issue #40); removing it for interior blocks
+// closes and reverses the gap. Mirrors the reference NN kernel
+// (TropicalGemm_Cuda/tropicalgemm_kernels.cu:625,638,683).
+//
+// These expand inside a kernel body and use its locals: As/Bs, BLOCK_IDX/IDY,
+// DIM_GRID_X/Y, tile_idx, the tile-size constants, M/N/K, accum[/_idx].
+// PAD is the tropical zero used to fill out-of-range cells.
+
+// A tile -> As. A is column-major with leading dimension M.
+#define LOAD_A_TILE(SRC, PAD)                                                  \
+    _Pragma("unroll")                                                          \
+    for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {                \
+        int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                       \
+        int col = A_TILE_COL + i + tile_idx;                                   \
+        int dst = OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M);        \
+        if (BLOCK_IDX == DIM_GRID_X - 1 || tile_idx >= K - BLOCK_SIZE_K)       \
+            As[dst] = (row < M && col < K) ? SRC[OFFSET_COL(row, col, M)] : (PAD); \
+        else                                                                  \
+            As[dst] = SRC[OFFSET_COL(row, col, M)];                           \
+    }
+
+// B tile -> Bs. B is column-major with leading dimension K.
+#define LOAD_B_TILE(SRC, PAD)                                                  \
+    _Pragma("unroll")                                                          \
+    for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {                \
+        int row = tile_idx + B_TILE_ROW;                                       \
+        int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;                   \
+        int dst = OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K);        \
+        if (tile_idx >= K - BLOCK_SIZE_K || BLOCK_IDY == DIM_GRID_Y - 1)       \
+            Bs[dst] = (row < K && col < N) ? SRC[OFFSET_COL(row, col, K)] : (PAD); \
+        else                                                                  \
+            Bs[dst] = SRC[OFFSET_COL(row, col, K)];                           \
+    }
+
+// Edge block iff last block-row or last block-col; interior blocks are fully in
+// range so they store unconditionally.
+#define TILE_IS_EDGE (BLOCK_IDX == DIM_GRID_X - 1 || BLOCK_IDY == DIM_GRID_Y - 1)
+
+// C tile store (value only).
+#define STORE_C_TILE(DST)                                                      \
+    _Pragma("unroll")                                                          \
+    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
+        _Pragma("unroll")                                                      \
+        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
+            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
+            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
+            if (!TILE_IS_EDGE || (row < M && col < N))                         \
+                DST[OFFSET_COL(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
+        }                                                                      \
+    }
+
+// C + argmax store (no tropical-zero canonicalization; float/double argmax).
+#define STORE_C_ARGMAX_TILE(DST, ARGMAX_DST)                                   \
+    _Pragma("unroll")                                                          \
+    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
+        _Pragma("unroll")                                                      \
+        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
+            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
+            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
+            if (!TILE_IS_EDGE || (row < M && col < N)) {                       \
+                int out_idx = OFFSET_COL(row, col, M);                         \
+                int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
+                DST[out_idx] = accum[local_idx];                               \
+                ARGMAX_DST[out_idx] = accum_idx[local_idx];                    \
+            }                                                                  \
+        }                                                                      \
+    }
+
+// C + argmax store with tropical-zero canonicalization (integer argmax): a
+// drifted-zero cell's argmax is reset to the seed 0 via ZERO_FN.
+#define STORE_C_ARGMAX_ZERO_TILE(DST, ARGMAX_DST, ZERO_FN)                     \
+    _Pragma("unroll")                                                          \
+    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
+        _Pragma("unroll")                                                      \
+        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
+            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
+            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
+            if (!TILE_IS_EDGE || (row < M && col < N)) {                       \
+                int out_idx = OFFSET_COL(row, col, M);                         \
+                int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
+                DST[out_idx] = accum[local_idx];                               \
+                ARGMAX_DST[out_idx] = (ZERO_FN)(accum[local_idx]) ? 0 : accum_idx[local_idx]; \
+            }                                                                  \
+        }                                                                      \
+    }
+
+// ============================================================================
 // F32 GEMM KERNEL MACRO
 // ============================================================================
 // Block sizes for f32: 64x32x64, Thread sizes: 4x4
@@ -122,6 +216,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -147,27 +242,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            float val = INIT_VAL;                                              \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            float val = INIT_VAL;                                              \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -196,17 +273,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                C[OFFSET_COL(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_TILE(C)                                                   \
 }
 
 // ============================================================================
@@ -232,6 +299,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -257,27 +325,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            double val = INIT_VAL;                                             \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            double val = INIT_VAL;                                             \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -306,17 +356,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                C[OFFSET_COL(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_TILE(C)                                                   \
 }
 
 // ============================================================================
@@ -343,6 +383,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -368,27 +409,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            int val = INIT_VAL;                                                \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            int val = INIT_VAL;                                                \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -417,17 +440,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                C[OFFSET_COL(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_TILE(C)                                                   \
 }
 
 // ============================================================================
@@ -453,6 +466,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -478,27 +492,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            long long val = INIT_VAL;                                          \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            long long val = INIT_VAL;                                          \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -527,17 +523,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                C[OFFSET_COL(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_TILE(C)                                                   \
 }
 
 // ============================================================================
@@ -563,6 +549,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -590,27 +577,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            float val = INIT_VAL;                                              \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            float val = INIT_VAL;                                              \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -643,20 +612,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                int out_idx = OFFSET_COL(row, col, M);                         \
-                int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
-                C[out_idx] = accum[local_idx];                                 \
-                argmax[out_idx] = accum_idx[local_idx];                        \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_ARGMAX_TILE(C, argmax)                                          \
 }
 
 // ============================================================================
@@ -682,6 +638,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -709,27 +666,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            double val = INIT_VAL;                                             \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            double val = INIT_VAL;                                             \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -762,20 +701,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                int out_idx = OFFSET_COL(row, col, M);                         \
-                int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
-                C[out_idx] = accum[local_idx];                                 \
-                argmax[out_idx] = accum_idx[local_idx];                        \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_ARGMAX_TILE(C, argmax)                                          \
 }
 
 // ============================================================================
@@ -801,6 +727,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -828,27 +755,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            int val = INIT_VAL;                                                \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            int val = INIT_VAL;                                                \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -881,20 +790,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                int out_idx = OFFSET_COL(row, col, M);                         \
-                int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
-                C[out_idx] = accum[local_idx];                                 \
-                argmax[out_idx] = ZERO_FN(accum[local_idx]) ? 0 : accum_idx[local_idx]; \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_ARGMAX_ZERO_TILE(C, argmax, ZERO_FN)                                 \
 }
 
 // ============================================================================
@@ -920,6 +816,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -947,27 +844,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            long long val = INIT_VAL;                                          \
-            if (row < M && col < K) {                                          \
-                val = A[OFFSET_COL(row, col, M)];                              \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            long long val = INIT_VAL;                                          \
-            if (row < K && col < N) {                                          \
-                val = B[OFFSET_COL(row, col, K)];                              \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -1000,20 +879,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                int out_idx = OFFSET_COL(row, col, M);                         \
-                int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
-                C[out_idx] = accum[local_idx];                                 \
-                argmax[out_idx] = ZERO_FN(accum[local_idx]) ? 0 : accum_idx[local_idx]; \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_ARGMAX_ZERO_TILE(C, argmax, ZERO_FN)                                 \
 }
 
 // ============================================================================
@@ -1134,6 +1000,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
                                                                                \
     int batch_idx = blockIdx.z;                                                \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
     int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
                                                                                \
@@ -1166,27 +1033,9 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
                                                                                \
     for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_K; i += A_TILE_COL_STRIDE) {            \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + A_TILE_ROW;                   \
-            int col = A_TILE_COL + i + tile_idx;                               \
-            float val = INIT_VAL;                                              \
-            if (row < M && col < K) {                                          \
-                val = A_batch[OFFSET_COL(row, col, M)];                        \
-            }                                                                  \
-            As[OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M)] = val;    \
-        }                                                                      \
+        LOAD_A_TILE(A_batch, INIT_VAL)                                          \
                                                                                \
-        _Pragma("unroll")                                                      \
-        for (int i = 0; i < BLOCK_SIZE_N; i += B_TILE_COL_STRIDE) {            \
-            int row = tile_idx + B_TILE_ROW;                                   \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;               \
-            float val = INIT_VAL;                                              \
-            if (row < K && col < N) {                                          \
-                val = B_batch[OFFSET_COL(row, col, K)];                        \
-            }                                                                  \
-            Bs[OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K)] = val;    \
-        }                                                                      \
+        LOAD_B_TILE(B_batch, INIT_VAL)                                          \
                                                                                \
         __syncthreads();                                                       \
                                                                                \
@@ -1219,20 +1068,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
         __syncthreads();                                                       \
     }                                                                          \
                                                                                \
-    _Pragma("unroll")                                                          \
-    for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                               \
-        _Pragma("unroll")                                                      \
-        for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                           \
-            int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
-            int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
-            if (row < M && col < N) {                                          \
-                int out_idx = OFFSET_COL(row, col, M);                         \
-                int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
-                C_batch[out_idx] = accum[local_idx];                           \
-                argmax_batch[out_idx] = accum_idx[local_idx];                  \
-            }                                                                  \
-        }                                                                      \
-    }                                                                          \
+        STORE_C_ARGMAX_TILE(C_batch, argmax_batch)                                          \
 }
 
 // --- Batched F32 GEMM with Argmax Kernels ---

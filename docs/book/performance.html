@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-4715aa1c.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -214,21 +214,43 @@
 </table>
 </div>
 <h3 id="rust-cuda-vs-c-reference"><a class="header" href="#rust-cuda-vs-c-reference">Rust CUDA vs C Reference</a></h3>
-<p>Comparison with <a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a>:</p>
+<p>Re-measured on <strong>NVIDIA A40 (sm_86), CUDA 12.8</strong>, kernel-only (device-resident, no
+host transfers; warmup + 100 iters), against
+<a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a> built with
+<code>nvcc -arch=sm_86</code>:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Size</th><th>C Library (ms)</th><th>Rust CUDA (ms)</th><th>Ratio</th></tr>
+<tr><th>Size</th><th style="text-align: right">C ref (ms)</th><th style="text-align: right">tropical-gemm (ms)</th><th style="text-align: right">Ratio</th></tr>
 </thead>
 <tbody>
-<tr><td>256</td><td>0.028</td><td>0.032</td><td>1.14x</td></tr>
-<tr><td>512</td><td>0.074</td><td>0.086</td><td>1.16x</td></tr>
-<tr><td>1024</td><td>0.315</td><td>0.358</td><td>1.14x</td></tr>
-<tr><td>2048</td><td>2.224</td><td>2.509</td><td>1.13x</td></tr>
+<tr><td>1024</td><td style="text-align: right">0.272</td><td style="text-align: right">0.263</td><td style="text-align: right">0.97x</td></tr>
+<tr><td>2048</td><td style="text-align: right">1.702</td><td style="text-align: right">1.654</td><td style="text-align: right">0.97x</td></tr>
+<tr><td>4096</td><td style="text-align: right">13.40</td><td style="text-align: right">13.01</td><td style="text-align: right">0.97x</td></tr>
 </tbody>
 </table>
 </div>
-<p>The C library is ~13-16% faster due to pre-compiled PTX vs runtime compilation.</p>
+<p>The kernels are <strong>~3% faster than the C reference</strong> at large sizes (and more at small
+sizes). This followed fixing the one real difference between the two kernels (issue #40):</p>
+<ul>
+<li><strong>Interior/boundary split in the tile loads.</strong> Both kernels are the same tiled GEMM,
+but the old code ran a per-element bounds check (<code>if (row &lt; M &amp;&amp; col &lt; K)</code>) on <em>every</em>
+element of <em>every</em> block. For a large matrix ~97% of blocks are fully interior and never
+need it. Splitting interior blocks (bare loads) from boundary blocks (guarded) removed
+that overhead and made the kernels ~7-8% faster — enough to pass the reference, which the
+old code trailed by ~3-6%. (We end up ahead because the reference’s store path re-reads
+<code>C</code> and applies <code>alpha</code>/<code>beta</code>, while ours writes the accumulator directly.)</li>
+<li><strong>Compiling to an arch-targeted CUBIN (<code>-arch=sm_XX</code>) does not change throughput.</strong>
+Default PTX (driver-JIT’d at load) and an offline CUBIN run identically — on a current
+driver the JIT runs ptxas and produces SASS equivalent to offline <code>nvcc</code>. The CUBIN build
+is a startup-latency win (issue #41), not a throughput one. (An earlier edition of this
+page blamed the gap on the CUDA toolkit version; that was wrong — it was the bounds-check.)</li>
+</ul>
+<blockquote>
+<p>NVRTC compiles device code optimized by default (<code>-dopt=on</code> is implicit unless <code>-G</code> is
+passed), so no <code>-O3</code> is needed — the <code>-O3</code> in <code>nvcc -O3</code> is a host-compiler flag and does
+not apply to these pure-device kernels.</p>
+</blockquote>
 <h3 id="gpu-backward-pass-performance"><a class="header" href="#gpu-backward-pass-performance">GPU Backward Pass Performance</a></h3>
 <div class="table-wrapper">
 <table>
@@ -276,19 +298,28 @@ let a_ref = MatRef::from_slice_strided(&amp;data, m, k, stride);
 <li><strong>Short-wide (K &gt;&gt; M)</strong>: May have cache pressure</li>
 </ul>
 <h2 id="gpu-optimization"><a class="header" href="#gpu-optimization">GPU Optimization</a></h2>
-<h3 id="context-reuse"><a class="header" href="#context-reuse">Context Reuse</a></h3>
-<p><strong>Critical</strong>: Reuse <code>CudaContext</code> to avoid repeated kernel compilation:</p>
+<h3 id="context-reuse-and-the-kernel-cache"><a class="header" href="#context-reuse-and-the-kernel-cache">Context Reuse and the kernel cache</a></h3>
+<p><code>CudaContext::new()</code> compiles all kernels to a CUBIN for the device’s architecture and
+<strong>caches it on disk</strong> (under <code>$XDG_CACHE_HOME</code> / <code>~/.cache/tropical-gemm/</code>), so the compile
+cost is paid once per machine, not once per process:</p>
+<ul>
+<li><strong>cold</strong> (first run, empty cache): ~10 s — full NVRTC compile.</li>
+<li><strong>warm</strong> (cubin cached): <strong>~0.13 s</strong> — loads the cubin directly, skipping both the NVRTC
+compile <em>and</em> the driver’s PTX→SASS JIT.</li>
+</ul>
+<p>Still reuse a single <code>CudaContext</code> within a process to avoid even the warm ~0.13 s and keep
+kernels resident:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>// GOOD: Create once, reuse many times
-let ctx = CudaContext::new()?;  // ~1-2 seconds
+</span>// GOOD: create once, reuse many times
+let ctx = CudaContext::new()?;  // ~10s cold / ~0.13s warm (disk-cached cubin)
 for batch in batches {
-    let c = a.matmul(&amp;ctx, &amp;b)?;  // Fast
+    let c = a.matmul(&amp;ctx, &amp;b)?;  // fast
 }
 
-// BAD: Creates new context each time
+// BAD: new context each iteration
 for batch in batches {
-    let ctx = CudaContext::new()?;  // Slow!
+    let ctx = CudaContext::new()?;
     let c = a.matmul(&amp;ctx, &amp;b)?;
 }
 <span class="boring">}</span></code></pre>
@@ -348,6 +379,44 @@ output = tropical_matmul(large_batch_a, large_batch_b)
 
 # SLOWER: Many small operations
 outputs = [tropical_matmul(a, b) for a, b in zip(small_as, small_bs)]
+</code></pre>
+<h2 id="python-threading"><a class="header" href="#python-threading">Python Threading</a></h2>
+<h3 id="gil-release-during-compute"><a class="header" href="#gil-release-during-compute">GIL Release During Compute</a></h3>
+<p>All CPU functions release Python’s GIL during heavy computation, allowing other Python threads to run concurrently:</p>
+<pre><code class="language-python">import threading
+import tropical_gemm
+import numpy as np
+
+def background_task():
+    # This can run while tropical_gemm computes
+    print("Background task running")
+
+a = np.random.randn(1000, 1000).astype(np.float32)
+b = np.random.randn(1000, 1000).astype(np.float32)
+
+# Start background thread
+t = threading.Thread(target=background_task)
+t.start()
+
+# GIL is released during compute - background thread can run
+c = tropical_gemm.maxplus_matmul(a, b)
+
+t.join()
+</code></pre>
+<p>This is particularly useful in:</p>
+<ul>
+<li>Web servers (Flask, FastAPI) handling concurrent requests</li>
+<li>GUI applications that need to remain responsive</li>
+<li>Async applications using concurrent.futures</li>
+</ul>
+<h3 id="zero-copy-with-2d-functions"><a class="header" href="#zero-copy-with-2d-functions">Zero-Copy with 2D Functions</a></h3>
+<p>The <code>*_matmul_2d</code> functions return properly shaped 2D arrays without reshaping overhead:</p>
+<pre><code class="language-python"># Recommended: Use 2D functions for cleaner code
+c = tropical_gemm.maxplus_matmul_2d(a, b)  # shape: (m, n)
+
+# Older pattern requiring reshape
+c_flat = tropical_gemm.maxplus_matmul(a, b)  # shape: (m*n,)
+c = c_flat.reshape(m, n)
 </code></pre>
 <h2 id="memory-considerations"><a class="header" href="#memory-considerations">Memory Considerations</a></h2>
 <h3 id="argmax-memory"><a class="header" href="#argmax-memory">Argmax Memory</a></h3>
@@ -460,22 +529,6 @@ make bench-cuda     # CUDA only
         <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
         <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
         <script>

@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::memory::{
     ExternalGpuMatrix, ExternalGpuTensor3, GpuMatrix, GpuMatrixWithArgmax, GpuTensor3WithArgmax,
 };
-use cudarc::driver::{DeviceRepr, LaunchAsync, LaunchConfig, ValidAsZeroBits};
+use cudarc::driver::{DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
 use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
 
 /// Trait for types that can be computed on GPU.
@@ -48,21 +48,25 @@ fn launch_kernel_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>(
         shared_mem_bytes: 0,
     };
 
+    // Bind scalar kernel args to locals so they outlive the launch builder.
+    let m_i32 = m as i32;
+    let n_i32 = n as i32;
+    let k_i32 = k as i32;
+
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(a.as_slice())
+        .arg(b.as_slice())
+        .arg(c.as_slice_mut())
+        .arg(&m_i32)
+        .arg(&n_i32)
+        .arg(&k_i32);
     unsafe {
-        kernel.launch(
-            cfg,
-            (
-                a.as_slice(),
-                b.as_slice(),
-                c.as_slice_mut(),
-                m as i32,
-                n as i32,
-                k as i32,
-            ),
-        )?;
+        builder.launch(cfg)?;
     }
 
-    ctx.device().synchronize()?;
+    stream.synchronize()?;
     Ok(())
 }
 
@@ -228,22 +232,26 @@ fn launch_kernel_with_argmax_impl<T: DeviceRepr + ValidAsZeroBits + Default + Cl
         shared_mem_bytes: 0,
     };
 
+    // Bind scalar kernel args to locals so they outlive the launch builder.
+    let m_i32 = m as i32;
+    let n_i32 = n as i32;
+    let k_i32 = k as i32;
+
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(a.as_slice())
+        .arg(b.as_slice())
+        .arg(c.matrix.as_slice_mut())
+        .arg(c.argmax.as_slice_mut())
+        .arg(&m_i32)
+        .arg(&n_i32)
+        .arg(&k_i32);
     unsafe {
-        kernel.launch(
-            cfg,
-            (
-                a.as_slice(),
-                b.as_slice(),
-                c.matrix.as_slice_mut(),
-                c.argmax.as_slice_mut(),
-                m as i32,
-                n as i32,
-                k as i32,
-            ),
-        )?;
+        builder.launch(cfg)?;
     }
 
-    ctx.device().synchronize()?;
+    stream.synchronize()?;
     Ok(())
 }
 
@@ -413,23 +421,31 @@ pub unsafe fn launch_gemm_external_with_argmax_f32(
         shared_mem_bytes: 0,
     };
 
+    // Bind raw external pointers and scalar args to locals so they outlive the
+    // launch builder. The pointers are passed as `u64` (== `sys::CUdeviceptr`),
+    // which is `DeviceRepr`, so the kernel receives them as device pointers.
+    let b_ptr: u64 = b.device_ptr(); // B becomes "A" in kernel
+    let a_ptr: u64 = a.device_ptr(); // A becomes "B" in kernel
+    let n_i32 = n as i32; // Swapped: N becomes "M"
+    let m_i32 = m as i32; // Swapped: M becomes "N"
+    let k_i32 = k as i32;
+
     // Swap order: pass B first, then A, and swap M↔N
     // Kernel signature: (A_ptr, B_ptr, C_ptr, argmax_ptr, M, N, K)
     // We pass:          (B_ptr, A_ptr, C_ptr, argmax_ptr, N, M, K)
-    kernel.launch(
-        cfg,
-        (
-            b.device_ptr(), // B becomes "A" in kernel
-            a.device_ptr(), // A becomes "B" in kernel
-            c.matrix.as_slice_mut(),
-            c.argmax.as_slice_mut(),
-            n as i32, // Swapped: N becomes "M"
-            m as i32, // Swapped: M becomes "N"
-            k as i32,
-        ),
-    )?;
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(&b_ptr)
+        .arg(&a_ptr)
+        .arg(c.matrix.as_slice_mut())
+        .arg(c.argmax.as_slice_mut())
+        .arg(&n_i32)
+        .arg(&m_i32)
+        .arg(&k_i32);
+    builder.launch(cfg)?;
 
-    ctx.device().synchronize()?;
+    stream.synchronize()?;
     Ok(c)
 }
 
@@ -455,20 +471,27 @@ pub unsafe fn launch_gemm_external_f32(
         shared_mem_bytes: 0,
     };
 
-    // Swap order and dimensions
-    kernel.launch(
-        cfg,
-        (
-            b.device_ptr(),
-            a.device_ptr(),
-            c.as_slice_mut(),
-            n as i32,
-            m as i32,
-            k as i32,
-        ),
-    )?;
+    // Bind raw external pointers and scalar args to locals so they outlive the
+    // launch builder.
+    let b_ptr: u64 = b.device_ptr();
+    let a_ptr: u64 = a.device_ptr();
+    let n_i32 = n as i32;
+    let m_i32 = m as i32;
+    let k_i32 = k as i32;
 
-    ctx.device().synchronize()?;
+    // Swap order and dimensions
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(&b_ptr)
+        .arg(&a_ptr)
+        .arg(c.as_slice_mut())
+        .arg(&n_i32)
+        .arg(&m_i32)
+        .arg(&k_i32);
+    builder.launch(cfg)?;
+
+    stream.synchronize()?;
     Ok(c)
 }
 
@@ -526,25 +549,32 @@ pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
     let stride_b = b.stride() as i32;
     let stride_c = c.tensor.stride() as i32;
 
+    // Bind raw external pointers and scalar args to locals so they outlive the
+    // launch builder.
+    let b_ptr: u64 = b.device_ptr(); // B becomes "A" in kernel
+    let a_ptr: u64 = a.device_ptr(); // A becomes "B" in kernel
+    let n_i32 = n as i32; // Swapped: N becomes "M"
+    let m_i32 = m as i32; // Swapped: M becomes "N"
+    let k_i32 = k as i32;
+
     // Swap order: pass B first, then A, and swap M↔N
     // Kernel signature: (A, B, C, argmax, M, N, K, strideA, strideB, strideC)
     // We pass:          (B, A, C, argmax, N, M, K, strideB, strideA, strideC)
-    kernel.launch(
-        cfg,
-        (
-            b.device_ptr(),                  // B becomes "A" in kernel
-            a.device_ptr(),                  // A becomes "B" in kernel
-            c.tensor.as_slice_mut(),
-            c.argmax.as_slice_mut(),
-            n as i32,                        // Swapped: N becomes "M"
-            m as i32,                        // Swapped: M becomes "N"
-            k as i32,
-            stride_b,                        // strideA (B's stride in our swap)
-            stride_a,                        // strideB (A's stride in our swap)
-            stride_c,                        // strideC
-        ),
-    )?;
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(&b_ptr)
+        .arg(&a_ptr)
+        .arg(c.tensor.as_slice_mut())
+        .arg(c.argmax.as_slice_mut())
+        .arg(&n_i32)
+        .arg(&m_i32)
+        .arg(&k_i32)
+        .arg(&stride_b) // strideA (B's stride in our swap)
+        .arg(&stride_a) // strideB (A's stride in our swap)
+        .arg(&stride_c); // strideC
+    builder.launch(cfg)?;
 
-    ctx.device().synchronize()?;
+    stream.synchronize()?;
     Ok(c)
 }

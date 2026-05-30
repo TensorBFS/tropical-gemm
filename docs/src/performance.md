@@ -26,16 +26,36 @@ Tested on NVIDIA RTX A4500 (Ampere) with AMD Ryzen 9 5900X.
 
 ### Rust CUDA vs C Reference
 
-Comparison with [TropicalGemm_Cuda](https://github.com/ArrogantGao/TropicalGemm_Cuda):
+Re-measured on **NVIDIA A40 (sm_86), CUDA 12.8**, kernel-only (device-resident, no
+host transfers; warmup + 100 iters), against
+[TropicalGemm_Cuda](https://github.com/ArrogantGao/TropicalGemm_Cuda) built with
+`nvcc -arch=sm_86`:
 
-| Size | C Library (ms) | Rust CUDA (ms) | Ratio |
-|------|----------------|----------------|-------|
-| 256 | 0.028 | 0.032 | 1.14x |
-| 512 | 0.074 | 0.086 | 1.16x |
-| 1024 | 0.315 | 0.358 | 1.14x |
-| 2048 | 2.224 | 2.509 | 1.13x |
+| Size | C ref (ms) | tropical-gemm (ms) | Ratio |
+|------|-----------:|-------------------:|------:|
+| 1024 | 0.272 | 0.263 | 0.97x |
+| 2048 | 1.702 | 1.654 | 0.97x |
+| 4096 | 13.40 | 13.01 | 0.97x |
 
-The C library is ~13-16% faster due to pre-compiled PTX vs runtime compilation.
+The kernels are **~3% faster than the C reference** at large sizes (and more at small
+sizes). This followed fixing the one real difference between the two kernels (issue #40):
+
+- **Interior/boundary split in the tile loads.** Both kernels are the same tiled GEMM,
+  but the old code ran a per-element bounds check (`if (row < M && col < K)`) on *every*
+  element of *every* block. For a large matrix ~97% of blocks are fully interior and never
+  need it. Splitting interior blocks (bare loads) from boundary blocks (guarded) removed
+  that overhead and made the kernels ~7-8% faster — enough to pass the reference, which the
+  old code trailed by ~3-6%. (We end up ahead because the reference's store path re-reads
+  `C` and applies `alpha`/`beta`, while ours writes the accumulator directly.)
+- **Compiling to an arch-targeted CUBIN (`-arch=sm_XX`) does not change throughput.**
+  Default PTX (driver-JIT'd at load) and an offline CUBIN run identically — on a current
+  driver the JIT runs ptxas and produces SASS equivalent to offline `nvcc`. The CUBIN build
+  is a startup-latency win (issue #41), not a throughput one. (An earlier edition of this
+  page blamed the gap on the CUDA toolkit version; that was wrong — it was the bounds-check.)
+
+> NVRTC compiles device code optimized by default (`-dopt=on` is implicit unless `-G` is
+> passed), so no `-O3` is needed — the `-O3` in `nvcc -O3` is a host-compiler flag and does
+> not apply to these pure-device kernels.
 
 ### GPU Backward Pass Performance
 
@@ -86,20 +106,29 @@ For best cache utilization:
 
 ## GPU Optimization
 
-### Context Reuse
+### Context Reuse and the kernel cache
 
-**Critical**: Reuse `CudaContext` to avoid repeated kernel compilation:
+`CudaContext::new()` compiles all kernels to a CUBIN for the device's architecture and
+**caches it on disk** (under `$XDG_CACHE_HOME` / `~/.cache/tropical-gemm/`), so the compile
+cost is paid once per machine, not once per process:
+
+- **cold** (first run, empty cache): ~10 s — full NVRTC compile.
+- **warm** (cubin cached): **~0.13 s** — loads the cubin directly, skipping both the NVRTC
+  compile *and* the driver's PTX→SASS JIT.
+
+Still reuse a single `CudaContext` within a process to avoid even the warm ~0.13 s and keep
+kernels resident:
 
 ```rust
-// GOOD: Create once, reuse many times
-let ctx = CudaContext::new()?;  // ~1-2 seconds
+// GOOD: create once, reuse many times
+let ctx = CudaContext::new()?;  // ~10s cold / ~0.13s warm (disk-cached cubin)
 for batch in batches {
-    let c = a.matmul(&ctx, &b)?;  // Fast
+    let c = a.matmul(&ctx, &b)?;  // fast
 }
 
-// BAD: Creates new context each time
+// BAD: new context each iteration
 for batch in batches {
-    let ctx = CudaContext::new()?;  // Slow!
+    let ctx = CudaContext::new()?;
     let c = a.matmul(&ctx, &b)?;
 }
 ```

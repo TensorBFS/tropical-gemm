@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 use tropical_gemm_cuda::{SENTINEL_I32, SENTINEL_I64};
 
@@ -45,24 +45,30 @@ fn cfg_i64() -> LaunchConfig {
 }
 
 /// Run the 1x2x1 masking GEMM for the given data magnitude D, return C[0,0].
-fn mask_i32(dev: &Arc<CudaDevice>, d: i32) -> R<i32> {
+fn mask_i32(stream: &Arc<CudaStream>, module: &Arc<CudaModule>, d: i32) -> R<i32> {
     let s = S_I32 as i32;
     // col-major: A(1x2)=[a0,a1], B(2x1)=[b0,b1]
-    let a = dev.htod_copy(vec![-d, s])?; // a0=-D (real), a1=S (no edge)
-    let b = dev.htod_copy(vec![-d, d])?; // b0=-D (real), b1=+D (data)
-    let mut c = dev.alloc_zeros::<i32>(1)?;
-    let f = dev.get_func("rng", "tropical_maxplus_i32_nn").unwrap();
-    unsafe { f.launch(cfg_i32(), (&a, &b, &mut c, 1i32, 1i32, 2i32))?; }
-    Ok(dev.dtoh_sync_copy(&c)?[0])
+    let a = stream.clone_htod(&[-d, s])?; // a0=-D (real), a1=S (no edge)
+    let b = stream.clone_htod(&[-d, d])?; // b0=-D (real), b1=+D (data)
+    let mut c = stream.alloc_zeros::<i32>(1)?;
+    let f = module.load_function("tropical_maxplus_i32_nn").unwrap();
+    let (m, n, k) = (1i32, 1i32, 2i32);
+    let mut launch_args = stream.launch_builder(&f);
+    launch_args.arg(&a).arg(&b).arg(&mut c).arg(&m).arg(&n).arg(&k);
+    unsafe { launch_args.launch(cfg_i32())?; }
+    Ok(stream.clone_dtoh(&c)?[0])
 }
 
-fn mask_i64(dev: &Arc<CudaDevice>, d: i64) -> R<i64> {
-    let a = dev.htod_copy(vec![-d, S_I64])?;
-    let b = dev.htod_copy(vec![-d, d])?;
-    let mut c = dev.alloc_zeros::<i64>(1)?;
-    let f = dev.get_func("rng", "tropical_maxplus_i64_nn").unwrap();
-    unsafe { f.launch(cfg_i64(), (&a, &b, &mut c, 1i32, 1i32, 2i32))?; }
-    Ok(dev.dtoh_sync_copy(&c)?[0])
+fn mask_i64(stream: &Arc<CudaStream>, module: &Arc<CudaModule>, d: i64) -> R<i64> {
+    let a = stream.clone_htod(&[-d, S_I64])?;
+    let b = stream.clone_htod(&[-d, d])?;
+    let mut c = stream.alloc_zeros::<i64>(1)?;
+    let f = module.load_function("tropical_maxplus_i64_nn").unwrap();
+    let (m, n, k) = (1i32, 1i32, 2i32);
+    let mut launch_args = stream.launch_builder(&f);
+    launch_args.arg(&a).arg(&b).arg(&mut c).arg(&m).arg(&n).arg(&k);
+    unsafe { launch_args.launch(cfg_i64())?; }
+    Ok(stream.clone_dtoh(&c)?[0])
 }
 
 /// Classify and print one row. `gpu` is the measured C[0,0]; the true tropical
@@ -90,21 +96,22 @@ fn report(label: &str, s: i64, d: i64, gpu: i64) {
 }
 
 fn main() -> R<()> {
-    let dev = CudaDevice::new(0)?;
-    let ptx = compile_ptx(KERNEL_SRC.to_string())?;
-    dev.load_ptx(ptx, "rng", &["tropical_maxplus_i32_nn", "tropical_maxplus_i64_nn"])?;
+    let ctx = CudaContext::new(0)?;
+    let stream = ctx.default_stream();
+    let ptx = compile_ptx(KERNEL_SRC)?;
+    let module = ctx.load_module(ptx)?;
 
     let s32 = S_I32.unsigned_abs() as i64; // 1e9
     println!("=== i32 maxplus, |S| = {s32} (markers: |S|/4 = {}, |S|/3 = {}) ===", s32 / 4, s32 / 3);
     for &d in &[100_000_000i64, 200_000_000, 250_000_000, 300_000_000, 333_333_333, 400_000_000, 500_000_000] {
-        let gpu = mask_i32(&dev, d as i32)?;
+        let gpu = mask_i32(&stream, &module, d as i32)?;
         report("i32", S_I32, d, gpu as i64);
     }
 
     let s64 = S_I64.unsigned_abs() as i64; // 2^60
     println!("\n=== i64 maxplus, |S| = 2^60 = {s64} (markers: |S|/4 = {}, |S|/3 = {}) ===", s64 / 4, s64 / 3);
     for &d in &[1i64 << 54, 1 << 56, 1 << 58, s64 / 3, 1 << 59] {
-        let gpu = mask_i64(&dev, d)?;
+        let gpu = mask_i64(&stream, &module, d)?;
         report("i64", S_I64, d, gpu);
     }
 

@@ -60,8 +60,10 @@
 //! # Performance
 //!
 //! The convenience functions (`tropical_matmul_gpu`, etc.) use a lazily-initialized
-//! global context that persists across calls. This avoids the ~7 second NVRTC
-//! compilation overhead on each call.
+//! global context that persists across calls, so kernel compilation happens at most once
+//! per process. Across processes the compiled kernels are cached on disk as a CUBIN (see
+//! [`CudaContext`]), so a warm `CudaContext::new()` is ~0.13s instead of the ~10s cold
+//! NVRTC compile.
 //!
 //! # Integer scalar types and data range
 //!
@@ -85,13 +87,14 @@
 //! in `examples/int_range_limits.rs`. (`f32`/`f64` use real IEEE infinities and
 //! have none of these limits.)
 
+mod compile;
 mod context;
 mod error;
 mod gpu_mat;
 mod kernels;
 mod memory;
 
-use cudarc::driver::CudaDevice;
+use cudarc::driver::CudaContext as CudaCtx;
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -104,7 +107,7 @@ static INIT_MUTEX: Mutex<()> = Mutex::new(());
 
 /// Get the number of available CUDA devices.
 pub fn cuda_device_count() -> Result<usize> {
-    Ok(CudaDevice::count()? as usize)
+    Ok(CudaCtx::device_count()? as usize)
 }
 
 /// Get or initialize the CUDA context for a specific device.
@@ -917,7 +920,7 @@ pub fn tropical_backward_a_gpu_kernel(
     k: usize,
     n: usize,
 ) -> Result<GpuMatrix<f32>> {
-    use cudarc::driver::LaunchAsync;
+    use cudarc::driver::PushKernelArg;
 
     // Allocate output gradient (initialized to zero)
     let mut grad_a = GpuMatrix::alloc(ctx, m, k)?;
@@ -934,21 +937,25 @@ pub fn tropical_backward_a_gpu_kernel(
         shared_mem_bytes: 0,
     };
 
+    // Bind scalar kernel args to locals so they outlive the launch builder.
+    let m_i32 = m as i32;
+    let n_i32 = n as i32;
+    let k_i32 = k as i32;
+
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(grad_c.as_slice())
+        .arg(argmax)
+        .arg(grad_a.as_slice_mut())
+        .arg(&m_i32)
+        .arg(&n_i32)
+        .arg(&k_i32);
     unsafe {
-        kernel.launch(
-            cfg,
-            (
-                grad_c.as_slice(),
-                argmax,
-                grad_a.as_slice_mut(),
-                m as i32,
-                n as i32,
-                k as i32,
-            ),
-        )?;
+        builder.launch(cfg)?;
     }
 
-    ctx.device().synchronize()?;
+    stream.synchronize()?;
     Ok(grad_a)
 }
 
@@ -977,7 +984,7 @@ pub fn tropical_backward_b_gpu_kernel(
     k: usize,
     n: usize,
 ) -> Result<GpuMatrix<f32>> {
-    use cudarc::driver::LaunchAsync;
+    use cudarc::driver::PushKernelArg;
 
     // Allocate output gradient (initialized to zero)
     let mut grad_b = GpuMatrix::alloc(ctx, k, n)?;
@@ -994,21 +1001,25 @@ pub fn tropical_backward_b_gpu_kernel(
         shared_mem_bytes: 0,
     };
 
+    // Bind scalar kernel args to locals so they outlive the launch builder.
+    let m_i32 = m as i32;
+    let n_i32 = n as i32;
+    let k_i32 = k as i32;
+
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(grad_c.as_slice())
+        .arg(argmax)
+        .arg(grad_b.as_slice_mut())
+        .arg(&m_i32)
+        .arg(&n_i32)
+        .arg(&k_i32);
     unsafe {
-        kernel.launch(
-            cfg,
-            (
-                grad_c.as_slice(),
-                argmax,
-                grad_b.as_slice_mut(),
-                m as i32,
-                n as i32,
-                k as i32,
-            ),
-        )?;
+        builder.launch(cfg)?;
     }
 
-    ctx.device().synchronize()?;
+    stream.synchronize()?;
     Ok(grad_b)
 }
 
@@ -1033,7 +1044,7 @@ pub fn tropical_backward_a_gpu_cuda(
     let grad_c_gpu = GpuMatrix::from_host(ctx, grad_c, m, n)?;
 
     // Upload argmax directly (already column-major)
-    let argmax_gpu = ctx.device().htod_sync_copy(argmax)?;
+    let argmax_gpu = ctx.stream().clone_htod(argmax)?;
 
     // Run kernel
     let grad_a_gpu = tropical_backward_a_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
@@ -1063,7 +1074,7 @@ pub fn tropical_backward_b_gpu_cuda(
     let grad_c_gpu = GpuMatrix::from_host(ctx, grad_c, m, n)?;
 
     // Upload argmax directly (already column-major)
-    let argmax_gpu = ctx.device().htod_sync_copy(argmax)?;
+    let argmax_gpu = ctx.stream().clone_htod(argmax)?;
 
     // Run kernel
     let grad_b_gpu = tropical_backward_b_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
@@ -1144,9 +1155,9 @@ mod tests {
 
     /// Helper to check if CUDA is available
     fn cuda_context_or_skip() -> Option<&'static CudaContext> {
-        // One context shared across the whole test binary: NVRTC compiles once
-        // instead of per-test (~7s each). catch_unwind because cudarc panics
-        // rather than returning Err when libcuda is absent.
+        // One context shared across the whole test binary: kernels compile once (then
+        // load from the on-disk cubin cache) instead of per-test. catch_unwind because
+        // cudarc panics rather than returning Err when libcuda is absent.
         let result = std::panic::catch_unwind(crate::get_global_context);
         match result {
             Ok(Ok(ctx)) => Some(ctx),
@@ -1966,7 +1977,10 @@ mod tests {
     fn test_context_device_name() {
         if let Some(ctx) = cuda_context_or_skip() {
             let name = ctx.device_name();
-            assert!(name.starts_with("CUDA Device"));
+            // `device_name()` returns the real GPU model via `cuDeviceGetName`
+            // (e.g. "NVIDIA A40"), falling back to "CUDA Device {ordinal}" only if
+            // the driver query fails. Either way it must be a non-empty string.
+            assert!(!name.trim().is_empty(), "device name was empty: {name:?}");
         }
     }
 

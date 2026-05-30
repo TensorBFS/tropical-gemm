@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use cudarc::driver::{CudaDevice, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext, CudaModule, CudaStream, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 use tropical_gemm_cuda::SENTINEL_I32;
 
@@ -56,7 +56,8 @@ fn gemm_cfg(m: usize, n: usize) -> LaunchConfig {
 
 /// One i32 NN GEMM with argmax (column-major), returning (C, argmax).
 fn argmax_gemm(
-    dev: &Arc<CudaDevice>,
+    stream: &Arc<CudaStream>,
+    module: &Arc<CudaModule>,
     name: &str,
     a: &[i32],
     b: &[i32],
@@ -64,65 +65,80 @@ fn argmax_gemm(
     k: usize,
     n: usize,
 ) -> R<(Vec<i32>, Vec<i32>)> {
-    let da = dev.htod_copy(a.to_vec())?;
-    let db = dev.htod_copy(b.to_vec())?;
-    let mut dc = dev.alloc_zeros::<i32>(m * n)?;
-    let mut dam = dev.alloc_zeros::<i32>(m * n)?;
-    let f = dev.get_func("canon", name).unwrap();
+    let da = stream.clone_htod(a)?;
+    let db = stream.clone_htod(b)?;
+    let mut dc = stream.alloc_zeros::<i32>(m * n)?;
+    let mut dam = stream.alloc_zeros::<i32>(m * n)?;
+    let f = module.load_function(name).unwrap();
+    let (m_i, n_i, k_i) = (m as i32, n as i32, k as i32);
+    let mut launch_args = stream.launch_builder(&f);
+    launch_args
+        .arg(&da)
+        .arg(&db)
+        .arg(&mut dc)
+        .arg(&mut dam)
+        .arg(&m_i)
+        .arg(&n_i)
+        .arg(&k_i);
     unsafe {
-        f.launch(
-            gemm_cfg(m, n),
-            (&da, &db, &mut dc, &mut dam, m as i32, n as i32, k as i32),
-        )?;
+        launch_args.launch(gemm_cfg(m, n))?;
     }
-    Ok((dev.dtoh_sync_copy(&dc)?, dev.dtoh_sync_copy(&dam)?))
+    Ok((stream.clone_dtoh(&dc)?, stream.clone_dtoh(&dam)?))
 }
 
 /// Time `name`'s argmax GEMM (timing only, zero-filled inputs). The canon is a
 /// branchless `ZERO_FN(accum) ? 0 : accum_idx` predicated select, so its compare
 /// runs on every output cell regardless of outcome — this measures its full cost
 /// even though zero-filled cells are finite (the select just keeps accum_idx).
-fn bench(dev: &Arc<CudaDevice>, name: &str, n: usize) -> R<f64> {
-    let a = dev.alloc_zeros::<i32>(n * n)?;
-    let b = dev.alloc_zeros::<i32>(n * n)?;
-    let mut c = dev.alloc_zeros::<i32>(n * n)?;
-    let mut am = dev.alloc_zeros::<i32>(n * n)?;
+fn bench(stream: &Arc<CudaStream>, module: &Arc<CudaModule>, name: &str, n: usize) -> R<f64> {
+    let a = stream.alloc_zeros::<i32>(n * n)?;
+    let b = stream.alloc_zeros::<i32>(n * n)?;
+    let mut c = stream.alloc_zeros::<i32>(n * n)?;
+    let mut am = stream.alloc_zeros::<i32>(n * n)?;
     let cfg = gemm_cfg(n, n);
-    let f = dev.get_func("canon", name).unwrap();
+    let f = module.load_function(name).unwrap();
+    let n_i = n as i32;
     let run = |c: &mut cudarc::driver::CudaSlice<i32>,
                am: &mut cudarc::driver::CudaSlice<i32>|
      -> R<()> {
+        let mut launch_args = stream.launch_builder(&f);
+        launch_args
+            .arg(&a)
+            .arg(&b)
+            .arg(&mut *c)
+            .arg(&mut *am)
+            .arg(&n_i)
+            .arg(&n_i)
+            .arg(&n_i);
         unsafe {
-            f.clone().launch(
-                cfg,
-                (&a, &b, &mut *c, &mut *am, n as i32, n as i32, n as i32),
-            )?;
+            launch_args.launch(cfg)?;
         }
         Ok(())
     };
     for _ in 0..WARMUP {
         run(&mut c, &mut am)?;
     }
-    dev.synchronize()?;
+    stream.synchronize()?;
     let start = Instant::now();
     for _ in 0..ITERS {
         run(&mut c, &mut am)?;
     }
-    dev.synchronize()?;
+    stream.synchronize()?;
     Ok(start.elapsed().as_secs_f64() * 1e3 / ITERS as f64)
 }
 
 fn main() -> R<()> {
-    let dev = CudaDevice::new(0)?;
+    let ctx = CudaContext::new(0)?;
+    let stream = ctx.default_stream();
     let ptx = compile_ptx(format!("{KERNEL_SRC}\n{NOCANON_SRC}"))?;
-    dev.load_ptx(ptx, "canon", &[CANON, NOCANON])?;
+    let module = ctx.load_module(ptx)?;
 
     println!("=== correctness: tropical-zero cell argmax canonicalization (maxplus i32) ===");
 
     // Drift case: A row is all -inf (no edges), B finite. C[0,0] = max(S+5, S+7)
     // = S+7 (drifts, k=1). The cell is mathematically -inf, so its k is meaningless.
-    let (c_c, am_c) = argmax_gemm(&dev, CANON, &[S, S], &[5, 7], 1, 2, 1)?;
-    let (c_n, am_n) = argmax_gemm(&dev, NOCANON, &[S, S], &[5, 7], 1, 2, 1)?;
+    let (c_c, am_c) = argmax_gemm(&stream, &module,CANON, &[S, S], &[5, 7], 1, 2, 1)?;
+    let (c_n, am_n) = argmax_gemm(&stream, &module,NOCANON, &[S, S], &[5, 7], 1, 2, 1)?;
     println!("  A=[-inf,-inf] B=[5,7]  (cell is tropical zero):");
     println!("    canon   : C={:>12} argmax={}", c_c[0], am_c[0]);
     println!("    nocanon : C={:>12} argmax={}", c_n[0], am_n[0]);
@@ -132,14 +148,14 @@ fn main() -> R<()> {
     println!("    -> canon pins it to 0; nocanon drifts to k=1 (data-dependent).");
 
     // Order-independence: swapping B must not change the canon index (still 0).
-    let (_, am_57) = argmax_gemm(&dev, CANON, &[S, S], &[5, 7], 1, 2, 1)?;
-    let (_, am_75) = argmax_gemm(&dev, CANON, &[S, S], &[7, 5], 1, 2, 1)?;
+    let (_, am_57) = argmax_gemm(&stream, &module,CANON, &[S, S], &[5, 7], 1, 2, 1)?;
+    let (_, am_75) = argmax_gemm(&stream, &module,CANON, &[S, S], &[7, 5], 1, 2, 1)?;
     assert_eq!((am_57[0], am_75[0]), (0, 0), "canon index must be order-independent");
     println!("  B order swap [5,7] vs [7,5]: canon argmax = {} / {} (stable)", am_57[0], am_75[0]);
 
     // Sanity: a genuinely finite cell keeps the CORRECT argmax under canon.
     // A=[1,5,3], B=[2,4,0]: k=1 gives 5+4=9 (max).
-    let (c_f, am_f) = argmax_gemm(&dev, CANON, &[1, 5, 3], &[2, 4, 0], 1, 3, 1)?;
+    let (c_f, am_f) = argmax_gemm(&stream, &module,CANON, &[1, 5, 3], &[2, 4, 0], 1, 3, 1)?;
     assert_eq!((c_f[0], am_f[0]), (9, 1), "finite-cell argmax must stay correct");
     println!("  finite A=[1,5,3] B=[2,4,0]: C={} argmax={} (expect 9,1) -> correct\n", c_f[0], am_f[0]);
 
@@ -148,8 +164,8 @@ fn main() -> R<()> {
     println!("{:>6} | {:>12} {:>12} | {:>10}", "size", "nocanon", "canon", "overhead");
     println!("{}", "-".repeat(50));
     for &sz in &[1024usize, 2048, 4096] {
-        let nocanon = bench(&dev, NOCANON, sz)?;
-        let canon = bench(&dev, CANON, sz)?;
+        let nocanon = bench(&stream, &module,NOCANON, sz)?;
+        let canon = bench(&stream, &module,CANON, sz)?;
         let overhead = (canon / nocanon - 1.0) * 100.0;
         println!("{sz:>6} | {nocanon:>12.4} {canon:>12.4} | {overhead:>+9.2}%");
     }

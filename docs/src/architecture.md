@@ -95,8 +95,10 @@ match simd_level() {
 
 ### 4. CUDA Runtime Compilation
 
-Kernels are compiled from CUDA C source at runtime via NVRTC:
+Kernels are compiled from CUDA C source at runtime via NVRTC — to a CUBIN (native SASS)
+for the device's architecture — and the cubin is cached on disk:
 
-- No compile-time CUDA dependency
-- Portability across CUDA versions
+- No compile-time CUDA dependency (cudarc dynamic-loads CUDA at runtime)
+- On-disk CUBIN cache keyed on source + flags + arch + NVRTC version, so a warm
+  `CudaContext::new()` is ~0.13 s (vs ~10 s cold) and skips the driver's PTX→SASS JIT
 - Template-like specialization via macros
