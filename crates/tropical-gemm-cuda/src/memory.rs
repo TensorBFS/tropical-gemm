@@ -78,7 +78,6 @@ impl<T: DeviceRepr + Default + Clone + ValidAsZeroBits> GpuMatrix<T> {
     /// For performance-critical code, provide data in column-major order and use
     /// [`from_host`] instead.
     #[deprecated(
-        since = "0.4.0",
         note = "use `from_host` with column-major host data, or `from_cuda_slice` if your data is already on GPU; this method has O(m×n) transpose overhead"
     )]
     pub fn from_host_row_major(

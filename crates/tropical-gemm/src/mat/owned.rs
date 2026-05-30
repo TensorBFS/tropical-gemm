@@ -98,7 +98,7 @@ impl<S: TropicalSemiring> Mat<S> {
     ///
     /// This method performs an O(m×n) transpose operation. For performance-critical code,
     /// provide data in column-major order and use [`from_col_major`] instead.
-    #[deprecated(since = "0.4.0", note = "use from_col_major instead for direct column-major input; this method has O(m×n) transpose overhead")]
+    #[deprecated(note = "use from_col_major instead for direct column-major input; this method has O(m×n) transpose overhead")]
     pub fn from_row_major(data: &[S::Scalar], nrows: usize, ncols: usize) -> Self
     where
         S::Scalar: Copy,
@@ -169,7 +169,7 @@ impl<S: TropicalSemiring> Mat<S> {
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus};
     ///
-    /// let m = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let m = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
     /// assert_eq!(m.get_value(0, 0), 1.0);
     /// assert_eq!(m.get_value(1, 1), 4.0);
     /// ```
@@ -260,8 +260,8 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus, TropicalSemiring};
     ///
-    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    /// let a = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
     ///
     /// let c = a.matmul(&b);
     ///
@@ -367,8 +367,8 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus, TropicalSemiring};
     ///
-    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    /// let a = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
     ///
     /// let result = a.matmul_argmax(&b);
     ///
@@ -442,10 +442,10 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus};
     ///
-    /// let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-    /// let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
-    /// let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-    /// let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+    /// let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2);
+    /// let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+    /// let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
     ///
     /// let results = Mat::matmul_batched_with_argmax(&[a1, a2], &[b1, b2]);
     /// assert_eq!(results.len(), 2);
@@ -526,10 +526,10 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus};
     ///
-    /// let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-    /// let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
-    /// let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-    /// let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+    /// let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2);
+    /// let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+    /// let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
     ///
     /// let results = Mat::matmul_batched(&[a1, a2], &[b1, b2]);
     /// assert_eq!(results.len(), 2);

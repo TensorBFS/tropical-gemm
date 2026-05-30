@@ -104,8 +104,8 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus, TropicalMaxPlus};
     ///
-    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    /// let a = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
     ///
     /// // Forward pass with argmax
     /// let result = a.matmul_argmax(&b);
@@ -166,8 +166,8 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus, TropicalMaxPlus};
     ///
-    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    /// let a = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
     ///
     /// // Forward pass with argmax
     /// let result = a.matmul_argmax(&b);
@@ -339,8 +339,8 @@ mod tests {
     #[test]
     fn test_mat_matmul_direct() {
         // Test Mat::matmul directly (no as_ref needed)
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let c = a.matmul(&b);
 
@@ -353,8 +353,8 @@ mod tests {
     #[test]
     fn test_mat_matmul_argmax_direct() {
         // Test Mat::matmul_argmax directly
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let result = a.matmul_argmax(&b);
 
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn test_mat_get_value() {
         // Test get_value method - no trait import needed
-        let m = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let m = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         assert_eq!(m.get_value(0, 0), 1.0);
         assert_eq!(m.get_value(0, 1), 2.0);
@@ -377,8 +377,8 @@ mod tests {
     fn test_minplus_mat_matmul_direct() {
         use crate::TropicalMinPlus;
 
-        let a = Mat::<TropicalMinPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMinPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMinPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMinPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let c = a.matmul(&b);
 
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_mat_as_slice() {
-        let m = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let m = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         let slice = m.as_slice();
         assert_eq!(slice.len(), 4);
         assert_eq!(slice[0].0, 1.0);
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_mat_as_mut_slice() {
-        let mut m = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let mut m = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         let slice = m.as_mut_slice();
         slice[0] = TropicalMaxPlus(100.0);
         assert_eq!(m[(0, 0)].0, 100.0);
@@ -422,14 +422,14 @@ mod tests {
 
     #[test]
     fn test_mat_as_mut_ptr() {
-        let mut m = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let mut m = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         let ptr = m.as_mut_ptr();
         assert!(!ptr.is_null());
     }
 
     #[test]
     fn test_mat_index_mut() {
-        let mut m = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let mut m = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         m[(0, 0)] = TropicalMaxPlus(10.0);
         m[(1, 1)] = TropicalMaxPlus(40.0);
         assert_eq!(m[(0, 0)].0, 10.0);
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_mat_matmul_ref() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
         // Column-major data for B: 3×2 matrix [[1,2],[3,4],[5,6]] stored as [1,3,5,2,4,6]
         let b_data = [1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_mat_clone() {
-        let m = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let m = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         let m2 = m.clone();
         assert_eq!(m2[(0, 0)].0, 1.0);
         assert_eq!(m2[(1, 1)].0, 4.0);
@@ -489,15 +489,15 @@ mod tests {
 
     #[test]
     fn test_mat_debug() {
-        let m = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0], 1, 2);
+        let m = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 2.0], 1, 2);
         let debug_str = format!("{:?}", m);
         assert!(debug_str.contains("Mat"));
     }
 
     #[test]
     fn test_matwithargmax_get_value() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let result = a.matmul_argmax(&b);
 
@@ -508,8 +508,8 @@ mod tests {
 
     #[test]
     fn test_matwithargmax_nrows_ncols() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let result = a.matmul_argmax(&b);
 
@@ -517,10 +517,29 @@ mod tests {
         assert_eq!(result.ncols(), 2);
     }
 
+    // `from_row_major` stays public (deprecated) as a downstream convenience, so keep
+    // minimal coverage of it here. All internal callers use `from_col_major` instead.
     #[test]
     #[should_panic(expected = "data length")]
+    #[allow(deprecated)]
     fn test_mat_from_row_major_size_mismatch() {
         let _ = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0], 2, 2);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_from_row_major_equals_col_major_transposed() {
+        // Row-major input must yield the same logical matrix as the equivalent
+        // column-major data fed to from_col_major (this is the transpose mapping
+        // every migrated test relies on).
+        let rm = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
+        let cm = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        assert_eq!((rm.nrows(), rm.ncols()), (2, 3));
+        for i in 0..2 {
+            for j in 0..3 {
+                assert_eq!(rm.get_value(i, j), cm.get_value(i, j));
+            }
+        }
     }
 
     #[test]
@@ -540,8 +559,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "dimension mismatch")]
     fn test_matmul_dimension_mismatch() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
         let _ = a.matmul(&b); // Should panic: A is 2x2, B is 3x2
     }
 
@@ -558,8 +577,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "dimension mismatch")]
     fn test_matmul_argmax_dimension_mismatch() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
         let _ = a.matmul_argmax(&b); // Should panic
     }
 
@@ -576,7 +595,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "dimension mismatch")]
     fn test_mat_matmul_ref_dimension_mismatch() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         let b_data = [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
         let b = MatRef::<TropicalMaxPlus<f64>>::from_slice(&b_data, 3, 2);
         let _ = a.matmul_ref(&b); // Should panic
@@ -588,10 +607,10 @@ mod tests {
 
     #[test]
     fn test_mat_matmul_batched() {
-        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
-        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         let results = Mat::matmul_batched(&[a1, a2], &[b1, b2]);
         assert_eq!(results.len(), 2);
@@ -617,9 +636,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "batch sizes must match")]
     fn test_mat_matmul_batched_size_mismatch() {
-        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         let _ = Mat::matmul_batched(&[a1], &[b1, b2]); // Should panic
     }
@@ -627,21 +646,21 @@ mod tests {
     #[test]
     #[should_panic(expected = "has dimensions")]
     fn test_mat_matmul_batched_dimension_mismatch() {
-        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
         let a2 =
-            Mat::<TropicalMaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0], 2, 3); // Different size
-        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+            Mat::<TropicalMaxPlus<f32>>::from_col_major(&[5.0, 8.0, 6.0, 9.0, 7.0, 10.0], 2, 3); // Different size
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         let _ = Mat::matmul_batched(&[a1, a2], &[b1, b2]); // Should panic
     }
 
     #[test]
     fn test_mat_matmul_batched_with_argmax() {
-        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let a2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[6.0, 5.0, 4.0, 3.0, 2.0, 1.0], 2, 3);
-        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
-        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let a2 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[6.0, 3.0, 5.0, 2.0, 4.0, 1.0], 2, 3);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let results = Mat::matmul_batched_with_argmax(&[a1, a2], &[b1, b2]);
         assert_eq!(results.len(), 2);
@@ -663,9 +682,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "batch sizes must match")]
     fn test_mat_matmul_batched_with_argmax_size_mismatch() {
-        let a1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b1 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
-        let b2 = Mat::<TropicalMaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b1 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
+        let b2 = Mat::<TropicalMaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let _ = Mat::matmul_batched_with_argmax(&[a1], &[b1, b2]); // Should panic
     }
@@ -676,8 +695,8 @@ mod tests {
 
     #[test]
     fn test_matwithargmax_backward_a() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         // Forward pass
         let result = a.matmul_argmax(&b);
@@ -705,8 +724,8 @@ mod tests {
 
     #[test]
     fn test_matwithargmax_backward_b() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         // Forward pass
         let result = a.matmul_argmax(&b);
@@ -730,9 +749,9 @@ mod tests {
     fn test_matwithargmax_backward_varied_argmax() {
         // Design matrices where different k-indices win
         let a =
-            Mat::<TropicalMaxPlus<f64>>::from_row_major(&[10.0, 1.0, 1.0, 1.0, 10.0, 1.0], 2, 3);
+            Mat::<TropicalMaxPlus<f64>>::from_col_major(&[10.0, 1.0, 1.0, 10.0, 1.0, 1.0], 2, 3);
         let b =
-            Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 1.0, 1.0, 1.0, 10.0, 10.0], 3, 2);
+            Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 1.0, 10.0, 1.0, 1.0, 10.0], 3, 2);
 
         let result = a.matmul_argmax(&b);
 
@@ -753,8 +772,8 @@ mod tests {
 
     #[test]
     fn test_matwithargmax_argmax_slice() {
-        let a = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let b = Mat::<TropicalMaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let b = Mat::<TropicalMaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         let result = a.matmul_argmax(&b);
         let argmax_slice = result.argmax_slice();
