@@ -1,4 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use tropical_gemm::prelude::*;
 use tropical_gemm::TropicalScalar; // for `neg_infinity()` (not in the prelude)
 

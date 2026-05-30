@@ -95,12 +95,11 @@ mod kernels;
 mod memory;
 
 use cudarc::driver::CudaContext as CudaCtx;
-use once_cell::sync::OnceCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// Per-device CUDA context cache, dynamically sized based on available devices.
-static DEVICE_CONTEXTS: OnceCell<Mutex<HashMap<usize, &'static CudaContext>>> = OnceCell::new();
+static DEVICE_CONTEXTS: OnceLock<Mutex<HashMap<usize, &'static CudaContext>>> = OnceLock::new();
 
 /// Mutex to ensure thread-safe initialization.
 static INIT_MUTEX: Mutex<()> = Mutex::new(());
