@@ -2194,6 +2194,44 @@ mod tests {
     }
 
     #[test]
+    fn test_tropical_matmul_gpu_andor() {
+        use tropical_gemm::types::TropicalAndOr;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // AndOr (boolean) semiring: C[i,j] = OR_k (A[i,k] AND B[k,j]).
+        // A is 2x3, B is 3x2, both column-major (a[j*m+i], b[j*k+k]).
+        //
+        //       | T F T |            | T F |
+        //   A = | F F F |        B = | T T |
+        //                            | F T |
+        //
+        // Row 1 of A is all-false -> exercises the `false` tropical-zero / pad path.
+        let a = vec![
+            true, false, // col 0: A[0,0]=T, A[1,0]=F
+            false, false, // col 1: A[0,1]=F, A[1,1]=F
+            true, false, // col 2: A[0,2]=T, A[1,2]=F
+        ];
+        let b = vec![
+            true, true, false, // col 0: B[0,0]=T, B[1,0]=T, B[2,0]=F
+            false, true, true, // col 1: B[0,1]=F, B[1,1]=T, B[2,1]=T
+        ];
+
+        let c = tropical_matmul_gpu::<TropicalAndOr>(&a, 2, 3, &b, 2).unwrap();
+
+        // C[0,0] = (T&T) | (F&T) | (T&F) = T  (reachable)
+        assert!(c[0], "C[0,0] expected true");
+        // C[1,0] = (F&T) | (F&T) | (F&F) = F  (all-false row)
+        assert!(!c[1], "C[1,0] expected false");
+        // C[0,1] = (T&F) | (F&T) | (T&T) = T  (reachable via k=2)
+        assert!(c[2], "C[0,1] expected true");
+        // C[1,1] = (F&F) | (F&T) | (F&T) = F
+        assert!(!c[3], "C[1,1] expected false");
+    }
+
+    #[test]
     fn test_error_display() {
         // Test error message formatting
         let err = CudaError::NoDevice;

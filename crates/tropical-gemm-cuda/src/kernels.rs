@@ -6,7 +6,9 @@ use crate::memory::{
     ExternalGpuMatrix, ExternalGpuTensor3, GpuMatrix, GpuMatrixWithArgmax, GpuTensor3WithArgmax,
 };
 use cudarc::driver::{DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
-use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
+use tropical_gemm::types::{
+    TropicalAndOr, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring,
+};
 
 /// Trait for types that can be computed on GPU.
 pub trait CudaKernel: TropicalSemiring
@@ -182,6 +184,34 @@ impl_cuda_kernel_i64! {
     TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn",
     TropicalMinPlus<i64> => "tropical_minplus_i64_nn",
     TropicalMaxMul<i64> => "tropical_maxmul_i64_nn",
+}
+
+/// Macro to implement CudaKernel for the bool (AndOr) semiring.
+/// A 1-byte element reuses the f32 grid/block helpers (64x64 tile), exactly as
+/// i32 does — the smaller element only reduces shared-memory use.
+macro_rules! impl_cuda_kernel_bool {
+    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+        $(
+            impl CudaKernel for $semiring {
+                const KERNEL_NAME: &'static str = $kernel_name;
+
+                fn launch_gemm(
+                    ctx: &CudaContext,
+                    a: &GpuMatrix<bool>,
+                    b: &GpuMatrix<bool>,
+                    c: &mut GpuMatrix<bool>,
+                ) -> Result<()> {
+                    let grid = CudaContext::grid_dims_f32(a.rows(), b.cols());
+                    let block = CudaContext::block_dims_f32();
+                    launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
+                }
+            }
+        )*
+    };
+}
+
+impl_cuda_kernel_bool! {
+    TropicalAndOr => "tropical_andor_bool_nn",
 }
 
 // ============================================================================

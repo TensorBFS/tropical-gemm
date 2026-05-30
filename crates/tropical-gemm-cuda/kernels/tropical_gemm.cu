@@ -67,6 +67,17 @@ __device__ __forceinline__ long long mul_i64(long long a, long long b) {
     return a * b;
 }
 
+// Boolean (AndOr) semiring: add = OR, mul = AND, zero = false, one = true.
+// false is a true absorbing zero (false AND x = false), so no sentinel/drift like
+// the integer MaxPlus types -- the out-of-range tile PAD is simply false.
+//
+// Use *bitwise* &/| (not logical &&/||): for 0/1 bytes they are equivalent, but
+// bitwise ops let ptxas keep the values in byte/integer form (LOP3) instead of
+// round-tripping each byte through a predicate (ISETP -> PLOP3 -> P2R), which
+// measured ~1.6x slower than the reference's fused byte-wise path on sm_86.
+__device__ __forceinline__ bool or_bool(bool a, bool b)  { return a | b; }
+__device__ __forceinline__ bool and_bool(bool a, bool b) { return a & b; }
+
 // Drifted tropical-zero detection for argmax canonicalization. A no-contribution
 // output cell's value sits in "infinity territory" (past S/2) after the
 // guard-free add drifts it (`S + data`). Used ONLY at the O(M*N) write-out (not
@@ -434,6 +445,92 @@ extern "C" __global__ void KERNEL_NAME(                                        \
                     int prod = MUL_FN(regs_a[tm], regs_b[tn]);                  \
                     int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
                     accum[idx] = COMPARE_FN(accum[idx], prod);                 \
+                }                                                              \
+            }                                                                  \
+        }                                                                      \
+        __syncthreads();                                                       \
+    }                                                                          \
+                                                                               \
+        STORE_C_TILE(C)                                                   \
+}
+
+// ============================================================================
+// BOOL GEMM KERNEL MACRO (AndOr semiring)
+// ============================================================================
+// Identical tiling to I32 (64x32x64, 4x4 threads) but on a 1-byte `bool`
+// element. add = OR (COMPARE_FN), mul = AND (MUL_FN), tropical zero = false.
+// A 1-byte element uses *less* shared memory than i32, so the block config is
+// safe. false absorbs in AND/OR, so the out-of-range PAD is just INIT_VAL.
+
+#define TROPICAL_GEMM_BOOL(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN)           \
+extern "C" __global__ void KERNEL_NAME(                                        \
+    const bool* __restrict__ A,                                                \
+    const bool* __restrict__ B,                                                \
+    bool* __restrict__ C,                                                      \
+    int M, int N, int K                                                        \
+) {                                                                            \
+    const int BLOCK_SIZE_M = 64;                                               \
+    const int BLOCK_SIZE_K = 32;                                               \
+    const int BLOCK_SIZE_N = 64;                                               \
+    const int THREAD_SIZE_M = 4;                                               \
+    const int THREAD_SIZE_N = 4;                                               \
+                                                                               \
+    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
+    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
+    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
+                                                                               \
+    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
+    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
+    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
+                                                                               \
+    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
+                                                                               \
+    __shared__ bool As[BLOCK_SIZE_M * BLOCK_SIZE_K];                           \
+    __shared__ bool Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];                           \
+                                                                               \
+    bool accum[THREAD_SIZE_M * THREAD_SIZE_N];                                 \
+    bool regs_a[THREAD_SIZE_M];                                                \
+    bool regs_b[THREAD_SIZE_N];                                                \
+                                                                               \
+    _Pragma("unroll")                                                          \
+    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
+        accum[i] = INIT_VAL;                                                   \
+    }                                                                          \
+                                                                               \
+    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
+    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
+    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
+    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
+    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
+    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
+                                                                               \
+    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
+        LOAD_A_TILE(A, INIT_VAL)                                          \
+                                                                               \
+        LOAD_B_TILE(B, INIT_VAL)                                          \
+                                                                               \
+        __syncthreads();                                                       \
+                                                                               \
+        _Pragma("unroll")                                                      \
+        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
+            _Pragma("unroll")                                                  \
+            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
+                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
+                                           k, BLOCK_SIZE_M)];                  \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
+                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
+                                           BLOCK_SIZE_K)];                     \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
+                _Pragma("unroll")                                              \
+                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
+                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
+                    accum[idx] = COMPARE_FN(MUL_FN(regs_a[tm], regs_b[tn]),    \
+                                            accum[idx]);                       \
                 }                                                              \
             }                                                                  \
         }                                                                      \
@@ -955,6 +1052,9 @@ TROPICAL_GEMM_I32(tropical_maxmul_i32_nn,  0,           max_i32, mul_i32)
 TROPICAL_GEMM_I64(tropical_maxplus_i64_nn, NEG_INF_I64, max_i64, add_i64)
 TROPICAL_GEMM_I64(tropical_minplus_i64_nn, INF_I64,     min_i64, add_i64)
 TROPICAL_GEMM_I64(tropical_maxmul_i64_nn,  0LL,         max_i64, mul_i64)
+
+// --- BOOL Basic GEMM Kernel (AndOr semiring) ---
+TROPICAL_GEMM_BOOL(tropical_andor_bool_nn, false, or_bool, and_bool)
 
 // --- I32 GEMM with Argmax Kernels ---
 // ZERO_FN canonicalizes a drifted tropical-zero cell's argmax to 0 at write-out.

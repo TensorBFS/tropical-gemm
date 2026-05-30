@@ -38,6 +38,8 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_i64_nn",
     "tropical_minplus_i64_nn",
     "tropical_maxmul_i64_nn",
+    // Standard GEMM kernel (bool / AndOr semiring)
+    "tropical_andor_bool_nn",
     // GEMM with argmax kernels (f32)
     "tropical_maxplus_f32_nn_with_argmax",
     "tropical_minplus_f32_nn_with_argmax",
