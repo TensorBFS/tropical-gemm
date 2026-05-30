@@ -2232,6 +2232,74 @@ mod tests {
     }
 
     #[test]
+    fn test_tropical_matmul_gpu_bitwise_u32() {
+        use tropical_gemm::types::TropicalBitwise;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Same 2x3 * 3x2 boolean problem as the AndOr test, but each u32 carries
+        // the boolean in bit 0 (a single populated lane). Column-major.
+        let a = vec![0x1u32, 0x0, 0x0, 0x0, 0x1, 0x0];
+        let b = vec![0x1u32, 0x1, 0x0, 0x0, 0x1, 0x1];
+
+        let c = tropical_matmul_gpu::<TropicalBitwise<u32>>(&a, 2, 3, &b, 2).unwrap();
+
+        // C[i,j] = OR_k (A[i,k] AND B[k,j]); only bit 0 is populated.
+        assert_eq!(c[0], 0x1, "C[0,0] expected lane0 set");
+        assert_eq!(c[1], 0x0, "C[1,0] expected 0 (all-false row)");
+        assert_eq!(c[2], 0x1, "C[0,1] expected lane0 set");
+        assert_eq!(c[3], 0x0, "C[1,1] expected 0");
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_bitwise_u32_multilane() {
+        use tropical_gemm::types::TropicalBitwise;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Two independent problems in bit 0 and bit 1. Bit 0: same as above (C00=1).
+        // Bit 1: A all-ones, B all-ones -> every C cell has bit 1 set.
+        // A (2x3) and B (3x2), column-major, each u32 holds {bit0, bit1}.
+        let a = vec![0b11u32, 0b10, 0b10, 0b10, 0b11, 0b10];
+        let b = vec![0b11u32, 0b11, 0b10, 0b10, 0b11, 0b11];
+
+        let c = tropical_matmul_gpu::<TropicalBitwise<u32>>(&a, 2, 3, &b, 2).unwrap();
+
+        // Bit 1 (all-ones problem) is set in every cell; bit 0 matches the AndOr
+        // result {1,0,1,0}.
+        assert_eq!(c[0], 0b11, "C[0,0]");
+        assert_eq!(c[1], 0b10, "C[1,0]");
+        assert_eq!(c[2], 0b11, "C[0,1]");
+        assert_eq!(c[3], 0b10, "C[1,1]");
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_bitwise_u64() {
+        use tropical_gemm::types::TropicalBitwise;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Bit 0 carries the boolean problem; also set bit 63 in the all-ones lane
+        // to exercise the high word of u64.
+        let hi: u64 = 1u64 << 63;
+        let a = vec![1u64 | hi, hi, hi, hi, 1u64 | hi, hi];
+        let b = vec![1u64 | hi, 1u64 | hi, hi, hi, 1u64 | hi, 1u64 | hi];
+
+        let c = tropical_matmul_gpu::<TropicalBitwise<u64>>(&a, 2, 3, &b, 2).unwrap();
+
+        assert_eq!(c[0], 1u64 | hi, "C[0,0]");
+        assert_eq!(c[1], hi, "C[1,0]");
+        assert_eq!(c[2], 1u64 | hi, "C[0,1]");
+        assert_eq!(c[3], hi, "C[1,1]");
+    }
+
+    #[test]
     fn test_error_display() {
         // Test error message formatting
         let err = CudaError::NoDevice;

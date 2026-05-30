@@ -7,7 +7,8 @@ use crate::memory::{
 };
 use cudarc::driver::{DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
 use tropical_gemm::types::{
-    TropicalAndOr, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring,
+    TropicalAndOr, TropicalBitwise, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
+    TropicalSemiring,
 };
 
 /// Trait for types that can be computed on GPU.
@@ -212,6 +213,60 @@ macro_rules! impl_cuda_kernel_bool {
 
 impl_cuda_kernel_bool! {
     TropicalAndOr => "tropical_andor_bool_nn",
+}
+
+/// Macro to implement CudaKernel for u32 types (Bitwise semiring).
+/// 4-byte element reuses the f32 grid/block helpers, exactly as i32 does.
+macro_rules! impl_cuda_kernel_u32 {
+    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+        $(
+            impl CudaKernel for $semiring {
+                const KERNEL_NAME: &'static str = $kernel_name;
+
+                fn launch_gemm(
+                    ctx: &CudaContext,
+                    a: &GpuMatrix<u32>,
+                    b: &GpuMatrix<u32>,
+                    c: &mut GpuMatrix<u32>,
+                ) -> Result<()> {
+                    let grid = CudaContext::grid_dims_f32(a.rows(), b.cols());
+                    let block = CudaContext::block_dims_f32();
+                    launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
+                }
+            }
+        )*
+    };
+}
+
+/// Macro to implement CudaKernel for u64 types (Bitwise semiring).
+/// 8-byte element reuses the f64 grid/block helpers, exactly as i64 does.
+macro_rules! impl_cuda_kernel_u64 {
+    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+        $(
+            impl CudaKernel for $semiring {
+                const KERNEL_NAME: &'static str = $kernel_name;
+
+                fn launch_gemm(
+                    ctx: &CudaContext,
+                    a: &GpuMatrix<u64>,
+                    b: &GpuMatrix<u64>,
+                    c: &mut GpuMatrix<u64>,
+                ) -> Result<()> {
+                    let grid = CudaContext::grid_dims_f64(a.rows(), b.cols());
+                    let block = CudaContext::block_dims_f64();
+                    launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
+                }
+            }
+        )*
+    };
+}
+
+impl_cuda_kernel_u32! {
+    TropicalBitwise<u32> => "tropical_bitwise_u32_nn",
+}
+
+impl_cuda_kernel_u64! {
+    TropicalBitwise<u64> => "tropical_bitwise_u64_nn",
 }
 
 // ============================================================================
