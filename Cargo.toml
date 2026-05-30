@@ -22,12 +22,17 @@ tropical-gemm = { version = "0.2.0", path = "crates/tropical-gemm" }
 num-traits = "0.2"
 wide = "0.7"
 rayon = "1.10"
-# The `cuda-12080` feature is only a build-time DEFAULT so `cargo check` works on
-# machines without a CUDA toolkit (e.g. macOS dev). It is NOT the deployment truth:
-# at build time `CUDARC_CUDA_VERSION` overrides it (cudarc reads the env var with
-# highest priority), so on HPC build with e.g. `CUDARC_CUDA_VERSION=12080` to match
-# the loaded `module load cuda/X.Y` — never edit this line per machine.
-cudarc = { version = "0.19.7", default-features = false, features = ["std", "driver", "nvrtc", "cuda-12080", "dynamic-loading"] }
+# CUDA version is a deliberate VARIABLE — never hardcode a `cuda-XXXXX` feature here.
+# cudarc's build.rs selects the version as: (1) `CUDARC_CUDA_VERSION` env (e.g.
+# `12080`), else (2) a `cuda-XXXXX` feature, else (3) `nvcc --version`. A hardcoded
+# `cuda-XXXXX` is NOT overridden by a mismatched env — both cfgs activate and cudarc
+# compiles two binding sets (~171 dup-definition errors). So instead of pinning a
+# version we use `cuda-version-from-build-system` + `fallback-latest`:
+#   • HPC: set `CUDARC_CUDA_VERSION=<NNNNN>` to match `module load cuda/X.Y` (env wins);
+#     leave it unset and nvcc auto-detects the loaded toolkit.
+#   • macOS dev (no nvcc): `fallback-latest` picks cudarc's newest supported version,
+#     purely so `cargo check` compiles (dynamic-loading → never actually runs CUDA).
+cudarc = { version = "0.19.7", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-version-from-build-system", "fallback-latest"] }
 thiserror = "1.0"
 
 # Testing
