@@ -2046,8 +2046,8 @@ mod tests {
     fn test_tropical_gemm_gpu_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
             // Create matrices with incompatible dimensions
-            let a = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
-            let b = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // 2x3, not 3x2
+            let a = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let b = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // 2x3, not 3x2
             let mut c = GpuMatrix::alloc(ctx, 2, 3).unwrap();
 
             let result = tropical_gemm_gpu::<TropicalMaxPlus<f32>>(ctx, &a, &b, &mut c);
@@ -2058,15 +2058,18 @@ mod tests {
     #[test]
     fn test_tropical_matmul_gpu_with_ctx_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let a = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
-            let b = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // Wrong dimensions
+            let a = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let b = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // Wrong dimensions
 
             let result = tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(ctx, &a, &b);
             assert!(result.is_err());
         }
     }
 
+    // `from_host_row_major` stays public (deprecated); keep one test exercising its
+    // size validation. All other GPU callers use `from_host` (column-major).
     #[test]
+    #[allow(deprecated)]
     fn test_gpu_memory_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
             // Try to create matrix with wrong data size
@@ -2086,7 +2089,7 @@ mod tests {
     #[test]
     fn test_gpu_matrix_accessors() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let mat = GpuMatrix::from_host_row_major(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let mat = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
             assert_eq!(mat.rows(), 2);
             assert_eq!(mat.cols(), 3);
             assert_eq!(mat.ld(), 2); // Column-major leading dimension = rows
