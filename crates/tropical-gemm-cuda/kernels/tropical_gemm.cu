@@ -1357,3 +1357,76 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 TROPICAL_GEMM_BATCHED_ARGMAX_F32(tropical_maxplus_f32_nn_batched_with_argmax, NEG_INF_F32, >, +)
 TROPICAL_GEMM_BATCHED_ARGMAX_F32(tropical_minplus_f32_nn_batched_with_argmax, INF_F32,     <, +)
 TROPICAL_GEMM_BATCHED_ARGMAX_F32(tropical_maxmul_f32_nn_batched_with_argmax,  0.0f,        >, *)
+
+// ============================================================================
+// K-PACKED BOOLEAN (AndOr) GEMM — pack the contraction dim K into 32-bit words
+// ============================================================================
+// Distinct from the byte AndOr kernel and from TropicalBitwise (which packs the
+// problem axis). Here we pack the *contraction* axis of a single boolean matmul:
+//   C[i,j] = OR_k (A[i,k] AND B[k,j])  ==  any_w( Apacked(i,w) & Bpacked(j,w) )
+// Column-major throughout. Kw = ceil(K/32). Bit b of word w holds K-element 32*w+b
+// (LSB-first). Tail bits (32*w+b >= K) are explicitly zeroed; 0 is AND's absorbing
+// element, so padding lanes are inert and the GEMM K-loop is branchless.
+
+// Pack A (M×K col-major bool) -> Apacked (M×Kw col-major u32). One thread per (i,w).
+extern "C" __global__ void pack_rows_u32(
+    const bool* __restrict__ A,
+    unsigned int* __restrict__ Apacked,
+    int M, int K)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;   // row of A
+    int w = blockIdx.y * blockDim.y + threadIdx.y;   // output word index
+    int Kw = K / 32 + (K % 32 != 0);   // == ceil(K/32) without (K+31) overflow near INT_MAX
+    if (i >= M || w >= Kw) return;
+    unsigned int word = 0u;
+    #pragma unroll
+    for (int b = 0; b < 32; ++b) {
+        int k = 32 * w + b;
+        if (k < K) {
+            // static_cast<unsigned> BEFORE the shift: a high-bit shift of a
+            // promoted `bool`/`int` would be signed; the cast keeps it well-defined.
+            word |= static_cast<unsigned int>(A[(size_t)k * M + i]) << b;
+        }
+    }
+    Apacked[(size_t)w * M + i] = word;
+}
+
+// Pack B (K×N col-major bool) -> Bpacked (Kw×N col-major u32). One thread per (j,w).
+extern "C" __global__ void pack_cols_u32(
+    const bool* __restrict__ B,
+    unsigned int* __restrict__ Bpacked,
+    int N, int K)
+{
+    int j = blockIdx.x * blockDim.x + threadIdx.x;   // column of B
+    int w = blockIdx.y * blockDim.y + threadIdx.y;   // output word index
+    int Kw = K / 32 + (K % 32 != 0);   // == ceil(K/32) without (K+31) overflow near INT_MAX
+    if (j >= N || w >= Kw) return;
+    unsigned int word = 0u;
+    #pragma unroll
+    for (int b = 0; b < 32; ++b) {
+        int k = 32 * w + b;
+        if (k < K) {
+            word |= static_cast<unsigned int>(B[(size_t)j * K + k]) << b;
+        }
+    }
+    Bpacked[(size_t)j * Kw + w] = word;
+}
+
+// Direct K-packed GEMM: one thread per output cell C[i,j]. No shared memory and no
+// barrier, so the `acc == 0` early-exit is correct here (it is NOT valid in a tiled
+// kernel). Apacked is M×Kw col-major, Bpacked is Kw×N col-major, C is M×N col-major.
+extern "C" __global__ void tropical_andor_kpack_direct_u32(
+    const unsigned int* __restrict__ Apacked,
+    const unsigned int* __restrict__ Bpacked,
+    bool* __restrict__ C,
+    int M, int N, int Kw)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;   // row
+    int j = blockIdx.y * blockDim.y + threadIdx.y;   // column
+    if (i >= M || j >= N) return;
+    unsigned int acc = 0u;
+    for (int w = 0; w < Kw && acc == 0u; ++w) {
+        acc |= Apacked[(size_t)w * M + i] & Bpacked[(size_t)j * Kw + w];
+    }
+    C[(size_t)j * M + i] = (acc != 0u);
+}
