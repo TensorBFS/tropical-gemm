@@ -40,6 +40,10 @@ pub enum MetalError {
     /// Host slice length doesn't match rows*cols.
     #[error("host data length {len} != rows*cols = {expected}")]
     HostLengthMismatch { len: usize, expected: usize },
+
+    /// rows*cols (or the byte size) overflows usize.
+    #[error("matrix dimensions {rows}x{cols} overflow usize")]
+    DimensionOverflow { rows: usize, cols: usize },
 }
 
 pub type Result<T> = std::result::Result<T, MetalError>;
