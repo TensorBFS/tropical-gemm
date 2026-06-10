@@ -51,7 +51,7 @@ pub struct MetalContext {
 
 impl MetalContext {
     /// Create a context: default device, command queue, compile the MSL source,
-    /// and eagerly build a pipeline for every kernel in [`KERNEL_NAMES`].
+    /// and eagerly build a pipeline for every kernel in `KERNEL_NAMES`.
     pub fn new() -> Result<Self> {
         let device = MTLCreateSystemDefaultDevice().ok_or(MetalError::DeviceNotFound)?;
         let queue = device.newCommandQueue().ok_or(MetalError::DeviceNotFound)?;
