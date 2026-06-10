@@ -166,3 +166,57 @@ impl_metal_kernel!(
     TropicalMaxMul<i64>  => ("tropical_maxmul_i64_nn",  BLOCK_32X32),
     TropicalAndOr        => ("tropical_andor_bool_nn",  BLOCK_64X64),
 );
+
+/// Tropical semirings with an argmax-tracking Metal kernel (argmax: u32,
+/// zero-contribution cells canonicalized to 0).
+pub trait MetalKernelWithArgmax: MetalKernel
+where
+    Self::Scalar: MetalScalar,
+{
+    const ARGMAX_KERNEL_NAME: &'static str;
+}
+
+/// C = A ⊗ B and per-cell argmax over k.
+pub fn tropical_gemm_gpu_with_argmax<T>(
+    ctx: &MetalContext,
+    a: &GpuMatrix<T::Scalar>,
+    b: &GpuMatrix<T::Scalar>,
+    c: &mut GpuMatrix<T::Scalar>,
+    argmax: &mut GpuMatrix<u32>,
+) -> Result<()>
+where
+    T: MetalKernelWithArgmax,
+    T::Scalar: MetalScalar,
+{
+    if argmax.rows() != c.rows() || argmax.cols() != c.cols() {
+        return Err(MetalError::DimensionMismatch {
+            m: argmax.rows(),
+            ka: argmax.cols(),
+            kb: c.rows(),
+            n: c.cols(),
+        });
+    }
+    launch_gemm_impl(ctx, T::ARGMAX_KERNEL_NAME, T::BLOCK, a, b, c, Some(argmax))
+}
+
+macro_rules! impl_metal_kernel_argmax {
+    ($($semiring:ty => $name:literal),* $(,)?) => {
+        $(
+            impl MetalKernelWithArgmax for $semiring {
+                const ARGMAX_KERNEL_NAME: &'static str = $name;
+            }
+        )*
+    };
+}
+
+impl_metal_kernel_argmax!(
+    TropicalMaxPlus<f32> => "tropical_maxplus_f32_nn_with_argmax",
+    TropicalMinPlus<f32> => "tropical_minplus_f32_nn_with_argmax",
+    TropicalMaxMul<f32>  => "tropical_maxmul_f32_nn_with_argmax",
+    TropicalMaxPlus<i32> => "tropical_maxplus_i32_nn_with_argmax",
+    TropicalMinPlus<i32> => "tropical_minplus_i32_nn_with_argmax",
+    TropicalMaxMul<i32>  => "tropical_maxmul_i32_nn_with_argmax",
+    TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn_with_argmax",
+    TropicalMinPlus<i64> => "tropical_minplus_i64_nn_with_argmax",
+    TropicalMaxMul<i64>  => "tropical_maxmul_i64_nn_with_argmax",
+);

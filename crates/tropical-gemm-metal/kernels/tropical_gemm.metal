@@ -164,3 +164,121 @@ TROPICAL_GEMM(long, tropical_maxmul_i64_nn,           0L, TMAX, TMUL, 32, 16, 32
 // uchar + bitwise ops, NOT logical && / || — keeps values in byte form instead
 // of predicate round-trips (the 1.6x regression noted on the CUDA side).
 TROPICAL_GEMM(uchar, tropical_andor_bool_nn, (uchar)0, TOR, TAND, 64, 32, 64)
+
+// ============================================================================
+// GEMM WITH ARGMAX (mirrors .cu TROPICAL_GEMM_ARGMAX_*, lines 808-1160)
+// ============================================================================
+// COMPARE_OP is the *strict* comparison (>, <): updates only on strictly
+// better, so ties keep the smallest k. ZERO_FN canonicalizes drifted integer
+// tropical-zero cells' argmax to 0 at write-out (ZERO_NEVER for floats).
+
+#define TROPICAL_GEMM_ARGMAX(SCALAR, KERNEL_NAME, INIT_VAL, COMPARE_OP, MUL_FN, ZERO_FN, BM, BK, BN) \
+kernel void KERNEL_NAME(                                                       \
+    device const SCALAR* A [[buffer(0)]],                                      \
+    device const SCALAR* B [[buffer(1)]],                                      \
+    device SCALAR* C [[buffer(2)]],                                            \
+    device uint* argmax_out [[buffer(3)]],                                     \
+    constant GemmParams& p [[buffer(4)]],                                      \
+    uint2 tgp [[threadgroup_position_in_grid]],                                \
+    uint2 lid [[thread_position_in_threadgroup]])                              \
+{                                                                              \
+    const uint tg = tgp.x;                                                     \
+    const int M = p.M, N = p.N, K = p.K;                                       \
+    const int TM = 4, TN = 4;                                                  \
+    const int bszm = (BM) / TM;                                                \
+    const int bszn = (BN) / TN;                                                \
+    const int THREADS = bszm * bszn;                                           \
+                                                                               \
+    const int DIM_GRID_X = (M + (BM) - 1) / (BM);                              \
+    const int DIM_GRID_Y = (N + (BN) - 1) / (BN);                              \
+    const int BLOCK_IDX = (int)tg % DIM_GRID_X;                                \
+    const int BLOCK_IDY = (int)tg / DIM_GRID_X;                                \
+    const int tx = (int)lid.x, ty = (int)lid.y;                                \
+    const int tid = ty * bszm + tx;                                            \
+                                                                               \
+    threadgroup SCALAR As[(BM) * (BK)];                                        \
+    threadgroup SCALAR Bs[(BK) * (BN)];                                        \
+                                                                               \
+    SCALAR accum[TM * TN];                                                     \
+    uint accum_idx[TM * TN];                                                   \
+    SCALAR regs_a[TM];                                                         \
+    SCALAR regs_b[TN];                                                         \
+    for (int i = 0; i < TM * TN; ++i) { accum[i] = (INIT_VAL); accum_idx[i] = 0u; } \
+                                                                               \
+    const int A_TILE_COL = tid / (BM);                                         \
+    const int A_TILE_ROW = tid % (BM);                                         \
+    const int B_TILE_COL = tid / (BK);                                         \
+    const int B_TILE_ROW = tid % (BK);                                         \
+    const int A_COL_STRIDE = THREADS / (BM);                                   \
+    const int B_COL_STRIDE = THREADS / (BK);                                   \
+                                                                               \
+    for (int tile_idx = 0; tile_idx < K; tile_idx += (BK)) {                   \
+        for (int i = 0; i < (BK); i += A_COL_STRIDE) {                         \
+            int row = (BM) * BLOCK_IDX + A_TILE_ROW;                           \
+            int col = A_TILE_COL + i + tile_idx;                               \
+            int dst = OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, (BM));            \
+            if (BLOCK_IDX == DIM_GRID_X - 1 || tile_idx >= K - (BK))           \
+                As[dst] = (row < M && col < K) ? A[OFFSET_COL(row, col, M)] : (INIT_VAL); \
+            else                                                               \
+                As[dst] = A[OFFSET_COL(row, col, M)];                          \
+        }                                                                      \
+        for (int i = 0; i < (BN); i += B_COL_STRIDE) {                         \
+            int row = tile_idx + B_TILE_ROW;                                   \
+            int col = (BN) * BLOCK_IDY + i + B_TILE_COL;                       \
+            int dst = OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, (BK));            \
+            if (tile_idx >= K - (BK) || BLOCK_IDY == DIM_GRID_Y - 1)           \
+                Bs[dst] = (row < K && col < N) ? B[OFFSET_COL(row, col, K)] : (INIT_VAL); \
+            else                                                               \
+                Bs[dst] = B[OFFSET_COL(row, col, K)];                          \
+        }                                                                      \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                       \
+                                                                               \
+        for (int k = 0; k < (BK); ++k) {                                       \
+            uint global_k = (uint)(tile_idx + k);                              \
+            for (int tm = 0; tm < TM; ++tm)                                    \
+                regs_a[tm] = As[OFFSET_COL(tx * TM + tm, k, (BM))];            \
+            for (int tn = 0; tn < TN; ++tn)                                    \
+                regs_b[tn] = Bs[OFFSET_COL(k, ty * TN + tn, (BK))];            \
+            for (int tm = 0; tm < TM; ++tm) {                                  \
+                for (int tn = 0; tn < TN; ++tn) {                              \
+                    SCALAR prod = MUL_FN(regs_a[tm], regs_b[tn]);              \
+                    int idx = OFFSET_COL(tm, tn, TM);                          \
+                    if (prod COMPARE_OP accum[idx]) {                          \
+                        accum[idx] = prod;                                     \
+                        accum_idx[idx] = global_k;                             \
+                    }                                                          \
+                }                                                              \
+            }                                                                  \
+        }                                                                      \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                       \
+    }                                                                          \
+                                                                               \
+    const bool edge = (BLOCK_IDX == DIM_GRID_X - 1 || BLOCK_IDY == DIM_GRID_Y - 1); \
+    for (int tm = 0; tm < TM; ++tm) {                                          \
+        for (int tn = 0; tn < TN; ++tn) {                                      \
+            int row = (BM) * BLOCK_IDX + TM * tx + tm;                         \
+            int col = (BN) * BLOCK_IDY + TN * ty + tn;                         \
+            if (!edge || (row < M && col < N)) {                               \
+                int out_idx = OFFSET_COL(row, col, M);                         \
+                int li = OFFSET_COL(tm, tn, TM);                               \
+                C[out_idx] = accum[li];                                        \
+                argmax_out[out_idx] = ZERO_FN(accum[li]) ? 0u : accum_idx[li]; \
+            }                                                                  \
+        }                                                                      \
+    }                                                                          \
+}
+
+// f32 argmax (strict > / <; ZERO_NEVER)
+TROPICAL_GEMM_ARGMAX(float, tropical_maxplus_f32_nn_with_argmax, -INFINITY, >, TADD, ZERO_NEVER, 64, 32, 64)
+TROPICAL_GEMM_ARGMAX(float, tropical_minplus_f32_nn_with_argmax,  INFINITY, <, TADD, ZERO_NEVER, 64, 32, 64)
+TROPICAL_GEMM_ARGMAX(float, tropical_maxmul_f32_nn_with_argmax,       0.0f, >, TMUL, ZERO_NEVER, 64, 32, 64)
+
+// i32 argmax (drifted-zero canonicalization; maxmul's 0 never drifts)
+TROPICAL_GEMM_ARGMAX(int, tropical_maxplus_i32_nn_with_argmax, NEG_INF_I32, >, TADD, ZERO_MAXPLUS_I32, 64, 32, 64)
+TROPICAL_GEMM_ARGMAX(int, tropical_minplus_i32_nn_with_argmax,     INF_I32, <, TADD, ZERO_MINPLUS_I32, 64, 32, 64)
+TROPICAL_GEMM_ARGMAX(int, tropical_maxmul_i32_nn_with_argmax,            0, >, TMUL, ZERO_NEVER,       64, 32, 64)
+
+// i64 argmax (8-byte tier)
+TROPICAL_GEMM_ARGMAX(long, tropical_maxplus_i64_nn_with_argmax, NEG_INF_I64, >, TADD, ZERO_MAXPLUS_I64, 32, 16, 32)
+TROPICAL_GEMM_ARGMAX(long, tropical_minplus_i64_nn_with_argmax,     INF_I64, <, TADD, ZERO_MINPLUS_I64, 32, 16, 32)
+TROPICAL_GEMM_ARGMAX(long, tropical_maxmul_i64_nn_with_argmax,           0L, >, TMUL, ZERO_NEVER,       32, 16, 32)

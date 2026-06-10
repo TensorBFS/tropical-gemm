@@ -29,6 +29,16 @@ pub(crate) const KERNEL_NAMES: &[&str] = &[
     "tropical_minplus_i64_nn",
     "tropical_maxmul_i64_nn",
     "tropical_andor_bool_nn",
+    // argmax-tracking kernels (buffer layout: argmax@3, params@4)
+    "tropical_maxplus_f32_nn_with_argmax",
+    "tropical_minplus_f32_nn_with_argmax",
+    "tropical_maxmul_f32_nn_with_argmax",
+    "tropical_maxplus_i32_nn_with_argmax",
+    "tropical_minplus_i32_nn_with_argmax",
+    "tropical_maxmul_i32_nn_with_argmax",
+    "tropical_maxplus_i64_nn_with_argmax",
+    "tropical_minplus_i64_nn_with_argmax",
+    "tropical_maxmul_i64_nn_with_argmax",
 ];
 
 pub struct MetalContext {
