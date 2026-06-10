@@ -20,9 +20,10 @@ struct GemmParams {
 }
 
 /// Block sizes per scalar width (must match the .metal instantiations).
-/// `BLOCK_8B` (32, 32) is introduced in Task 5 alongside the i64 kernels.
 // tile (BM, BN) shared by the 4-byte scalars (f32/i32/u32) and 1-byte bool
 pub(crate) const BLOCK_4B: (usize, usize) = (64, 64);
+// tile (BM, BN) for the 8-byte scalars (i64); threadgroup (8×8) = 64 threads
+pub(crate) const BLOCK_8B: (usize, usize) = (32, 32);
 
 /// Tropical semirings with a plain-GEMM Metal kernel.
 pub trait MetalKernel: TropicalSemiring
@@ -153,4 +154,10 @@ impl_metal_kernel!(
     TropicalMaxPlus<f32> => ("tropical_maxplus_f32_nn", BLOCK_4B),
     TropicalMinPlus<f32> => ("tropical_minplus_f32_nn", BLOCK_4B),
     TropicalMaxMul<f32>  => ("tropical_maxmul_f32_nn",  BLOCK_4B),
+    TropicalMaxPlus<i32> => ("tropical_maxplus_i32_nn", BLOCK_4B),
+    TropicalMinPlus<i32> => ("tropical_minplus_i32_nn", BLOCK_4B),
+    TropicalMaxMul<i32>  => ("tropical_maxmul_i32_nn",  BLOCK_4B),
+    TropicalMaxPlus<i64> => ("tropical_maxplus_i64_nn", BLOCK_8B),
+    TropicalMinPlus<i64> => ("tropical_minplus_i64_nn", BLOCK_8B),
+    TropicalMaxMul<i64>  => ("tropical_maxmul_i64_nn",  BLOCK_8B),
 );

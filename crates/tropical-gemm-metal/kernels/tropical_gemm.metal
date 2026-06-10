@@ -17,6 +17,8 @@ using namespace metal;
 // the CUDA side (see the long comment in tropical_gemm.cu): keep |data| < |S|/4.
 #define INF_I32 (1000000000)
 #define NEG_INF_I32 (-1000000000)
+// MSL `long` is always 64-bit (MSL spec table of scalar types), so `1L`
+// here equals the CUDA side's `1LL`.
 #define INF_I64 (1L << 60)
 #define NEG_INF_I64 (-(1L << 60))
 
@@ -147,3 +149,13 @@ kernel void KERNEL_NAME(                                                       \
 TROPICAL_GEMM(float, tropical_maxplus_f32_nn, -INFINITY, TMAX, TADD, 64, 32, 64)
 TROPICAL_GEMM(float, tropical_minplus_f32_nn,  INFINITY, TMIN, TADD, 64, 32, 64)
 TROPICAL_GEMM(float, tropical_maxmul_f32_nn,       0.0f, TMAX, TMUL, 64, 32, 64)
+
+// i32: block 64x32x64 (mirrors .cu lines 1225-1227)
+TROPICAL_GEMM(int, tropical_maxplus_i32_nn, NEG_INF_I32, TMAX, TADD, 64, 32, 64)
+TROPICAL_GEMM(int, tropical_minplus_i32_nn,     INF_I32, TMIN, TADD, 64, 32, 64)
+TROPICAL_GEMM(int, tropical_maxmul_i32_nn,            0, TMAX, TMUL, 64, 32, 64)
+
+// i64: block 32x16x32 — the 8-byte tier (mirrors .cu f64 tier, lines 1230-1232)
+TROPICAL_GEMM(long, tropical_maxplus_i64_nn, NEG_INF_I64, TMAX, TADD, 32, 16, 32)
+TROPICAL_GEMM(long, tropical_minplus_i64_nn,     INF_I64, TMIN, TADD, 32, 16, 32)
+TROPICAL_GEMM(long, tropical_maxmul_i64_nn,           0L, TMAX, TMUL, 32, 16, 32)

@@ -91,6 +91,64 @@ fn maxmul_f32_matches_cpu() {
     }
 }
 
+fn i32_data(len: usize, salt: usize) -> Vec<i32> {
+    (0..len)
+        .map(|i| {
+            (i.wrapping_mul(2654435761)
+                .wrapping_add(salt.wrapping_mul(40503))
+                % 2001) as i32
+                - 1000
+        })
+        .collect()
+}
+
+fn i64_data(len: usize, salt: usize) -> Vec<i64> {
+    (0..len)
+        .map(|i| {
+            (i.wrapping_mul(2654435761)
+                .wrapping_add(salt.wrapping_mul(40503))
+                % 2_000_001) as i64
+                - 1_000_000
+        })
+        .collect()
+}
+
+#[test]
+fn maxplus_minplus_maxmul_i32_match_cpu() {
+    for &(m, n, k) in SIZES {
+        check::<TropicalMaxPlus<i32>>(m, n, k, i32_data(m * k, 1), i32_data(k * n, 2));
+        check::<TropicalMinPlus<i32>>(m, n, k, i32_data(m * k, 3), i32_data(k * n, 4));
+        check::<TropicalMaxMul<i32>>(m, n, k, i32_data(m * k, 5), i32_data(k * n, 6));
+    }
+}
+
+#[test]
+fn maxplus_minplus_maxmul_i64_match_cpu() {
+    for &(m, n, k) in SIZES {
+        check::<TropicalMaxPlus<i64>>(m, n, k, i64_data(m * k, 1), i64_data(k * n, 2));
+        check::<TropicalMinPlus<i64>>(m, n, k, i64_data(m * k, 3), i64_data(k * n, 4));
+        check::<TropicalMaxMul<i64>>(m, n, k, i64_data(m * k, 5), i64_data(k * n, 6));
+    }
+}
+
+#[test]
+fn i32_sentinel_zero_is_detectable() {
+    // A row of tropical zeros (-S) stays in sentinel territory after drift:
+    // value <= -SENTINEL/2 detects it (same contract as the CUDA crate).
+    let m = 4;
+    let (n, k) = (4, 8);
+    let a_rm = vec![-tropical_gemm_metal::SENTINEL_I32; m * k];
+    let b_rm = i32_data(k * n, 7);
+    let ctx = MetalContext::new().unwrap();
+    let a = GpuMatrix::from_host_row_major(&ctx, &a_rm, m, k).unwrap();
+    let b = GpuMatrix::from_host_row_major(&ctx, &b_rm, k, n).unwrap();
+    let mut c = GpuMatrix::alloc(&ctx, m, n).unwrap();
+    tropical_gemm_gpu::<TropicalMaxPlus<i32>>(&ctx, &a, &b, &mut c).unwrap();
+    for v in c.to_host() {
+        assert!(v <= -tropical_gemm_metal::SENTINEL_I32 / 2, "got {v}");
+    }
+}
+
 #[test]
 fn empty_dims_are_ok() {
     let ctx = MetalContext::new().unwrap();
@@ -108,4 +166,21 @@ fn empty_dims_are_ok() {
     let mut c = GpuMatrix::from_host(&ctx, &[7.0f32; 20], 4, 5).unwrap();
     tropical_gemm_gpu::<TropicalMaxPlus<f32>>(&ctx, &a, &b, &mut c).unwrap();
     assert!(c.to_host().iter().all(|v| *v == f32::NEG_INFINITY));
+}
+
+#[test]
+fn i32_minplus_sentinel_zero_is_detectable() {
+    // MinPlus zero is +SENTINEL: a row of them keeps outputs >= S/2.
+    let m = 4;
+    let (n, k) = (4, 8);
+    let a_rm = vec![tropical_gemm_metal::SENTINEL_I32; m * k];
+    let b_rm = i32_data(k * n, 8);
+    let ctx = MetalContext::new().unwrap();
+    let a = GpuMatrix::from_host_row_major(&ctx, &a_rm, m, k).unwrap();
+    let b = GpuMatrix::from_host_row_major(&ctx, &b_rm, k, n).unwrap();
+    let mut c = GpuMatrix::alloc(&ctx, m, n).unwrap();
+    tropical_gemm_gpu::<TropicalMinPlus<i32>>(&ctx, &a, &b, &mut c).unwrap();
+    for v in c.to_host() {
+        assert!(v >= tropical_gemm_metal::SENTINEL_I32 / 2, "got {v}");
+    }
 }

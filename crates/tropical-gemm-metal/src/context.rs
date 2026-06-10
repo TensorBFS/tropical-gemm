@@ -22,6 +22,12 @@ pub(crate) const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_f32_nn",
     "tropical_minplus_f32_nn",
     "tropical_maxmul_f32_nn",
+    "tropical_maxplus_i32_nn",
+    "tropical_minplus_i32_nn",
+    "tropical_maxmul_i32_nn",
+    "tropical_maxplus_i64_nn",
+    "tropical_minplus_i64_nn",
+    "tropical_maxmul_i64_nn",
 ];
 
 pub struct MetalContext {
@@ -53,12 +59,16 @@ impl MetalContext {
                     kernel: name,
                     message: e.localizedDescription().to_string(),
                 })?;
-            // Largest threadgroup we ever dispatch is 256 (4-byte tier). The
-            // limit is per-pipeline (register pressure can lower it); these
-            // kernels are register-light, so catch regressions in debug builds.
+            // 8-byte-scalar kernels (i64/u64, incl. argmax variants) use the
+            // 32x32 tile -> 64 threads; everything else uses 64x64 -> 256.
+            // The limit is per-pipeline (register pressure can lower it);
+            // these kernels are register-light, so catch regressions in
+            // debug builds.
+            let min_threads: usize =
+                if name.contains("i64") || name.contains("u64") { 64 } else { 256 };
             debug_assert!(
-                pso.maxTotalThreadsPerThreadgroup() >= 256,
-                "pipeline {name} clamps threadgroup below 256"
+                pso.maxTotalThreadsPerThreadgroup() >= min_threads,
+                "pipeline {name} clamps threadgroup below {min_threads}"
             );
             pipelines.insert(name, pso);
         }

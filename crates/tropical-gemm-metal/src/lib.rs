@@ -12,6 +12,14 @@
 mod error;
 pub use error::{MetalError, Result};
 
+/// Integer tropical-zero sentinel magnitudes — same names, values and
+/// data-range contract as the CUDA backend (`tropical-gemm-cuda`):
+/// MaxPlus uses `-SENTINEL`, MinPlus `+SENTINEL`; keep `|data| < |S|/4`.
+pub const SENTINEL_I32: i32 = 1_000_000_000;
+pub const SENTINEL_I64: i64 = 1 << 60;
+pub const MAX_RELIABLE_DATA_I32: i32 = SENTINEL_I32 / 4 - 1;
+pub const MAX_RELIABLE_DATA_I64: i64 = SENTINEL_I64 / 4 - 1;
+
 #[cfg(target_os = "macos")]
 mod context;
 #[cfg(target_os = "macos")]
