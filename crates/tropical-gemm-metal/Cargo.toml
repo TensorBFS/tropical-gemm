@@ -1,0 +1,19 @@
+[package]
+name = "tropical-gemm-metal"
+description = "Metal (Apple Silicon GPU) backend for tropical matrix multiplication"
+keywords = ["tropical", "metal", "gpu", "matrix", "gemm"]
+categories = ["algorithms", "mathematics", "science"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tropical-gemm = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-metal = { workspace = true }

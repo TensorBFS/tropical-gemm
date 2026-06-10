@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/tropical-gemm-cuda",
     "crates/tropical-gemm",
+    "crates/tropical-gemm-metal",
     "crates/tropical-gemm-python",
 ]
 
@@ -17,6 +18,7 @@ repository = "https://github.com/TensorBFS/tropical-gemm"
 # Internal crates
 tropical-gemm-cuda = { version = "0.2.0", path = "crates/tropical-gemm-cuda" }
 tropical-gemm = { version = "0.2.0", path = "crates/tropical-gemm" }
+tropical-gemm-metal = { version = "0.2.0", path = "crates/tropical-gemm-metal" }
 
 # External dependencies
 num-traits = "0.2"
@@ -34,6 +36,9 @@ rayon = "1.10"
 #     purely so `cargo check` compiles (dynamic-loading → never actually runs CUDA).
 cudarc = { version = "0.19.7", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-version-from-build-system", "fallback-latest"] }
 thiserror = "2.0"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-metal = "0.3"
 
 # Testing
 criterion = "0.8"
