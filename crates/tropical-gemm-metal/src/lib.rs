@@ -22,6 +22,11 @@ mod memory;
 #[cfg(target_os = "macos")]
 pub use memory::{GpuMatrix, MetalScalar};
 
+#[cfg(target_os = "macos")]
+mod kernels;
+#[cfg(target_os = "macos")]
+pub use kernels::{tropical_gemm_gpu, MetalKernel};
+
 /// Lazily-initialized process-wide context (all Metal protocol objects used
 /// here are Send + Sync — verified against objc2-metal 0.3.2 generated source).
 #[cfg(target_os = "macos")]

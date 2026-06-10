@@ -175,7 +175,6 @@ impl<T: MetalScalar> GpuMatrix<T> {
     pub fn ld(&self) -> usize { self.rows }
 
     // Used by Task 4+ dispatch code.
-    #[allow(dead_code)]
     pub(crate) fn buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }

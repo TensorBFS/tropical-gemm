@@ -18,7 +18,11 @@ const KERNEL_SOURCE: &str = include_str!("../kernels/tropical_gemm.metal");
 
 /// All kernel entry points; `MetalContext::new` builds a pipeline for each.
 /// Extended task-by-task as kernels land (mirrors the CUDA crate's KERNEL_NAMES).
-pub(crate) const KERNEL_NAMES: &[&str] = &["tropical_probe"];
+pub(crate) const KERNEL_NAMES: &[&str] = &[
+    "tropical_maxplus_f32_nn",
+    "tropical_minplus_f32_nn",
+    "tropical_maxmul_f32_nn",
+];
 
 pub struct MetalContext {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
@@ -72,13 +76,11 @@ impl MetalContext {
     }
 
     // Used by Task 4+ dispatch code.
-    #[allow(dead_code)]
     pub(crate) fn queue(&self) -> &ProtocolObject<dyn MTLCommandQueue> {
         &self.queue
     }
 
     // Used by Task 4+ dispatch code and the test module below.
-    #[allow(dead_code)]
     pub(crate) fn get_pipeline(
         &self,
         name: &'static str,
