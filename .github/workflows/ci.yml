@@ -69,3 +69,27 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --exclude tropical-gemm-cuda --exclude tropical-gemm-python --all-targets -- -W clippy::all
+
+  metal-test:
+    name: Metal GPU tests (Apple Silicon)
+    runs-on: macos-latest   # arm64 since macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Probe Metal device availability
+        id: probe
+        run: |
+          cat > /tmp/probe.swift <<'EOF'
+          import Metal
+          if MTLCreateSystemDefaultDevice() != nil { print("metal=yes") } else { print("metal=no") }
+          EOF
+          OUT=$(swift /tmp/probe.swift || echo metal=no)
+          echo "$OUT" >> "$GITHUB_OUTPUT"
+          echo "probe result: $OUT"
+      - name: Run Metal tests
+        if: steps.probe.outputs.metal == 'yes'
+        run: cargo test -p tropical-gemm-metal --release
+      - name: Fallback check (no Metal device on runner)
+        if: steps.probe.outputs.metal != 'yes'
+        run: cargo check -p tropical-gemm-metal
