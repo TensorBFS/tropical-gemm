@@ -43,9 +43,7 @@ pub(crate) const KERNEL_NAMES: &[&str] = &[
 
 pub struct MetalContext {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
-    // Retained for lifetime; used by dispatch code landing in Task 4+.
-    #[allow(dead_code)]
-    queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipelines: HashMap<&'static str, Retained<ProtocolObject<dyn MTLComputePipelineState>>>,
 }
 
@@ -90,18 +88,15 @@ impl MetalContext {
         self.device.name().to_string()
     }
 
-    // Used by Task 4+ dispatch code.
     #[allow(dead_code)]
     pub(crate) fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
         &self.device
     }
 
-    // Used by Task 4+ dispatch code.
     pub(crate) fn queue(&self) -> &ProtocolObject<dyn MTLCommandQueue> {
         &self.queue
     }
 
-    // Used by Task 4+ dispatch code and the test module below.
     pub(crate) fn get_pipeline(
         &self,
         name: &'static str,

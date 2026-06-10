@@ -187,7 +187,7 @@ fn i32_minplus_sentinel_zero_is_detectable() {
 }
 
 // TropicalAndOr has NO CPU `KernelDispatch` impl (verified: simd/dispatch.rs
-// covers f32/f64/i32/i64 and Bitwise only), so the generic `check` helper
+// covers f32/f64/i32/i64 only), so the generic `check` helper
 // can't be used — compare against a naive OR/AND reference instead.
 #[test]
 fn andor_bool_matches_naive_reference() {

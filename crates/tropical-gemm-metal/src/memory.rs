@@ -174,7 +174,6 @@ impl<T: MetalScalar> GpuMatrix<T> {
     /// Leading dimension (== rows; matrices are always packed).
     pub fn ld(&self) -> usize { self.rows }
 
-    // Used by Task 4+ dispatch code.
     pub(crate) fn buffer(&self) -> &ProtocolObject<dyn MTLBuffer> {
         &self.buffer
     }
