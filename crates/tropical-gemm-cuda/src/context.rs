@@ -63,6 +63,19 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_f32_nn_batched_with_argmax",
     "tropical_minplus_f32_nn_batched_with_argmax",
     "tropical_maxmul_f32_nn_batched_with_argmax",
+    // Forward batched GEMM kernels (no argmax): one launch, blockIdx.z = batch.
+    "tropical_maxplus_f32_nn_batched",
+    "tropical_minplus_f32_nn_batched",
+    "tropical_maxmul_f32_nn_batched",
+    "tropical_maxplus_f64_nn_batched",
+    "tropical_minplus_f64_nn_batched",
+    "tropical_maxmul_f64_nn_batched",
+    "tropical_maxplus_i32_nn_batched",
+    "tropical_minplus_i32_nn_batched",
+    "tropical_maxmul_i32_nn_batched",
+    "tropical_maxplus_i64_nn_batched",
+    "tropical_minplus_i64_nn_batched",
+    "tropical_maxmul_i64_nn_batched",
 ];
 
 /// CUDA context for tropical GEMM operations.
