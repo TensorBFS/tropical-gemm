@@ -15,11 +15,12 @@
 //! barrier (e.g. before timing) can call `ctx.stream().synchronize()`.
 
 use crate::context::CudaContext;
+use crate::error::CudaError;
 use crate::error::Result;
 use crate::memory::{
     ExternalGpuMatrix, ExternalGpuTensor3, GpuMatrix, GpuMatrixWithArgmax, GpuTensor3WithArgmax,
 };
-use cudarc::driver::{DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
+use cudarc::driver::{CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
 use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
 
 /// Trait for types that can be computed on GPU.
@@ -30,6 +31,9 @@ where
     /// Kernel function name.
     const KERNEL_NAME: &'static str;
 
+    /// Forward batched kernel function name (one launch, `blockIdx.z` = batch).
+    const BATCHED_KERNEL_NAME: &'static str;
+
     /// Execute the tropical GEMM kernel.
     ///
     /// Computes C = A ⊗ B where ⊗ is tropical matrix multiplication.
@@ -38,6 +42,26 @@ where
         a: &GpuMatrix<Self::Scalar>,
         b: &GpuMatrix<Self::Scalar>,
         c: &mut GpuMatrix<Self::Scalar>,
+    ) -> Result<()>;
+
+    /// Execute `batch` independent tropical GEMMs in a single launch.
+    ///
+    /// Computes `C[i] = A[i] ⊗ B[i]` for `i in 0..batch` over contiguous,
+    /// already-device-resident operands: `a` is `batch × m × k`, `b` is
+    /// `batch × k × n`, `c` is `batch × m × n`, each column-major per matrix
+    /// with contiguous per-batch stride (`m*k`, `k*n`, `m*n`). This is the
+    /// strided-batched replacement for a host-side per-slice loop: no per-slice
+    /// `clone_dtod`, no per-slice allocation, no reassembly copy. The kernel
+    /// fully writes every element of `c`, so `c` may be uninitialized on entry.
+    fn launch_gemm_batched(
+        ctx: &CudaContext,
+        a: &CudaSlice<Self::Scalar>,
+        b: &CudaSlice<Self::Scalar>,
+        c: &mut CudaSlice<Self::Scalar>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
     ) -> Result<()>;
 }
 
@@ -85,12 +109,83 @@ fn launch_kernel_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>(
     Ok(())
 }
 
+/// Helper to launch a forward batched kernel over contiguous device buffers.
+///
+/// `grid.z` selects the batch element; the per-batch strides are the contiguous
+/// extents `m*k` / `k*n` / `m*n`. Operands are passed as borrowed `CudaSlice`s
+/// — no copy, no allocation. Follows the same asynchronous launch contract as
+/// [`launch_kernel_impl`].
+#[allow(clippy::too_many_arguments)]
+fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>(
+    ctx: &CudaContext,
+    kernel_name: &'static str,
+    a: &CudaSlice<T>,
+    b: &CudaSlice<T>,
+    c: &mut CudaSlice<T>,
+    batch: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+    grid: (u32, u32, u32),
+    block: (u32, u32, u32),
+) -> Result<()> {
+    // The raw-slice API loses GpuMatrix's dimension invariant, so validate the
+    // contiguous batched extents before handing pointers to the kernel.
+    let want = |dim: usize, len: usize, what: &str| -> Result<()> {
+        if len != dim {
+            return Err(CudaError::DimensionMismatch(format!(
+                "batched GEMM {what}: expected {dim} elements (batch={batch}, m={m}, k={k}, n={n}), got {len}"
+            )));
+        }
+        Ok(())
+    };
+    want(batch * m * k, a.len(), "operand A")?;
+    want(batch * k * n, b.len(), "operand B")?;
+    want(batch * m * n, c.len(), "output C")?;
+
+    let kernel = ctx.get_kernel(kernel_name)?;
+    let cfg = LaunchConfig {
+        grid_dim: grid,
+        block_dim: block,
+        shared_mem_bytes: 0,
+    };
+
+    // Bind scalar kernel args to locals so they outlive the launch builder.
+    let m_i32 = m as i32;
+    let n_i32 = n as i32;
+    let k_i32 = k as i32;
+    let stride_a = (m * k) as i32;
+    let stride_b = (k * n) as i32;
+    let stride_c = (m * n) as i32;
+
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(a)
+        .arg(b)
+        .arg(c)
+        .arg(&m_i32)
+        .arg(&n_i32)
+        .arg(&k_i32)
+        .arg(&stride_a)
+        .arg(&stride_b)
+        .arg(&stride_c);
+    unsafe {
+        builder.launch(cfg)?;
+    }
+
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See the module-level "Asynchronous launch contract".
+    Ok(())
+}
+
 /// Macro to implement CudaKernel for f32 types.
 macro_rules! impl_cuda_kernel_f32 {
-    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+    ($($semiring:ty => $kernel_name:literal, $batched_name:literal);* $(;)?) => {
         $(
             impl CudaKernel for $semiring {
                 const KERNEL_NAME: &'static str = $kernel_name;
+                const BATCHED_KERNEL_NAME: &'static str = $batched_name;
 
                 fn launch_gemm(
                     ctx: &CudaContext,
@@ -102,6 +197,24 @@ macro_rules! impl_cuda_kernel_f32 {
                     let block = CudaContext::block_dims_f32();
                     launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
                 }
+
+                fn launch_gemm_batched(
+                    ctx: &CudaContext,
+                    a: &CudaSlice<f32>,
+                    b: &CudaSlice<f32>,
+                    c: &mut CudaSlice<f32>,
+                    batch: usize,
+                    m: usize,
+                    k: usize,
+                    n: usize,
+                ) -> Result<()> {
+                    let (grid_xy, _, _) = CudaContext::grid_dims_f32(m, n);
+                    let grid = (grid_xy, 1, batch as u32);
+                    let block = CudaContext::block_dims_f32();
+                    launch_kernel_batched_impl(
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                    )
+                }
             }
         )*
     };
@@ -109,10 +222,11 @@ macro_rules! impl_cuda_kernel_f32 {
 
 /// Macro to implement CudaKernel for f64 types.
 macro_rules! impl_cuda_kernel_f64 {
-    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+    ($($semiring:ty => $kernel_name:literal, $batched_name:literal);* $(;)?) => {
         $(
             impl CudaKernel for $semiring {
                 const KERNEL_NAME: &'static str = $kernel_name;
+                const BATCHED_KERNEL_NAME: &'static str = $batched_name;
 
                 fn launch_gemm(
                     ctx: &CudaContext,
@@ -124,30 +238,49 @@ macro_rules! impl_cuda_kernel_f64 {
                     let block = CudaContext::block_dims_f64();
                     launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
                 }
+
+                fn launch_gemm_batched(
+                    ctx: &CudaContext,
+                    a: &CudaSlice<f64>,
+                    b: &CudaSlice<f64>,
+                    c: &mut CudaSlice<f64>,
+                    batch: usize,
+                    m: usize,
+                    k: usize,
+                    n: usize,
+                ) -> Result<()> {
+                    let (grid_xy, _, _) = CudaContext::grid_dims_f64(m, n);
+                    let grid = (grid_xy, 1, batch as u32);
+                    let block = CudaContext::block_dims_f64();
+                    launch_kernel_batched_impl(
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                    )
+                }
             }
         )*
     };
 }
 
 impl_cuda_kernel_f32! {
-    TropicalMaxPlus<f32> => "tropical_maxplus_f32_nn",
-    TropicalMinPlus<f32> => "tropical_minplus_f32_nn",
-    TropicalMaxMul<f32> => "tropical_maxmul_f32_nn",
+    TropicalMaxPlus<f32> => "tropical_maxplus_f32_nn", "tropical_maxplus_f32_nn_batched";
+    TropicalMinPlus<f32> => "tropical_minplus_f32_nn", "tropical_minplus_f32_nn_batched";
+    TropicalMaxMul<f32> => "tropical_maxmul_f32_nn", "tropical_maxmul_f32_nn_batched";
 }
 
 impl_cuda_kernel_f64! {
-    TropicalMaxPlus<f64> => "tropical_maxplus_f64_nn",
-    TropicalMinPlus<f64> => "tropical_minplus_f64_nn",
-    TropicalMaxMul<f64> => "tropical_maxmul_f64_nn",
+    TropicalMaxPlus<f64> => "tropical_maxplus_f64_nn", "tropical_maxplus_f64_nn_batched";
+    TropicalMinPlus<f64> => "tropical_minplus_f64_nn", "tropical_minplus_f64_nn_batched";
+    TropicalMaxMul<f64> => "tropical_maxmul_f64_nn", "tropical_maxmul_f64_nn_batched";
 }
 
 /// Macro to implement CudaKernel for i32 types.
 /// Uses same block sizes as f32 (64x32x64) since int is 4 bytes.
 macro_rules! impl_cuda_kernel_i32 {
-    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+    ($($semiring:ty => $kernel_name:literal, $batched_name:literal);* $(;)?) => {
         $(
             impl CudaKernel for $semiring {
                 const KERNEL_NAME: &'static str = $kernel_name;
+                const BATCHED_KERNEL_NAME: &'static str = $batched_name;
 
                 fn launch_gemm(
                     ctx: &CudaContext,
@@ -159,6 +292,24 @@ macro_rules! impl_cuda_kernel_i32 {
                     let block = CudaContext::block_dims_f32();
                     launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
                 }
+
+                fn launch_gemm_batched(
+                    ctx: &CudaContext,
+                    a: &CudaSlice<i32>,
+                    b: &CudaSlice<i32>,
+                    c: &mut CudaSlice<i32>,
+                    batch: usize,
+                    m: usize,
+                    k: usize,
+                    n: usize,
+                ) -> Result<()> {
+                    let (grid_xy, _, _) = CudaContext::grid_dims_f32(m, n);
+                    let grid = (grid_xy, 1, batch as u32);
+                    let block = CudaContext::block_dims_f32();
+                    launch_kernel_batched_impl(
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                    )
+                }
             }
         )*
     };
@@ -167,10 +318,11 @@ macro_rules! impl_cuda_kernel_i32 {
 /// Macro to implement CudaKernel for i64 types.
 /// Uses same block sizes as f64 (32x16x32) since long long is 8 bytes.
 macro_rules! impl_cuda_kernel_i64 {
-    ($($semiring:ty => $kernel_name:literal),* $(,)?) => {
+    ($($semiring:ty => $kernel_name:literal, $batched_name:literal);* $(;)?) => {
         $(
             impl CudaKernel for $semiring {
                 const KERNEL_NAME: &'static str = $kernel_name;
+                const BATCHED_KERNEL_NAME: &'static str = $batched_name;
 
                 fn launch_gemm(
                     ctx: &CudaContext,
@@ -182,21 +334,39 @@ macro_rules! impl_cuda_kernel_i64 {
                     let block = CudaContext::block_dims_f64();
                     launch_kernel_impl(ctx, Self::KERNEL_NAME, a, b, c, grid, block)
                 }
+
+                fn launch_gemm_batched(
+                    ctx: &CudaContext,
+                    a: &CudaSlice<i64>,
+                    b: &CudaSlice<i64>,
+                    c: &mut CudaSlice<i64>,
+                    batch: usize,
+                    m: usize,
+                    k: usize,
+                    n: usize,
+                ) -> Result<()> {
+                    let (grid_xy, _, _) = CudaContext::grid_dims_f64(m, n);
+                    let grid = (grid_xy, 1, batch as u32);
+                    let block = CudaContext::block_dims_f64();
+                    launch_kernel_batched_impl(
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                    )
+                }
             }
         )*
     };
 }
 
 impl_cuda_kernel_i32! {
-    TropicalMaxPlus<i32> => "tropical_maxplus_i32_nn",
-    TropicalMinPlus<i32> => "tropical_minplus_i32_nn",
-    TropicalMaxMul<i32> => "tropical_maxmul_i32_nn",
+    TropicalMaxPlus<i32> => "tropical_maxplus_i32_nn", "tropical_maxplus_i32_nn_batched";
+    TropicalMinPlus<i32> => "tropical_minplus_i32_nn", "tropical_minplus_i32_nn_batched";
+    TropicalMaxMul<i32> => "tropical_maxmul_i32_nn", "tropical_maxmul_i32_nn_batched";
 }
 
 impl_cuda_kernel_i64! {
-    TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn",
-    TropicalMinPlus<i64> => "tropical_minplus_i64_nn",
-    TropicalMaxMul<i64> => "tropical_maxmul_i64_nn",
+    TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn", "tropical_maxplus_i64_nn_batched";
+    TropicalMinPlus<i64> => "tropical_minplus_i64_nn", "tropical_minplus_i64_nn_batched";
+    TropicalMaxMul<i64> => "tropical_maxmul_i64_nn", "tropical_maxmul_i64_nn_batched";
 }
 
 // ============================================================================
