@@ -959,7 +959,8 @@ pub fn tropical_backward_a_gpu_kernel(
         builder.launch(cfg)?;
     }
 
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See `kernels::` module docs on the launch contract.
     Ok(grad_a)
 }
 
@@ -1023,7 +1024,8 @@ pub fn tropical_backward_b_gpu_kernel(
         builder.launch(cfg)?;
     }
 
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See `kernels::` module docs on the launch contract.
     Ok(grad_b)
 }
 

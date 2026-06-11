@@ -99,7 +99,8 @@ fn launch_pack_rows(
     unsafe {
         builder.launch(cfg)?;
     }
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See `kernels::` module docs on the launch contract.
     Ok(())
 }
 
@@ -130,7 +131,8 @@ fn launch_pack_cols(
     unsafe {
         builder.launch(cfg)?;
     }
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See `kernels::` module docs on the launch contract.
     Ok(())
 }
 
@@ -212,7 +214,8 @@ pub fn tropical_gemm_gpu_andor_packed(
     unsafe {
         builder.launch(cfg)?;
     }
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See `kernels::` module docs on the launch contract.
     Ok(())
 }
 

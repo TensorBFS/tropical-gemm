@@ -1,4 +1,18 @@
 //! CUDA kernel trait and implementations.
+//!
+//! ## Asynchronous launch contract
+//!
+//! Kernel launches in this crate are enqueued on the context's single CUDA
+//! stream and return *without* a device synchronize. Correctness relies on
+//! stream ordering: every operand upload, kernel, and device-to-device copy
+//! runs on that one stream (see `CudaContext::stream`), so each launch
+//! observes its predecessors' results, and any host read goes through
+//! `GpuMatrix::to_host`, which synchronizes. A per-launch
+//! `stream.synchronize()` was previously issued after every kernel; on
+//! contractions built from many small matrices that blocking host↔device
+//! round-trip dominated the wall (one full sync per node) while the GPU sat
+//! idle between tiny kernels, so it has been removed. Callers that need a
+//! barrier (e.g. before timing) can call `ctx.stream().synchronize()`.
 
 use crate::context::CudaContext;
 use crate::error::Result;
@@ -69,7 +83,8 @@ fn launch_kernel_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>(
         builder.launch(cfg)?;
     }
 
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See the module-level "Asynchronous launch contract".
     Ok(())
 }
 
@@ -336,7 +351,8 @@ fn launch_kernel_with_argmax_impl<T: DeviceRepr + ValidAsZeroBits + Default + Cl
         builder.launch(cfg)?;
     }
 
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See the module-level "Asynchronous launch contract".
     Ok(())
 }
 
@@ -530,7 +546,8 @@ pub unsafe fn launch_gemm_external_with_argmax_f32(
         .arg(&k_i32);
     builder.launch(cfg)?;
 
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See the module-level "Asynchronous launch contract".
     Ok(c)
 }
 
@@ -576,7 +593,8 @@ pub unsafe fn launch_gemm_external_f32(
         .arg(&k_i32);
     builder.launch(cfg)?;
 
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See the module-level "Asynchronous launch contract".
     Ok(c)
 }
 
@@ -660,6 +678,7 @@ pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
         .arg(&stride_c); // strideC
     builder.launch(cfg)?;
 
-    stream.synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See the module-level "Asynchronous launch contract".
     Ok(c)
 }
