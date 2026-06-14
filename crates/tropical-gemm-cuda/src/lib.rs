@@ -1202,6 +1202,89 @@ mod tests {
         assert!((c[3] - 12.0).abs() < 1e-5, "C[1,1] = {}, expected 12", c[3]);
     }
 
+    /// CPU column-major max-plus reference: C[i,j] = max_k(A[i,k] + B[k,j]).
+    fn cpu_maxplus(a: &[f32], m: usize, k: usize, b: &[f32], n: usize) -> Vec<f32> {
+        let mut c = vec![f32::NEG_INFINITY; m * n];
+        for j in 0..n {
+            for i in 0..m {
+                let mut acc = f32::NEG_INFINITY;
+                for p in 0..k {
+                    acc = acc.max(a[p * m + i] + b[j * k + p]);
+                }
+                c[j * m + i] = acc;
+            }
+        }
+        c
+    }
+
+    /// The forward batched kernel must match the trusted single-matrix path for
+    /// every batch element, including non-block-aligned sizes (edge tiles). This
+    /// is the correctness gate for `launch_gemm_batched`.
+    #[test]
+    fn test_tropical_gemm_batched_matches_single() {
+        use cudarc::driver::CudaSlice;
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+        let stream = ctx.stream();
+
+        // Cases chosen to exercise: a tiny hand-checkable shape, a single full
+        // tile, and a multi-block shape whose M/N are NOT multiples of the
+        // 64-wide block (so the guarded edge-tile load/store path runs).
+        for &(batch, m, k, n) in &[(2usize, 2usize, 3usize, 2usize), (3, 70, 33, 50)] {
+            // Build `batch` distinct operands, contiguous column-major per slice.
+            let mut a_all = vec![0f32; batch * m * k];
+            let mut b_all = vec![0f32; batch * k * n];
+            for bi in 0..batch {
+                for idx in 0..m * k {
+                    a_all[bi * m * k + idx] = (((bi * 7 + idx * 3) % 13) as f32) - 6.0;
+                }
+                for idx in 0..k * n {
+                    b_all[bi * k * n + idx] = (((bi * 5 + idx * 2) % 11) as f32) - 5.0;
+                }
+            }
+
+            // Reference: trusted single-matrix GPU path + CPU, per slice.
+            let mut expected = vec![0f32; batch * m * n];
+            for bi in 0..batch {
+                let a_i = &a_all[bi * m * k..(bi + 1) * m * k];
+                let b_i = &b_all[bi * k * n..(bi + 1) * k * n];
+                let ref_gpu =
+                    tropical_matmul_gpu::<TropicalMaxPlus<f32>>(a_i, m, k, b_i, n).unwrap();
+                let ref_cpu = cpu_maxplus(a_i, m, k, b_i, n);
+                for idx in 0..m * n {
+                    assert!(
+                        (ref_gpu[idx] - ref_cpu[idx]).abs() < 1e-4,
+                        "single-kernel disagrees with CPU ref at batch {bi} idx {idx}: {} vs {}",
+                        ref_gpu[idx],
+                        ref_cpu[idx]
+                    );
+                }
+                expected[bi * m * n..(bi + 1) * m * n].copy_from_slice(&ref_gpu);
+            }
+
+            // Batched: one launch over the whole contiguous buffer, uninit output.
+            let a_dev: CudaSlice<f32> = stream.clone_htod(&a_all).unwrap();
+            let b_dev: CudaSlice<f32> = stream.clone_htod(&b_all).unwrap();
+            let mut c_dev = unsafe { stream.alloc::<f32>(batch * m * n) }.unwrap();
+            <TropicalMaxPlus<f32> as CudaKernel>::launch_gemm_batched(
+                ctx, &a_dev, &b_dev, &mut c_dev, batch, m, k, n,
+            )
+            .unwrap();
+            let got = stream.clone_dtoh(&c_dev).unwrap();
+            stream.synchronize().unwrap();
+
+            for idx in 0..batch * m * n {
+                assert!(
+                    (got[idx] - expected[idx]).abs() < 1e-4,
+                    "batched != single at (batch,m,k,n)=({batch},{m},{k},{n}) idx {idx}: {} vs {}",
+                    got[idx],
+                    expected[idx]
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_tropical_matmul_gpu_with_argmax_maxplus() {
         if cuda_context_or_skip().is_none() {
@@ -1659,14 +1742,12 @@ mod tests {
         // 2 batches of 2x2 matrices, stored contiguously (column-major)
         let a = vec![
             // Batch 0: [[1,2],[3,4]] col-major: [1,3,2,4]
-            1.0f32, 3.0, 2.0, 4.0,
-            // Batch 1: [[5,6],[7,8]] col-major: [5,7,6,8]
+            1.0f32, 3.0, 2.0, 4.0, // Batch 1: [[5,6],[7,8]] col-major: [5,7,6,8]
             5.0, 7.0, 6.0, 8.0,
         ];
         let b = vec![
             // Batch 0: [[1,0],[0,1]] col-major: [1,0,0,1]
-            1.0f32, 0.0, 0.0, 1.0,
-            // Batch 1: [[1,2],[3,4]] col-major: [1,3,2,4]
+            1.0f32, 0.0, 0.0, 1.0, // Batch 1: [[1,2],[3,4]] col-major: [1,3,2,4]
             1.0, 3.0, 2.0, 4.0,
         ];
 
