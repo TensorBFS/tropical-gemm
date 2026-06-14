@@ -30,6 +30,21 @@ use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, Tro
 /// most this size (see `launch_kernel_batched_impl`).
 const MAX_GRID_DIM_Z: usize = 65535;
 
+/// Convert a per-batch element stride to the `i32` the kernels take, failing
+/// instead of truncating. The chunked launches derive operand base offsets from
+/// the `usize` stride while the kernel reads the stride as `i32`; an `as i32`
+/// cast that wrapped would desynchronise the two and silently corrupt
+/// addressing. The kernel signature is `i32`, so a stride past `i32::MAX` is
+/// unrepresentable on the device regardless — reject it at the boundary.
+fn stride_to_i32(stride: usize, what: &str) -> Result<i32> {
+    i32::try_from(stride).map_err(|_| {
+        CudaError::DimensionMismatch(format!(
+            "batched GEMM {what} stride {stride} exceeds i32::MAX; \
+             matrix too large for the strided-batched kernel"
+        ))
+    })
+}
+
 /// Trait for types that can be computed on GPU.
 pub trait CudaKernel: TropicalSemiring
 where
@@ -156,11 +171,14 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
     let m_i32 = m as i32;
     let n_i32 = n as i32;
     let k_i32 = k as i32;
-    let stride_a = (m * k) as i32;
-    let stride_b = (k * n) as i32;
-    let stride_c = (m * n) as i32;
-    // Per-batch element extents, used to offset each chunk's operand base.
+    // Per-batch element extents, used both to offset each chunk's operand base
+    // (as `usize`) and as the kernel's `i32` stride. Derive the `i32` form
+    // fallibly so a stride past `i32::MAX` can't truncate out of sync with the
+    // `usize` offsets below (a.len()/b.len()/c.len() already fit in `usize`).
     let (sa, sb, sc) = (m * k, k * n, m * n);
+    let stride_a = stride_to_i32(sa, "operand A")?;
+    let stride_b = stride_to_i32(sb, "operand B")?;
+    let stride_c = stride_to_i32(sc, "output C")?;
 
     let stream = ctx.stream();
     // The batch maps to `blockIdx.z`, which CUDA caps at `MAX_GRID_DIM_Z`. Launch
@@ -746,13 +764,17 @@ pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
     let block = CudaContext::block_dims_f32();
     let kernel = ctx.get_kernel(kernel_name)?;
 
-    // Per-batch element strides (A/B/C/argmax are all rows*cols per batch).
+    // Per-batch element strides. A/B carry the (possibly padded) stride declared
+    // by the external DLPack tensor; C/argmax are freshly allocated contiguous,
+    // so their stride is rows*cols. Derive the kernel's `i32` strides fallibly
+    // so a stride past `i32::MAX` can't truncate out of sync with the `usize`
+    // base-pointer offsets below.
     let stride_a = a.stride();
     let stride_b = b.stride();
     let stride_c = c.tensor.stride();
-    let stride_a_i32 = stride_a as i32;
-    let stride_b_i32 = stride_b as i32;
-    let stride_c_i32 = stride_c as i32;
+    let stride_a_i32 = stride_to_i32(stride_a, "operand A")?;
+    let stride_b_i32 = stride_to_i32(stride_b, "operand B")?;
+    let stride_c_i32 = stride_to_i32(stride_c, "output C")?;
     let n_i32 = n as i32; // Swapped: N becomes "M"
     let m_i32 = m as i32; // Swapped: M becomes "N"
     let k_i32 = k as i32;
