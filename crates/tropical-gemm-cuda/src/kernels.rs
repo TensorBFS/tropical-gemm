@@ -148,7 +148,7 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
     m: usize,
     k: usize,
     n: usize,
-    grid: (u32, u32, u32),
+    grid_xy: u32,
     block: (u32, u32, u32),
 ) -> Result<()> {
     // The raw-slice API loses GpuMatrix's dimension invariant, so validate the
@@ -184,7 +184,7 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
     // The batch maps to `blockIdx.z`, which CUDA caps at `MAX_GRID_DIM_Z`. Launch
     // the batch in chunks of at most that size, offsetting every operand's base
     // by the chunk start so `blockIdx.z ∈ [0, chunk)` indexes the correct slice.
-    // `grid` from the caller carries the x/y tiling; its z is recomputed here.
+    // `grid_xy` from the caller is the x tiling; y is 1 and z is the chunk size.
     let mut start = 0usize;
     while start < batch {
         let chunk = (batch - start).min(MAX_GRID_DIM_Z);
@@ -192,7 +192,7 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
         let b_view = b.slice(start * sb..(start + chunk) * sb);
         let mut c_view = c.slice_mut(start * sc..(start + chunk) * sc);
         let cfg = LaunchConfig {
-            grid_dim: (grid.0, grid.1, chunk as u32),
+            grid_dim: (grid_xy, 1, chunk as u32),
             block_dim: block,
             shared_mem_bytes: 0,
         };
@@ -247,11 +247,10 @@ macro_rules! impl_cuda_kernel_f32 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f32(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f32(m, n).0;
                     let block = CudaContext::block_dims_f32();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -288,11 +287,10 @@ macro_rules! impl_cuda_kernel_f64 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f64(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f64(m, n).0;
                     let block = CudaContext::block_dims_f64();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -342,11 +340,10 @@ macro_rules! impl_cuda_kernel_i32 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f32(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f32(m, n).0;
                     let block = CudaContext::block_dims_f32();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -384,11 +381,10 @@ macro_rules! impl_cuda_kernel_i64 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f64(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f64(m, n).0;
                     let block = CudaContext::block_dims_f64();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -759,8 +755,10 @@ pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
     // Same as non-batched version, but for each batch
     let c = GpuTensor3WithArgmax::<f32>::alloc(ctx, batch, m, n)?;
 
-    // Grid: (ceil(N/64) * ceil(M/64), 1, batch) with swapped M↔N
-    let grid_xy = (((n + 63) / 64) * ((m + 63) / 64)) as u32;
+    // Grid: (ceil(N/64) * ceil(M/64), 1, batch) with swapped M↔N. Reuse the
+    // shared tile-count helper (keyed off the f32 block constants) rather than
+    // hardcoding 64, which would silently desync if the block size changed.
+    let grid_xy = CudaContext::grid_dims_f32(n, m).0;
     let block = CudaContext::block_dims_f32();
     let kernel = ctx.get_kernel(kernel_name)?;
 
