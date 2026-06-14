@@ -23,6 +23,28 @@ use crate::memory::{
 use cudarc::driver::{CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
 use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
 
+/// Maximum extent of `gridDim.z` on all CUDA compute capabilities (the batch
+/// dimension of the strided-batched kernels maps to `blockIdx.z`). A single
+/// launch with more than this many batch elements fails at launch time with
+/// `CUDA_ERROR_INVALID_VALUE`, so batched launches are split into chunks of at
+/// most this size (see `launch_kernel_batched_impl`).
+const MAX_GRID_DIM_Z: usize = 65535;
+
+/// Convert a per-batch element stride to the `i32` the kernels take, failing
+/// instead of truncating. The chunked launches derive operand base offsets from
+/// the `usize` stride while the kernel reads the stride as `i32`; an `as i32`
+/// cast that wrapped would desynchronise the two and silently corrupt
+/// addressing. The kernel signature is `i32`, so a stride past `i32::MAX` is
+/// unrepresentable on the device regardless — reject it at the boundary.
+fn stride_to_i32(stride: usize, what: &str) -> Result<i32> {
+    i32::try_from(stride).map_err(|_| {
+        CudaError::DimensionMismatch(format!(
+            "batched GEMM {what} stride {stride} exceeds i32::MAX; \
+             matrix too large for the strided-batched kernel"
+        ))
+    })
+}
+
 /// Trait for types that can be computed on GPU.
 pub trait CudaKernel: TropicalSemiring
 where
@@ -126,7 +148,7 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
     m: usize,
     k: usize,
     n: usize,
-    grid: (u32, u32, u32),
+    grid_xy: u32,
     block: (u32, u32, u32),
 ) -> Result<()> {
     // The raw-slice API loses GpuMatrix's dimension invariant, so validate the
@@ -144,34 +166,51 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
     want(batch * m * n, c.len(), "output C")?;
 
     let kernel = ctx.get_kernel(kernel_name)?;
-    let cfg = LaunchConfig {
-        grid_dim: grid,
-        block_dim: block,
-        shared_mem_bytes: 0,
-    };
 
     // Bind scalar kernel args to locals so they outlive the launch builder.
     let m_i32 = m as i32;
     let n_i32 = n as i32;
     let k_i32 = k as i32;
-    let stride_a = (m * k) as i32;
-    let stride_b = (k * n) as i32;
-    let stride_c = (m * n) as i32;
+    // Per-batch element extents, used both to offset each chunk's operand base
+    // (as `usize`) and as the kernel's `i32` stride. Derive the `i32` form
+    // fallibly so a stride past `i32::MAX` can't truncate out of sync with the
+    // `usize` offsets below (a.len()/b.len()/c.len() already fit in `usize`).
+    let (sa, sb, sc) = (m * k, k * n, m * n);
+    let stride_a = stride_to_i32(sa, "operand A")?;
+    let stride_b = stride_to_i32(sb, "operand B")?;
+    let stride_c = stride_to_i32(sc, "output C")?;
 
     let stream = ctx.stream();
-    let mut builder = stream.launch_builder(&kernel);
-    builder
-        .arg(a)
-        .arg(b)
-        .arg(c)
-        .arg(&m_i32)
-        .arg(&n_i32)
-        .arg(&k_i32)
-        .arg(&stride_a)
-        .arg(&stride_b)
-        .arg(&stride_c);
-    unsafe {
-        builder.launch(cfg)?;
+    // The batch maps to `blockIdx.z`, which CUDA caps at `MAX_GRID_DIM_Z`. Launch
+    // the batch in chunks of at most that size, offsetting every operand's base
+    // by the chunk start so `blockIdx.z ∈ [0, chunk)` indexes the correct slice.
+    // `grid_xy` from the caller is the x tiling; y is 1 and z is the chunk size.
+    let mut start = 0usize;
+    while start < batch {
+        let chunk = (batch - start).min(MAX_GRID_DIM_Z);
+        let a_view = a.slice(start * sa..(start + chunk) * sa);
+        let b_view = b.slice(start * sb..(start + chunk) * sb);
+        let mut c_view = c.slice_mut(start * sc..(start + chunk) * sc);
+        let cfg = LaunchConfig {
+            grid_dim: (grid_xy, 1, chunk as u32),
+            block_dim: block,
+            shared_mem_bytes: 0,
+        };
+        let mut builder = stream.launch_builder(&kernel);
+        builder
+            .arg(&a_view)
+            .arg(&b_view)
+            .arg(&mut c_view)
+            .arg(&m_i32)
+            .arg(&n_i32)
+            .arg(&k_i32)
+            .arg(&stride_a)
+            .arg(&stride_b)
+            .arg(&stride_c);
+        unsafe {
+            builder.launch(cfg)?;
+        }
+        start += chunk;
     }
 
     // Async: no per-launch device sync (stream-ordered; host reads sync in
@@ -208,11 +247,10 @@ macro_rules! impl_cuda_kernel_f32 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f32(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f32(m, n).0;
                     let block = CudaContext::block_dims_f32();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -249,11 +287,10 @@ macro_rules! impl_cuda_kernel_f64 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f64(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f64(m, n).0;
                     let block = CudaContext::block_dims_f64();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -303,11 +340,10 @@ macro_rules! impl_cuda_kernel_i32 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f32(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f32(m, n).0;
                     let block = CudaContext::block_dims_f32();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -345,11 +381,10 @@ macro_rules! impl_cuda_kernel_i64 {
                     k: usize,
                     n: usize,
                 ) -> Result<()> {
-                    let (grid_xy, _, _) = CudaContext::grid_dims_f64(m, n);
-                    let grid = (grid_xy, 1, batch as u32);
+                    let grid_xy = CudaContext::grid_dims_f64(m, n).0;
                     let block = CudaContext::block_dims_f64();
                     launch_kernel_batched_impl(
-                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid, block,
+                        ctx, Self::BATCHED_KERNEL_NAME, a, b, c, batch, m, k, n, grid_xy, block,
                     )
                 }
             }
@@ -718,50 +753,73 @@ pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
 ) -> Result<GpuTensor3WithArgmax<f32>> {
     // Apply row-major → column-major trick: swap inputs and swap M↔N
     // Same as non-batched version, but for each batch
-    let mut c = GpuTensor3WithArgmax::<f32>::alloc(ctx, batch, m, n)?;
+    let c = GpuTensor3WithArgmax::<f32>::alloc(ctx, batch, m, n)?;
 
-    // Grid: (ceil(N/64) * ceil(M/64), 1, batch) with swapped M↔N
-    let grid_xy = ((n + 63) / 64) * ((m + 63) / 64);
-    let grid = (grid_xy as u32, 1, batch as u32);
+    // Grid: (ceil(N/64) * ceil(M/64), 1, batch) with swapped M↔N. Reuse the
+    // shared tile-count helper (keyed off the f32 block constants) rather than
+    // hardcoding 64, which would silently desync if the block size changed.
+    let grid_xy = CudaContext::grid_dims_f32(n, m).0;
     let block = CudaContext::block_dims_f32();
-
     let kernel = ctx.get_kernel(kernel_name)?;
-    let cfg = LaunchConfig {
-        grid_dim: grid,
-        block_dim: block,
-        shared_mem_bytes: 0,
-    };
 
-    // Compute strides before borrowing mutably
-    let stride_a = a.stride() as i32;
-    let stride_b = b.stride() as i32;
-    let stride_c = c.tensor.stride() as i32;
-
-    // Bind raw external pointers and scalar args to locals so they outlive the
-    // launch builder.
-    let b_ptr: u64 = b.device_ptr(); // B becomes "A" in kernel
-    let a_ptr: u64 = a.device_ptr(); // A becomes "B" in kernel
+    // Per-batch element strides. A/B carry the (possibly padded) stride declared
+    // by the external DLPack tensor; C/argmax are freshly allocated contiguous,
+    // so their stride is rows*cols. Derive the kernel's `i32` strides fallibly
+    // so a stride past `i32::MAX` can't truncate out of sync with the `usize`
+    // base-pointer offsets below.
+    let stride_a = a.stride();
+    let stride_b = b.stride();
+    let stride_c = c.tensor.stride();
+    let stride_a_i32 = stride_to_i32(stride_a, "operand A")?;
+    let stride_b_i32 = stride_to_i32(stride_b, "operand B")?;
+    let stride_c_i32 = stride_to_i32(stride_c, "output C")?;
     let n_i32 = n as i32; // Swapped: N becomes "M"
     let m_i32 = m as i32; // Swapped: M becomes "N"
     let k_i32 = k as i32;
 
-    // Swap order: pass B first, then A, and swap M↔N
+    // Operand base device addresses (byte pointers). C and argmax are owned by
+    // `c`, which outlives every (async, stream-ordered) launch below.
+    let a_base: u64 = a.device_ptr();
+    let b_base: u64 = b.device_ptr();
+    let c_base: u64 = c.tensor.device_ptr();
+    let am_base: u64 = c.argmax.device_ptr();
+    let f32_bytes = std::mem::size_of::<f32>() as u64;
+    let idx_bytes = std::mem::size_of::<u32>() as u64; // ArgmaxIndex
+
+    // The batch maps to `blockIdx.z` (CUDA cap `MAX_GRID_DIM_Z`). Launch in
+    // chunks of at most that size, advancing each operand base pointer by the
+    // chunk start so `blockIdx.z ∈ [0, chunk)` indexes the correct batch slice.
+    // Swap order: pass B first, then A, and swap M↔N (row-major→col-major).
     // Kernel signature: (A, B, C, argmax, M, N, K, strideA, strideB, strideC)
     // We pass:          (B, A, C, argmax, N, M, K, strideB, strideA, strideC)
     let stream = ctx.stream();
-    let mut builder = stream.launch_builder(&kernel);
-    builder
-        .arg(&b_ptr)
-        .arg(&a_ptr)
-        .arg(c.tensor.as_slice_mut())
-        .arg(c.argmax.as_slice_mut())
-        .arg(&n_i32)
-        .arg(&m_i32)
-        .arg(&k_i32)
-        .arg(&stride_b) // strideA (B's stride in our swap)
-        .arg(&stride_a) // strideB (A's stride in our swap)
-        .arg(&stride_c); // strideC
-    builder.launch(cfg)?;
+    let mut start = 0usize;
+    while start < batch {
+        let chunk = (batch - start).min(MAX_GRID_DIM_Z);
+        let a_ptr = a_base + (start * stride_a) as u64 * f32_bytes;
+        let b_ptr = b_base + (start * stride_b) as u64 * f32_bytes;
+        let c_ptr = c_base + (start * stride_c) as u64 * f32_bytes;
+        let am_ptr = am_base + (start * stride_c) as u64 * idx_bytes;
+        let cfg = LaunchConfig {
+            grid_dim: (grid_xy, 1, chunk as u32),
+            block_dim: block,
+            shared_mem_bytes: 0,
+        };
+        let mut builder = stream.launch_builder(&kernel);
+        builder
+            .arg(&b_ptr)
+            .arg(&a_ptr)
+            .arg(&c_ptr)
+            .arg(&am_ptr)
+            .arg(&n_i32)
+            .arg(&m_i32)
+            .arg(&k_i32)
+            .arg(&stride_b_i32) // strideA (B's stride in our swap)
+            .arg(&stride_a_i32) // strideB (A's stride in our swap)
+            .arg(&stride_c_i32); // strideC
+        builder.launch(cfg)?;
+        start += chunk;
+    }
 
     // Async: no per-launch device sync (stream-ordered; host reads sync in
     // `to_host`). See the module-level "Asynchronous launch contract".
