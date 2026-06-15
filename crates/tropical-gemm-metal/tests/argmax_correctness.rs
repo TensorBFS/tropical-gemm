@@ -5,18 +5,11 @@ use tropical_gemm_metal::{
     tropical_gemm_gpu_with_argmax, GpuMatrix, MetalContext, MetalKernelWithArgmax, MetalScalar,
 };
 
+mod common;
+use common::{f32_data, i32_data, i64_data};
+
 const SIZES: &[(usize, usize, usize)] =
     &[(1, 1, 1), (17, 5, 3), (64, 64, 64), (257, 130, 67)];
-
-fn transpose<T: Copy + Default>(data: &[T], rows: usize, cols: usize) -> Vec<T> {
-    let mut out = vec![T::default(); data.len()];
-    for r in 0..rows {
-        for c in 0..cols {
-            out[c * rows + r] = data[r * cols + c];
-        }
-    }
-    out
-}
 
 // Same two traps as gemm_correctness's `check`: repeat the `MetalScalar` bound
 // (trait where-clauses are not implied bounds) and unwrap the CPU newtype via
@@ -31,8 +24,8 @@ where
     let expected_values: Vec<T::Scalar> = expected.values.iter().map(|v| v.value()).collect();
 
     let ctx = MetalContext::new().unwrap();
-    let a = GpuMatrix::from_host(&ctx, &transpose(&a_rm, m, k), m, k).unwrap();
-    let b = GpuMatrix::from_host(&ctx, &transpose(&b_rm, k, n), k, n).unwrap();
+    let a = GpuMatrix::from_host_row_major(&ctx, &a_rm, m, k).unwrap();
+    let b = GpuMatrix::from_host_row_major(&ctx, &b_rm, k, n).unwrap();
     let mut c = GpuMatrix::alloc(&ctx, m, n).unwrap();
     let mut am = GpuMatrix::<u32>::alloc(&ctx, m, n).unwrap();
     tropical_gemm_gpu_with_argmax::<T>(&ctx, &a, &b, &mut c, &mut am).unwrap();
@@ -43,24 +36,6 @@ where
     // 等价),因此索引也必须逐元素一致。
     assert_eq!(c.to_host_row_major(), expected_values, "values {m}x{n}x{k}");
     assert_eq!(am.to_host_row_major(), expected.argmax, "argmax {m}x{n}x{k}");
-}
-
-fn f32_data(len: usize, salt: usize) -> Vec<f32> {
-    (0..len)
-        .map(|i| ((i.wrapping_mul(2654435761).wrapping_add(salt.wrapping_mul(40503)) % 2000) as f32) * 0.01 - 10.0)
-        .collect()
-}
-
-fn i32_data(len: usize, salt: usize) -> Vec<i32> {
-    (0..len)
-        .map(|i| (i.wrapping_mul(2654435761).wrapping_add(salt.wrapping_mul(40503)) % 2001) as i32 - 1000)
-        .collect()
-}
-
-fn i64_data(len: usize, salt: usize) -> Vec<i64> {
-    (0..len)
-        .map(|i| (i.wrapping_mul(2654435761).wrapping_add(salt.wrapping_mul(40503)) % 2_000_001) as i64 - 1_000_000)
-        .collect()
 }
 
 #[test]

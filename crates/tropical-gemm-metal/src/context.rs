@@ -88,7 +88,6 @@ impl MetalContext {
         self.device.name().to_string()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn device(&self) -> &ProtocolObject<dyn MTLDevice> {
         &self.device
     }
