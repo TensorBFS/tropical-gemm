@@ -3,6 +3,7 @@
 //! CPU API is row-major; GPU is column-major — the helper transposes.
 
 use tropical_gemm::prelude::*;
+use tropical_gemm::types::TropicalAndOr;
 use tropical_gemm::KernelDispatch; // NOT in the prelude — must be imported from the root
 use tropical_gemm_metal::{tropical_gemm_gpu, GpuMatrix, MetalContext, MetalKernel, MetalScalar};
 
@@ -182,5 +183,30 @@ fn i32_minplus_sentinel_zero_is_detectable() {
     tropical_gemm_gpu::<TropicalMinPlus<i32>>(&ctx, &a, &b, &mut c).unwrap();
     for v in c.to_host() {
         assert!(v >= tropical_gemm_metal::SENTINEL_I32 / 2, "got {v}");
+    }
+}
+
+// TropicalAndOr has NO CPU `KernelDispatch` impl (verified: simd/dispatch.rs
+// covers f32/f64/i32/i64 and Bitwise only), so the generic `check` helper
+// can't be used — compare against a naive OR/AND reference instead.
+#[test]
+fn andor_bool_matches_naive_reference() {
+    for &(m, n, k) in SIZES {
+        let a_rm: Vec<bool> = (0..m * k).map(|i| (i * 7 + 1) % 5 == 0).collect();
+        let b_rm: Vec<bool> = (0..k * n).map(|i| (i * 11 + 2) % 4 == 0).collect();
+        let mut expected_rm = vec![false; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                expected_rm[i * n + j] =
+                    (0..k).any(|kk| a_rm[i * k + kk] && b_rm[kk * n + j]);
+            }
+        }
+
+        let ctx = MetalContext::new().unwrap();
+        let a = GpuMatrix::from_host_row_major(&ctx, &a_rm, m, k).unwrap();
+        let b = GpuMatrix::from_host_row_major(&ctx, &b_rm, k, n).unwrap();
+        let mut c = GpuMatrix::alloc(&ctx, m, n).unwrap();
+        tropical_gemm_gpu::<TropicalAndOr>(&ctx, &a, &b, &mut c).unwrap();
+        assert_eq!(c.to_host_row_major(), expected_rm, "andor {m}x{n}x{k}");
     }
 }

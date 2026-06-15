@@ -159,3 +159,8 @@ TROPICAL_GEMM(int, tropical_maxmul_i32_nn,            0, TMAX, TMUL, 64, 32, 64)
 TROPICAL_GEMM(long, tropical_maxplus_i64_nn, NEG_INF_I64, TMAX, TADD, 32, 16, 32)
 TROPICAL_GEMM(long, tropical_minplus_i64_nn,     INF_I64, TMIN, TADD, 32, 16, 32)
 TROPICAL_GEMM(long, tropical_maxmul_i64_nn,           0L, TMAX, TMUL, 32, 16, 32)
+
+// bool (AndOr): add = OR, mul = AND; false is a true absorbing zero, PAD = 0.
+// uchar + bitwise ops, NOT logical && / || — keeps values in byte form instead
+// of predicate round-trips (the 1.6x regression noted on the CUDA side).
+TROPICAL_GEMM(uchar, tropical_andor_bool_nn, (uchar)0, TOR, TAND, 64, 32, 64)

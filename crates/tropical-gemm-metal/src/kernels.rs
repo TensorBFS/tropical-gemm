@@ -8,7 +8,10 @@ use objc2_metal::{
 };
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
+use tropical_gemm::types::{
+    TropicalAndOr, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
+    TropicalSemiring,
+};
 
 // Fields are read by the GPU (copied via setBytes), never on the CPU side.
 #[allow(dead_code)]
@@ -19,11 +22,12 @@ struct GemmParams {
     k: i32,
 }
 
-/// Block sizes per scalar width (must match the .metal instantiations).
-// tile (BM, BN) shared by the 4-byte scalars (f32/i32/u32) and 1-byte bool
-pub(crate) const BLOCK_4B: (usize, usize) = (64, 64);
-// tile (BM, BN) for the 8-byte scalars (i64); threadgroup (8×8) = 64 threads
-pub(crate) const BLOCK_8B: (usize, usize) = (32, 32);
+/// Tile sizes (BM, BN) — must match the .metal instantiations. Named by tile
+/// dimensions, not scalar width: the 64x64 tile is shared by 4-byte scalars
+/// (f32/i32/u32) and 1-byte bool; the 32x32 tile (threadgroup 8x8 = 64
+/// threads) is used by the 8-byte scalars (i64/u64).
+pub(crate) const BLOCK_64X64: (usize, usize) = (64, 64);
+pub(crate) const BLOCK_32X32: (usize, usize) = (32, 32);
 
 /// Tropical semirings with a plain-GEMM Metal kernel.
 pub trait MetalKernel: TropicalSemiring
@@ -151,13 +155,14 @@ macro_rules! impl_metal_kernel {
 }
 
 impl_metal_kernel!(
-    TropicalMaxPlus<f32> => ("tropical_maxplus_f32_nn", BLOCK_4B),
-    TropicalMinPlus<f32> => ("tropical_minplus_f32_nn", BLOCK_4B),
-    TropicalMaxMul<f32>  => ("tropical_maxmul_f32_nn",  BLOCK_4B),
-    TropicalMaxPlus<i32> => ("tropical_maxplus_i32_nn", BLOCK_4B),
-    TropicalMinPlus<i32> => ("tropical_minplus_i32_nn", BLOCK_4B),
-    TropicalMaxMul<i32>  => ("tropical_maxmul_i32_nn",  BLOCK_4B),
-    TropicalMaxPlus<i64> => ("tropical_maxplus_i64_nn", BLOCK_8B),
-    TropicalMinPlus<i64> => ("tropical_minplus_i64_nn", BLOCK_8B),
-    TropicalMaxMul<i64>  => ("tropical_maxmul_i64_nn",  BLOCK_8B),
+    TropicalMaxPlus<f32> => ("tropical_maxplus_f32_nn", BLOCK_64X64),
+    TropicalMinPlus<f32> => ("tropical_minplus_f32_nn", BLOCK_64X64),
+    TropicalMaxMul<f32>  => ("tropical_maxmul_f32_nn",  BLOCK_64X64),
+    TropicalMaxPlus<i32> => ("tropical_maxplus_i32_nn", BLOCK_64X64),
+    TropicalMinPlus<i32> => ("tropical_minplus_i32_nn", BLOCK_64X64),
+    TropicalMaxMul<i32>  => ("tropical_maxmul_i32_nn",  BLOCK_64X64),
+    TropicalMaxPlus<i64> => ("tropical_maxplus_i64_nn", BLOCK_32X32),
+    TropicalMinPlus<i64> => ("tropical_minplus_i64_nn", BLOCK_32X32),
+    TropicalMaxMul<i64>  => ("tropical_maxmul_i64_nn",  BLOCK_32X32),
+    TropicalAndOr        => ("tropical_andor_bool_nn",  BLOCK_64X64),
 );

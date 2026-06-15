@@ -28,6 +28,7 @@ pub(crate) const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_i64_nn",
     "tropical_minplus_i64_nn",
     "tropical_maxmul_i64_nn",
+    "tropical_andor_bool_nn",
 ];
 
 pub struct MetalContext {
