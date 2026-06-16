@@ -1309,6 +1309,64 @@ mod tests {
 
     const BIG_DIM: usize = 46341; // sqrt of just over 2^31; m*n crosses i32::MAX
 
+    // Compile-time guarantee that the shared shape crosses i32::MAX, so the
+    // corner cell's column-major offset (m*n - 1) exercises 64-bit addressing.
+    const _: () = assert!(BIG_DIM * BIG_DIM > i32::MAX as usize + 1);
+
+    // Shared column-major operand patterns for the forward regressions: simple
+    // per-index values so any sampled cell's max-plus result is host-recomputable.
+    fn big_a_val(i: usize, p: usize) -> f32 {
+        ((i % 97) as f32) + (p as f32) * 0.5 - 40.0
+    }
+    fn big_b_val(p: usize, j: usize) -> f32 {
+        ((j % 89) as f32) - (p as f32) * 0.25 - 40.0
+    }
+
+    /// Build column-major A (m×k) and B (k×n) from [`big_a_val`]/[`big_b_val`].
+    fn build_big_operands(m: usize, k: usize, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut a = vec![0f32; m * k];
+        for p in 0..k {
+            for i in 0..m {
+                a[p * m + i] = big_a_val(i, p);
+            }
+        }
+        let mut b = vec![0f32; k * n];
+        for j in 0..n {
+            for p in 0..k {
+                b[j * k + p] = big_b_val(p, j);
+            }
+        }
+        (a, b)
+    }
+
+    /// Sample each `(i, j)` from column-major device output `c` and assert it
+    /// equals the max-plus reference. Reads one element per cell (never the full
+    /// m*n output), so host memory stays tiny even when `c` is multiple GB.
+    fn assert_big_maxplus_cells(
+        ctx: &CudaContext,
+        c: &cudarc::driver::CudaSlice<f32>,
+        m: usize,
+        k: usize,
+        cells: &[(usize, usize)],
+    ) {
+        let stream = ctx.stream();
+        for &(i, j) in cells {
+            let off = j * m + i; // column-major linear offset
+            let host = stream.clone_dtoh(&c.slice(off..off + 1)).unwrap();
+            stream.synchronize().unwrap();
+            let mut exp = f32::NEG_INFINITY;
+            for p in 0..k {
+                exp = exp.max(big_a_val(i, p) + big_b_val(p, j));
+            }
+            assert!(
+                (host[0] - exp).abs() < 1e-3,
+                "cell ({i},{j}) off {off}: got {}, want {}",
+                host[0],
+                exp
+            );
+        }
+    }
+
     /// Forward strided-batched (batch=1): the exact issue-#63 repro. The output
     /// C stride (= m*n) exceeds i32::MAX, and the corner cell's within-matrix
     /// offset overflows i32 -- both must address correctly under 64-bit indexing.
@@ -1322,28 +1380,8 @@ mod tests {
         let stream = ctx.stream();
 
         let (m, n, k) = (BIG_DIM, BIG_DIM, 2usize);
-        assert!(
-            m * n > (i32::MAX as usize) + 1,
-            "shape must cross i32::MAX to exercise 64-bit addressing"
-        );
 
-        // Column-major A (m×k) / B (k×n) from simple per-index patterns, so any
-        // sampled cell's max-plus result is recomputable on the host.
-        let a_val = |i: usize, p: usize| ((i % 97) as f32) + (p as f32) * 0.5 - 40.0;
-        let b_val = |p: usize, j: usize| ((j % 89) as f32) - (p as f32) * 0.25 - 40.0;
-        let mut a_host = vec![0f32; m * k];
-        for p in 0..k {
-            for i in 0..m {
-                a_host[p * m + i] = a_val(i, p);
-            }
-        }
-        let mut b_host = vec![0f32; k * n];
-        for j in 0..n {
-            for p in 0..k {
-                b_host[j * k + p] = b_val(p, j);
-            }
-        }
-
+        let (a_host, b_host) = build_big_operands(m, k, n);
         let a_dev: CudaSlice<f32> = stream.clone_htod(&a_host).unwrap();
         let b_dev: CudaSlice<f32> = stream.clone_htod(&b_host).unwrap();
         // Uninitialized output: the kernel fully writes every cell.
@@ -1363,21 +1401,7 @@ mod tests {
             (0, n - 1),
             (12345, 40000),
         ];
-        for &(i, j) in &cells {
-            let off = j * m + i; // column-major linear offset
-            let host = stream.clone_dtoh(&c_dev.slice(off..off + 1)).unwrap();
-            stream.synchronize().unwrap();
-            let mut exp = f32::NEG_INFINITY;
-            for p in 0..k {
-                exp = exp.max(a_val(i, p) + b_val(p, j));
-            }
-            assert!(
-                (host[0] - exp).abs() < 1e-3,
-                "cell ({i},{j}) off {off}: got {}, want {}",
-                host[0],
-                exp
-            );
-        }
+        assert_big_maxplus_cells(ctx, &c_dev, m, k, &cells);
     }
 
     /// Single-matrix forward (`launch_gemm`): the issue note that a *non*-batched
@@ -1389,48 +1413,17 @@ mod tests {
         let Some(ctx) = cuda_context_or_skip() else {
             return;
         };
-        let stream = ctx.stream();
 
         let (m, n, k) = (BIG_DIM, BIG_DIM, 2usize);
-        assert!(m * n > (i32::MAX as usize) + 1);
 
-        let a_val = |i: usize, p: usize| ((i % 91) as f32) + (p as f32) * 0.5 - 40.0;
-        let b_val = |p: usize, j: usize| ((j % 83) as f32) - (p as f32) * 0.25 - 40.0;
-        let mut a_host = vec![0f32; m * k];
-        for p in 0..k {
-            for i in 0..m {
-                a_host[p * m + i] = a_val(i, p);
-            }
-        }
-        let mut b_host = vec![0f32; k * n];
-        for j in 0..n {
-            for p in 0..k {
-                b_host[j * k + p] = b_val(p, j);
-            }
-        }
-
+        let (a_host, b_host) = build_big_operands(m, k, n);
         let a = GpuMatrix::from_host(ctx, &a_host, m, k).unwrap();
         let b = GpuMatrix::from_host(ctx, &b_host, k, n).unwrap();
         let mut c = GpuMatrix::<f32>::alloc(ctx, m, n).unwrap();
         <TropicalMaxPlus<f32> as CudaKernel>::launch_gemm(ctx, &a, &b, &mut c).unwrap();
 
-        for &(i, j) in &[(0usize, 0usize), (m - 1, n - 1), (m - 1, 0), (0, n - 1)] {
-            let off = j * m + i;
-            let host = stream
-                .clone_dtoh(&c.as_slice().slice(off..off + 1))
-                .unwrap();
-            stream.synchronize().unwrap();
-            let mut exp = f32::NEG_INFINITY;
-            for p in 0..k {
-                exp = exp.max(a_val(i, p) + b_val(p, j));
-            }
-            assert!(
-                (host[0] - exp).abs() < 1e-3,
-                "cell ({i},{j}) off {off}: got {}, want {}",
-                host[0],
-                exp
-            );
-        }
+        let cells = [(0usize, 0usize), (m - 1, n - 1), (m - 1, 0), (0, n - 1)];
+        assert_big_maxplus_cells(ctx, c.as_slice(), m, k, &cells);
     }
 
     /// Backward scatter past i32::MAX: with m*n >= 2^31 the kernel's `total`/`idx`
@@ -1446,7 +1439,6 @@ mod tests {
         let stream = ctx.stream();
 
         let (m, n, k) = (BIG_DIM, BIG_DIM, 4usize);
-        assert!(m * n > (i32::MAX as usize) + 1);
 
         // Device-zeroed inputs (no host-side 8 GB allocations).
         let mut grad_c = GpuMatrix::<f32>::alloc(ctx, m, n).unwrap();
