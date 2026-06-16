@@ -30,17 +30,17 @@ use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, Tro
 /// most this size (see `launch_kernel_batched_impl`).
 const MAX_GRID_DIM_Z: usize = 65535;
 
-/// Convert a per-batch element stride to the `i32` the kernels take, failing
+/// Convert a per-batch element stride to the `i64` the kernels take, failing
 /// instead of truncating. The chunked launches derive operand base offsets from
-/// the `usize` stride while the kernel reads the stride as `i32`; an `as i32`
-/// cast that wrapped would desynchronise the two and silently corrupt
-/// addressing. The kernel signature is `i32`, so a stride past `i32::MAX` is
-/// unrepresentable on the device regardless — reject it at the boundary.
-fn stride_to_i32(stride: usize, what: &str) -> Result<i32> {
-    i32::try_from(stride).map_err(|_| {
+/// the `usize` stride while the kernel reads the stride as `i64` (`long long`);
+/// keeping the conversion fallible guarantees the two can never desynchronise.
+/// The kernels do 64-bit global addressing (issue #63), so there is no longer an
+/// `i32::MAX` ceiling — only a `usize` value past `i64::MAX` (≥ 2⁶³ elements,
+/// physically impossible to allocate) would fail here.
+fn stride_to_i64(stride: usize, what: &str) -> Result<i64> {
+    i64::try_from(stride).map_err(|_| {
         CudaError::DimensionMismatch(format!(
-            "batched GEMM {what} stride {stride} exceeds i32::MAX; \
-             matrix too large for the strided-batched kernel"
+            "batched GEMM {what} stride {stride} exceeds i64::MAX"
         ))
     })
 }
@@ -172,13 +172,13 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
     let n_i32 = n as i32;
     let k_i32 = k as i32;
     // Per-batch element extents, used both to offset each chunk's operand base
-    // (as `usize`) and as the kernel's `i32` stride. Derive the `i32` form
-    // fallibly so a stride past `i32::MAX` can't truncate out of sync with the
-    // `usize` offsets below (a.len()/b.len()/c.len() already fit in `usize`).
+    // (as `usize`) and as the kernel's `i64` stride. Derive the `i64` form
+    // fallibly so it stays in sync with the `usize` offsets below (a.len()/
+    // b.len()/c.len() already fit in `usize`).
     let (sa, sb, sc) = (m * k, k * n, m * n);
-    let stride_a = stride_to_i32(sa, "operand A")?;
-    let stride_b = stride_to_i32(sb, "operand B")?;
-    let stride_c = stride_to_i32(sc, "output C")?;
+    let stride_a = stride_to_i64(sa, "operand A")?;
+    let stride_b = stride_to_i64(sb, "operand B")?;
+    let stride_c = stride_to_i64(sc, "output C")?;
 
     let stream = ctx.stream();
     // The batch maps to `blockIdx.z`, which CUDA caps at `MAX_GRID_DIM_Z`. Launch
@@ -764,15 +764,14 @@ pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
 
     // Per-batch element strides. A/B carry the (possibly padded) stride declared
     // by the external DLPack tensor; C/argmax are freshly allocated contiguous,
-    // so their stride is rows*cols. Derive the kernel's `i32` strides fallibly
-    // so a stride past `i32::MAX` can't truncate out of sync with the `usize`
-    // base-pointer offsets below.
+    // so their stride is rows*cols. Derive the kernel's `i64` strides fallibly
+    // so they stay in sync with the `usize` base-pointer offsets below.
     let stride_a = a.stride();
     let stride_b = b.stride();
     let stride_c = c.tensor.stride();
-    let stride_a_i32 = stride_to_i32(stride_a, "operand A")?;
-    let stride_b_i32 = stride_to_i32(stride_b, "operand B")?;
-    let stride_c_i32 = stride_to_i32(stride_c, "output C")?;
+    let stride_a_i64 = stride_to_i64(stride_a, "operand A")?;
+    let stride_b_i64 = stride_to_i64(stride_b, "operand B")?;
+    let stride_c_i64 = stride_to_i64(stride_c, "output C")?;
     let n_i32 = n as i32; // Swapped: N becomes "M"
     let m_i32 = m as i32; // Swapped: M becomes "N"
     let k_i32 = k as i32;
@@ -814,9 +813,9 @@ pub unsafe fn launch_gemm_external_batched_with_argmax_f32(
             .arg(&n_i32)
             .arg(&m_i32)
             .arg(&k_i32)
-            .arg(&stride_b_i32) // strideA (B's stride in our swap)
-            .arg(&stride_a_i32) // strideB (A's stride in our swap)
-            .arg(&stride_c_i32); // strideC
+            .arg(&stride_b_i64) // strideA (B's stride in our swap)
+            .arg(&stride_a_i64) // strideB (A's stride in our swap)
+            .arg(&stride_c_i64); // strideC
         builder.launch(cfg)?;
         start += chunk;
     }

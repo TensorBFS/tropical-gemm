@@ -928,7 +928,11 @@ pub fn tropical_backward_a_gpu_kernel(
 
     let total = m * n;
     let block_size = 256u32;
-    let grid_size = ((total as u32) + block_size - 1) / block_size;
+    // Compute the block count in 64-bit: `total as u32` would truncate when
+    // m*n >= 2^32 and launch far too few blocks (issue #63). The kernel covers
+    // every output element with a 64-bit linear index, so one block per 256
+    // elements is correct; the count itself stays well within gridDim.x.
+    let grid_size = (total as u64).div_ceil(block_size as u64) as u32;
 
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (grid_size, 1, 1),
@@ -993,7 +997,11 @@ pub fn tropical_backward_b_gpu_kernel(
 
     let total = m * n;
     let block_size = 256u32;
-    let grid_size = ((total as u32) + block_size - 1) / block_size;
+    // Compute the block count in 64-bit: `total as u32` would truncate when
+    // m*n >= 2^32 and launch far too few blocks (issue #63). The kernel covers
+    // every output element with a 64-bit linear index, so one block per 256
+    // elements is correct; the count itself stays well within gridDim.x.
+    let grid_size = (total as u64).div_ceil(block_size as u64) as u32;
 
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (grid_size, 1, 1),
@@ -1283,6 +1291,193 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ========================================================================
+    // Issue #63 regression: 64-bit global addressing past the i32 ceiling.
+    // ========================================================================
+    // These cross the 2^31-element boundary, so they need a large-VRAM GPU and
+    // are #[ignore]d (CI skips CUDA entirely; the user validates on HPC A800s).
+    // Run with, e.g.:
+    //   cargo test -p tropical-gemm-cuda --features cuda -- --ignored --nocapture
+    //
+    // 46341^2 = 2_147_488_281 > 2^31 (2_147_483_648), so the corner cell's
+    // column-major offset (m*n - 1) overflows i32. K is kept tiny so the A/B
+    // operands and the GEMM work stay small -- only the m*n output is large.
+    // Host memory stays minimal: operands are O(m*k + k*n), and the huge output
+    // is never copied back wholesale -- individual cells are sampled device-side.
+
+    const BIG_DIM: usize = 46341; // sqrt of just over 2^31; m*n crosses i32::MAX
+
+    // Compile-time guarantee that the shared shape crosses i32::MAX, so the
+    // corner cell's column-major offset (m*n - 1) exercises 64-bit addressing.
+    const _: () = assert!(BIG_DIM * BIG_DIM > i32::MAX as usize + 1);
+
+    // Shared column-major operand patterns for the forward regressions: simple
+    // per-index values so any sampled cell's max-plus result is host-recomputable.
+    fn big_a_val(i: usize, p: usize) -> f32 {
+        ((i % 97) as f32) + (p as f32) * 0.5 - 40.0
+    }
+    fn big_b_val(p: usize, j: usize) -> f32 {
+        ((j % 89) as f32) - (p as f32) * 0.25 - 40.0
+    }
+
+    /// Build column-major A (m×k) and B (k×n) from [`big_a_val`]/[`big_b_val`].
+    fn build_big_operands(m: usize, k: usize, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut a = vec![0f32; m * k];
+        for p in 0..k {
+            for i in 0..m {
+                a[p * m + i] = big_a_val(i, p);
+            }
+        }
+        let mut b = vec![0f32; k * n];
+        for j in 0..n {
+            for p in 0..k {
+                b[j * k + p] = big_b_val(p, j);
+            }
+        }
+        (a, b)
+    }
+
+    /// Sample each `(i, j)` from column-major device output `c` and assert it
+    /// equals the max-plus reference. Reads one element per cell (never the full
+    /// m*n output), so host memory stays tiny even when `c` is multiple GB.
+    fn assert_big_maxplus_cells(
+        ctx: &CudaContext,
+        c: &cudarc::driver::CudaSlice<f32>,
+        m: usize,
+        k: usize,
+        cells: &[(usize, usize)],
+    ) {
+        let stream = ctx.stream();
+        for &(i, j) in cells {
+            let off = j * m + i; // column-major linear offset
+            let host = stream.clone_dtoh(&c.slice(off..off + 1)).unwrap();
+            stream.synchronize().unwrap();
+            let mut exp = f32::NEG_INFINITY;
+            for p in 0..k {
+                exp = exp.max(big_a_val(i, p) + big_b_val(p, j));
+            }
+            assert!(
+                (host[0] - exp).abs() < 1e-3,
+                "cell ({i},{j}) off {off}: got {}, want {}",
+                host[0],
+                exp
+            );
+        }
+    }
+
+    /// Forward strided-batched (batch=1): the exact issue-#63 repro. The output
+    /// C stride (= m*n) exceeds i32::MAX, and the corner cell's within-matrix
+    /// offset overflows i32 -- both must address correctly under 64-bit indexing.
+    #[test]
+    #[ignore = "allocates ~8.6 GB of VRAM; run manually on a large-memory GPU"]
+    fn test_batched_forward_offset_over_i32_max() {
+        use cudarc::driver::CudaSlice;
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+        let stream = ctx.stream();
+
+        let (m, n, k) = (BIG_DIM, BIG_DIM, 2usize);
+
+        let (a_host, b_host) = build_big_operands(m, k, n);
+        let a_dev: CudaSlice<f32> = stream.clone_htod(&a_host).unwrap();
+        let b_dev: CudaSlice<f32> = stream.clone_htod(&b_host).unwrap();
+        // Uninitialized output: the kernel fully writes every cell.
+        let mut c_dev = unsafe { stream.alloc::<f32>(m * n) }.unwrap();
+
+        <TropicalMaxPlus<f32> as CudaKernel>::launch_gemm_batched(
+            ctx, &a_dev, &b_dev, &mut c_dev, 1, m, k, n,
+        )
+        .unwrap();
+
+        // Sample cells, including the corner whose offset = m*n - 1 > i32::MAX.
+        let cells = [
+            (0usize, 0usize),
+            (m - 1, n - 1),
+            (m / 2, n / 2),
+            (m - 1, 0),
+            (0, n - 1),
+            (12345, 40000),
+        ];
+        assert_big_maxplus_cells(ctx, &c_dev, m, k, &cells);
+    }
+
+    /// Single-matrix forward (`launch_gemm`): the issue note that a *non*-batched
+    /// matrix of >= 2^31 elements also overflows the within-matrix offset. Shares
+    /// the STORE_C_TILE / OFFSET_COL64 path with the batched kernel.
+    #[test]
+    #[ignore = "allocates ~8.6 GB of VRAM; run manually on a large-memory GPU"]
+    fn test_single_matrix_offset_over_i32_max() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        let (m, n, k) = (BIG_DIM, BIG_DIM, 2usize);
+
+        let (a_host, b_host) = build_big_operands(m, k, n);
+        let a = GpuMatrix::from_host(ctx, &a_host, m, k).unwrap();
+        let b = GpuMatrix::from_host(ctx, &b_host, k, n).unwrap();
+        let mut c = GpuMatrix::<f32>::alloc(ctx, m, n).unwrap();
+        <TropicalMaxPlus<f32> as CudaKernel>::launch_gemm(ctx, &a, &b, &mut c).unwrap();
+
+        let cells = [(0usize, 0usize), (m - 1, n - 1), (m - 1, 0), (0, n - 1)];
+        assert_big_maxplus_cells(ctx, c.as_slice(), m, k, &cells);
+    }
+
+    /// Backward scatter past i32::MAX: with m*n >= 2^31 the kernel's `total`/`idx`
+    /// and the host grid_size must all be 64-bit. Bulk grad_c/argmax are zeroed
+    /// on-device (no 8 GB host buffers); only the corner cell (idx = m*n - 1) is
+    /// written, and its contribution must land at the right grad_a/grad_b index.
+    #[test]
+    #[ignore = "allocates ~16 GB of VRAM; run manually on a large-memory GPU"]
+    fn test_backward_index_over_i32_max() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+        let stream = ctx.stream();
+
+        let (m, n, k) = (BIG_DIM, BIG_DIM, 4usize);
+
+        // Device-zeroed inputs (no host-side 8 GB allocations).
+        let mut grad_c = GpuMatrix::<f32>::alloc(ctx, m, n).unwrap();
+        let mut argmax = stream.alloc_zeros::<ArgmaxIndex>(m * n).unwrap();
+
+        // Route the corner cell's gradient to k-index `kk`. off = m*n - 1.
+        let (i, j) = (m - 1, n - 1);
+        let off = j * m + i;
+        let kk: ArgmaxIndex = 3; // < k
+        let grad_val = 2.5f32;
+        stream
+            .memcpy_htod(
+                &[grad_val],
+                &mut grad_c.as_slice_mut().slice_mut(off..off + 1),
+            )
+            .unwrap();
+        stream
+            .memcpy_htod(&[kk], &mut argmax.slice_mut(off..off + 1))
+            .unwrap();
+
+        let grad_a = tropical_backward_a_gpu_kernel(ctx, &grad_c, &argmax, m, k, n).unwrap();
+        let grad_b = tropical_backward_b_gpu_kernel(ctx, &grad_c, &argmax, m, k, n).unwrap();
+
+        // grad_a[i + kk*m] and grad_b[kk + j*k] must each receive exactly grad_val
+        // (all other cells contributed 0). Outputs are small (m×k, k×n).
+        let ga = grad_a.to_host(ctx).unwrap();
+        let gb = grad_b.to_host(ctx).unwrap();
+        let ga_idx = i + (kk as usize) * m;
+        let gb_idx = (kk as usize) + j * k;
+        assert!(
+            (ga[ga_idx] - grad_val).abs() < 1e-4,
+            "grad_a[{ga_idx}] = {}, want {grad_val}",
+            ga[ga_idx]
+        );
+        assert!(
+            (gb[gb_idx] - grad_val).abs() < 1e-4,
+            "grad_b[{gb_idx}] = {}, want {grad_val}",
+            gb[gb_idx]
+        );
     }
 
     #[test]

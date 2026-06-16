@@ -40,8 +40,16 @@
 #define INF_I64 (1LL << 60)
 #define NEG_INF_I64 (-(1LL << 60))
 
-// Memory layout helpers
+// Memory layout helpers.
+// OFFSET_COL is `int` arithmetic: use it ONLY for shared-memory tiles (As/Bs)
+// and per-thread accumulator indices, whose leading dimension is a tile size, so
+// the product can never reach 2^31. OFFSET_COL64 forces the multiply into 64-bit
+// (32x32->64, a single IMAD.WIDE on the device) for GLOBAL-memory accesses, where
+// a single matrix with >= 2^31 elements (col*ld) would otherwise overflow `int`
+// and corrupt addressing (issue #63). The cast wraps the multiply itself, not the
+// finished sum -- `(long long)(col*ld+row)` would already have overflowed.
 #define OFFSET_COL(row, col, ld) ((col) * (ld) + (row))
+#define OFFSET_COL64(row, col, ld) ((long long)(col) * (ld) + (row))
 
 // Integer max/min functions
 __device__ __forceinline__ int max_i32(int a, int b) { return a > b ? a : b; }
@@ -131,9 +139,9 @@ __device__ double atomicAddDouble(double* address, double val) {
         int col = A_TILE_COL + i + tile_idx;                                   \
         int dst = OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M);        \
         if (BLOCK_IDX == DIM_GRID_X - 1 || tile_idx >= K - BLOCK_SIZE_K)       \
-            As[dst] = (row < M && col < K) ? SRC[OFFSET_COL(row, col, M)] : (PAD); \
+            As[dst] = (row < M && col < K) ? SRC[OFFSET_COL64(row, col, M)] : (PAD); \
         else                                                                  \
-            As[dst] = SRC[OFFSET_COL(row, col, M)];                           \
+            As[dst] = SRC[OFFSET_COL64(row, col, M)];                         \
     }
 
 // B tile -> Bs. B is column-major with leading dimension K.
@@ -144,9 +152,9 @@ __device__ double atomicAddDouble(double* address, double val) {
         int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;                   \
         int dst = OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K);        \
         if (tile_idx >= K - BLOCK_SIZE_K || BLOCK_IDY == DIM_GRID_Y - 1)       \
-            Bs[dst] = (row < K && col < N) ? SRC[OFFSET_COL(row, col, K)] : (PAD); \
+            Bs[dst] = (row < K && col < N) ? SRC[OFFSET_COL64(row, col, K)] : (PAD); \
         else                                                                  \
-            Bs[dst] = SRC[OFFSET_COL(row, col, K)];                           \
+            Bs[dst] = SRC[OFFSET_COL64(row, col, K)];                         \
     }
 
 // Edge block iff last block-row or last block-col; interior blocks are fully in
@@ -162,7 +170,7 @@ __device__ double atomicAddDouble(double* address, double val) {
             int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
             int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
             if (!TILE_IS_EDGE || (row < M && col < N))                         \
-                DST[OFFSET_COL(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
+                DST[OFFSET_COL64(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
         }                                                                      \
     }
 
@@ -175,7 +183,7 @@ __device__ double atomicAddDouble(double* address, double val) {
             int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
             int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
             if (!TILE_IS_EDGE || (row < M && col < N)) {                       \
-                int out_idx = OFFSET_COL(row, col, M);                         \
+                long long out_idx = OFFSET_COL64(row, col, M);                 \
                 int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
                 DST[out_idx] = accum[local_idx];                               \
                 ARGMAX_DST[out_idx] = accum_idx[local_idx];                    \
@@ -193,7 +201,7 @@ __device__ double atomicAddDouble(double* address, double val) {
             int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
             int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
             if (!TILE_IS_EDGE || (row < M && col < N)) {                       \
-                int out_idx = OFFSET_COL(row, col, M);                         \
+                long long out_idx = OFFSET_COL64(row, col, M);                 \
                 int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
                 DST[out_idx] = accum[local_idx];                               \
                 ARGMAX_DST[out_idx] = (ZERO_FN)(accum[local_idx]) ? 0 : accum_idx[local_idx]; \
@@ -678,13 +686,13 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     TYPE* __restrict__ grad_a,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;                           \
-    int total = M * N;                                                         \
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;          \
+    long long total = (long long)M * N;                                        \
     if (idx < total) {                                                         \
-        int i = idx % M;                                                       \
+        int i = (int)(idx % M);                                                \
         int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
-            ATOMIC_ADD(&grad_a[i + k * M], grad_c[idx]);                       \
+            ATOMIC_ADD(&grad_a[i + (long long)k * M], grad_c[idx]);            \
         }                                                                      \
     }                                                                          \
 }
@@ -696,13 +704,13 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     TYPE* __restrict__ grad_b,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;                           \
-    int total = M * N;                                                         \
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;          \
+    long long total = (long long)M * N;                                        \
     if (idx < total) {                                                         \
-        int j = idx / M;                                                       \
+        int j = (int)(idx / M);                                               \
         int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
-            ATOMIC_ADD(&grad_b[k + j * K], grad_c[idx]);                       \
+            ATOMIC_ADD(&grad_b[k + (long long)j * K], grad_c[idx]);            \
         }                                                                      \
     }                                                                          \
 }
@@ -771,7 +779,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     float* __restrict__ C,                                                     \
     unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K,                                                       \
-    int strideA, int strideB, int strideC                                      \
+    long long strideA, long long strideB, long long strideC                    \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 64;                                               \
     const int BLOCK_SIZE_K = 32;                                               \
@@ -783,7 +791,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
-    int batch_idx = blockIdx.z;                                                \
+    long long batch_idx = blockIdx.z;                                          \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
     int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
@@ -867,56 +875,58 @@ TROPICAL_GEMM_BATCHED_ARGMAX_F32(tropical_maxmul_f32_nn_batched_with_argmax,  0.
 // Same shared body as the single-matrix kernels; only the operand base pointers
 // differ -- each advances by its per-batch stride. This replaces omeinsum's
 // host-side per-slice clone_dtod loop with a single launch over already-
-// contiguous device buffers. `(int)blockIdx.z` matches the original `int
-// batch_idx = blockIdx.z` indexing; the host chunks the batch under the
-// gridDim.z cap and pre-offsets each chunk's base, so blockIdx.z stays in range.
+// contiguous device buffers. The per-batch stride is `long long` and the base
+// offset `(long long)blockIdx.z * stride` is computed in 64-bit, so a single
+// matrix of >= 2^31 elements addresses correctly (issue #63); the host chunks
+// the batch under the gridDim.z cap and pre-offsets each chunk's base, so
+// blockIdx.z stays in range.
 
 #define TROPICAL_GEMM_BATCHED_F32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
 extern "C" __global__ void KERNEL_NAME( \
     const float* __restrict__ A, const float* __restrict__ B, \
     float* __restrict__ C, int M, int N, int K, \
-    int strideA, int strideB, int strideC \
+    long long strideA, long long strideB, long long strideC \
 ) { \
     TROPICAL_GEMM_BODY(float, 64, 32, 64, INIT_VAL, COMPARE_FN, MUL_FN, \
-        (A + (int)blockIdx.z * strideA), \
-        (B + (int)blockIdx.z * strideB), \
-        (C + (int)blockIdx.z * strideC)) \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
 }
 
 #define TROPICAL_GEMM_BATCHED_F64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
 extern "C" __global__ void KERNEL_NAME( \
     const double* __restrict__ A, const double* __restrict__ B, \
     double* __restrict__ C, int M, int N, int K, \
-    int strideA, int strideB, int strideC \
+    long long strideA, long long strideB, long long strideC \
 ) { \
     TROPICAL_GEMM_BODY(double, 32, 16, 32, INIT_VAL, COMPARE_FN, MUL_FN, \
-        (A + (int)blockIdx.z * strideA), \
-        (B + (int)blockIdx.z * strideB), \
-        (C + (int)blockIdx.z * strideC)) \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
 }
 
 #define TROPICAL_GEMM_BATCHED_I32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
 extern "C" __global__ void KERNEL_NAME( \
     const int* __restrict__ A, const int* __restrict__ B, \
     int* __restrict__ C, int M, int N, int K, \
-    int strideA, int strideB, int strideC \
+    long long strideA, long long strideB, long long strideC \
 ) { \
     TROPICAL_GEMM_BODY(int, 64, 32, 64, INIT_VAL, COMPARE_FN, MUL_FN, \
-        (A + (int)blockIdx.z * strideA), \
-        (B + (int)blockIdx.z * strideB), \
-        (C + (int)blockIdx.z * strideC)) \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
 }
 
 #define TROPICAL_GEMM_BATCHED_I64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
 extern "C" __global__ void KERNEL_NAME( \
     const long long* __restrict__ A, const long long* __restrict__ B, \
     long long* __restrict__ C, int M, int N, int K, \
-    int strideA, int strideB, int strideC \
+    long long strideA, long long strideB, long long strideC \
 ) { \
     TROPICAL_GEMM_BODY(long long, 32, 16, 32, INIT_VAL, COMPARE_FN, MUL_FN, \
-        (A + (int)blockIdx.z * strideA), \
-        (B + (int)blockIdx.z * strideB), \
-        (C + (int)blockIdx.z * strideC)) \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
 }
 
 // --- Forward batched GEMM kernel instantiations (mirror the non-batched set) ---
