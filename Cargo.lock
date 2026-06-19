@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "tropical-gemm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "num-traits",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "tropical-gemm-cuda"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "cudarc",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "tropical-gemm-python"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "numpy",
  "pyo3",
