@@ -38,6 +38,18 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_i64_nn",
     "tropical_minplus_i64_nn",
     "tropical_maxmul_i64_nn",
+    // Standard GEMM kernel (bool / AndOr semiring)
+    "tropical_andor_bool_nn",
+    // Standard GEMM kernels (u32/u64 / Bitwise semiring)
+    "tropical_bitwise_u32_nn",
+    "tropical_bitwise_u64_nn",
+    "tropical_andor_bool_nn_batched",
+    "tropical_bitwise_u32_nn_batched",
+    "tropical_bitwise_u64_nn_batched",
+    // K-packed AndOr GEMM (pack contraction dim K into u32 words)
+    "pack_rows_u32",
+    "pack_cols_u32",
+    "tropical_andor_kpack_direct_u32",
     // GEMM with argmax kernels (f32)
     "tropical_maxplus_f32_nn_with_argmax",
     "tropical_minplus_f32_nn_with_argmax",

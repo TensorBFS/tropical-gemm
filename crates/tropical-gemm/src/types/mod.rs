@@ -66,6 +66,7 @@
 //! ```
 
 mod and_or;
+mod bitwise;
 mod counting;
 mod max_mul;
 mod max_plus;
@@ -74,6 +75,7 @@ mod scalar;
 mod traits;
 
 pub use and_or::TropicalAndOr;
+pub use bitwise::{BitwiseScalar, TropicalBitwise};
 pub use counting::CountingTropical;
 pub use max_mul::TropicalMaxMul;
 pub use max_plus::TropicalMaxPlus;

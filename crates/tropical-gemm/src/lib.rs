@@ -34,7 +34,12 @@
 //! | [`TropicalMinPlus<T>`] | min | + | +∞ | 0 | Shortest path |
 //! | [`TropicalMaxMul<T>`] | max | × | 0 | 1 | Probability (non-log) |
 //! | [`TropicalAndOr`] | OR | AND | false | true | Graph reachability |
+//! | [`TropicalBitwise`] | OR | AND | 0 | ~0 | Batched (bit-sliced) boolean matmul |
 //! | [`CountingTropical<T,C>`] | max+count | +,× | (-∞,0) | (0,1) | Path counting |
+//!
+//! `TropicalBitwise<u32/u64>` packs 32/64 **independent** boolean problems into the
+//! bit-lanes of one word. It is for *many independent dense* boolean problems, not a
+//! single large sparse boolean graph — for that use a sparse GraphBLAS tool.
 //!
 //! # Quick Start
 //!
@@ -147,8 +152,9 @@ pub use core::{GemmWithArgmax, Layout, Transpose};
 pub use mat::{Mat, MatMut, MatRef, MatWithArgmax};
 pub use simd::{simd_level, KernelDispatch, SimdLevel};
 pub use types::{
-    CountingTropical, SimdTropical, TropicalAndOr, TropicalMaxMul, TropicalMaxPlus,
-    TropicalMinPlus, TropicalScalar, TropicalSemiring, TropicalWithArgmax,
+    BitwiseScalar, CountingTropical, SimdTropical, TropicalAndOr, TropicalBitwise,
+    TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalScalar, TropicalSemiring,
+    TropicalWithArgmax,
 };
 
 // Convenient type aliases
@@ -160,6 +166,8 @@ pub type MinPlus<T> = TropicalMinPlus<T>;
 pub type MaxMul<T> = TropicalMaxMul<T>;
 /// Alias for [`TropicalAndOr`].
 pub type AndOr = TropicalAndOr;
+/// Alias for [`TropicalBitwise`].
+pub type Bitwise<T> = TropicalBitwise<T>;
 
 /// Prelude module for convenient imports.
 pub mod prelude {
@@ -167,8 +175,9 @@ pub mod prelude {
         tropical_backward_a, tropical_backward_a_batched, tropical_backward_b,
         tropical_backward_b_batched, tropical_matmul, tropical_matmul_batched,
         tropical_matmul_batched_with_argmax, tropical_matmul_strided_batched,
-        tropical_matmul_with_argmax, AndOr, Backend, CountingTropical, GemmWithArgmax, Mat, MatMut,
-        MatRef, MatWithArgmax, MaxMul, MaxPlus, MinPlus, Transpose, TropicalAndOr, TropicalGemm,
-        TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring, TropicalWithArgmax,
+        tropical_matmul_with_argmax, AndOr, Backend, Bitwise, CountingTropical, GemmWithArgmax,
+        Mat, MatMut, MatRef, MatWithArgmax, MaxMul, MaxPlus, MinPlus, Transpose, TropicalAndOr,
+        TropicalBitwise, TropicalGemm, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
+        TropicalSemiring, TropicalWithArgmax,
     };
 }

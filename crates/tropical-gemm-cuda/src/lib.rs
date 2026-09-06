@@ -92,6 +92,7 @@ mod context;
 mod error;
 mod gpu_mat;
 mod kernels;
+mod kpack;
 mod memory;
 
 use cudarc::driver::CudaContext as CudaCtx;
@@ -187,6 +188,10 @@ pub use kernels::{
 pub use memory::{
     ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, ExternalGpuTensor3, GpuMatrix,
     GpuMatrixWithArgmax, GpuTensor3, GpuTensor3WithArgmax,
+};
+pub use kpack::{
+    pack_andor_cols_gpu, pack_andor_rows_gpu, tropical_gemm_gpu_andor_packed,
+    tropical_matmul_gpu_andor_packed, AndOrPackedCols, AndOrPackedRows,
 };
 
 // ============================================================================
@@ -2469,6 +2474,273 @@ mod tests {
 
         assert_eq!(c[0], 8);
         assert_eq!(c[3], 12);
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_andor() {
+        use tropical_gemm::types::TropicalAndOr;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // AndOr (boolean) semiring: C[i,j] = OR_k (A[i,k] AND B[k,j]).
+        // A is 2x3, B is 3x2, both column-major (a[j*m+i], b[j*k+k]).
+        //
+        //       | T F T |            | T F |
+        //   A = | F F F |        B = | T T |
+        //                            | F T |
+        //
+        // Row 1 of A is all-false -> exercises the `false` tropical-zero / pad path.
+        let a = vec![
+            true, false, // col 0: A[0,0]=T, A[1,0]=F
+            false, false, // col 1: A[0,1]=F, A[1,1]=F
+            true, false, // col 2: A[0,2]=T, A[1,2]=F
+        ];
+        let b = vec![
+            true, true, false, // col 0: B[0,0]=T, B[1,0]=T, B[2,0]=F
+            false, true, true, // col 1: B[0,1]=F, B[1,1]=T, B[2,1]=T
+        ];
+
+        let c = tropical_matmul_gpu::<TropicalAndOr>(&a, 2, 3, &b, 2).unwrap();
+
+        // C[0,0] = (T&T) | (F&T) | (T&F) = T  (reachable)
+        assert!(c[0], "C[0,0] expected true");
+        // C[1,0] = (F&T) | (F&T) | (F&F) = F  (all-false row)
+        assert!(!c[1], "C[1,0] expected false");
+        // C[0,1] = (T&F) | (F&T) | (T&T) = T  (reachable via k=2)
+        assert!(c[2], "C[0,1] expected true");
+        // C[1,1] = (F&F) | (F&T) | (F&T) = F
+        assert!(!c[3], "C[1,1] expected false");
+    }
+
+    /// Deterministic pseudo-random bool generator (no rand dependency): a simple
+    /// xorshift, thresholded for the requested density (fraction of `true`).
+    fn pseudo_bools(n: usize, density: f64, seed: u64) -> Vec<bool> {
+        let mut s = seed | 1;
+        (0..n)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                // Top 24 bits → [0,1) fraction.
+                let frac = ((s >> 40) as f64) / ((1u64 << 24) as f64);
+                frac < density
+            })
+            .collect()
+    }
+
+    /// The K=0 rejection is a pure host-side check (no GPU), so it runs on the Mac too.
+    #[test]
+    fn test_andor_kpack_rejects_zero_k() {
+        // m=2, k=0, n=2: validate_gemm_input passes (a,b are empty), but the packed
+        // path must reject k==0 with DimensionMismatch.
+        let a: Vec<bool> = vec![];
+        let b: Vec<bool> = vec![];
+        let err = tropical_matmul_gpu_andor_packed(&a, 2, 0, &b, 2).unwrap_err();
+        assert!(
+            matches!(err, CudaError::DimensionMismatch(_)),
+            "expected DimensionMismatch for k=0, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_andor_kpack_matches_byte_kernel() {
+        use tropical_gemm::types::TropicalAndOr;
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+        // Cross-check the packed path against the byte kernel (the GPU-vs-GPU oracle)
+        // across shapes with K both a multiple of 32 and not, and both densities.
+        let shapes: &[(usize, usize, usize)] = &[
+            (1, 1, 1),    // K=1 — only bit 0
+            (3, 31, 4),   // K=31 — single word, bit 31 trap (signed-shift)
+            (5, 32, 6),   // K=32 — exactly one full word
+            (7, 33, 8),   // K=33 — two words, tail in word 1
+            (4, 63, 5),   // K=63 — two words, tail
+            (6, 64, 7),   // K=64 — exactly two full words
+            (9, 65, 3),   // K=65 — three words, tail
+            (16, 128, 16),
+            (33, 100, 17), // non-tile-aligned M,N with non-multiple-of-32 K
+        ];
+        for &(m, k, n) in shapes {
+            for &density in &[0.1_f64, 0.5, 0.9] {
+                let a = pseudo_bools(m * k, density, 0xA11CE + (k as u64) * 31);
+                let b = pseudo_bools(k * n, density, 0xB0B + (n as u64) * 17);
+                let packed =
+                    tropical_matmul_gpu_andor_packed(&a, m, k, &b, n).unwrap();
+                let byte =
+                    tropical_matmul_gpu::<TropicalAndOr>(&a, m, k, &b, n).unwrap();
+                assert_eq!(
+                    packed, byte,
+                    "packed != byte at shape (m={m}, k={k}, n={n}), density={density}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_andor_kpack_bit0_and_bit31_only() {
+        use tropical_gemm::types::TropicalAndOr;
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+        // M=N=1. A reachability that exists ONLY at k=0 (bit 0) and a separate one
+        // ONLY at k=31 (bit 31, the signed-shift trap). K=32: single word.
+        let k = 32;
+        for &hit in &[0usize, 31] {
+            let mut a = vec![false; k];
+            let mut b = vec![false; k];
+            a[hit] = true;
+            b[hit] = true;
+            let packed = tropical_matmul_gpu_andor_packed(&a, 1, k, &b, 1).unwrap();
+            let byte = tropical_matmul_gpu::<TropicalAndOr>(&a, 1, k, &b, 1).unwrap();
+            assert!(packed[0], "expected true for match at k={hit}");
+            assert_eq!(packed, byte, "packed != byte for single match at k={hit}");
+        }
+    }
+
+    #[test]
+    fn test_andor_kpack_adjacent_bit_mismatch_is_false() {
+        use tropical_gemm::types::TropicalAndOr;
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+        // M=N=1, K=32. A sets ONLY bit `p`, B sets ONLY bit `p+1`: the AND of those two
+        // words is 0, so C must be false. This proves AND requires the SAME k position
+        // (a packer that smeared bits across positions would wrongly report true). Sweep
+        // p across a full word incl. the 30/31 boundary (the signed-shift neighborhood).
+        let k = 32;
+        for p in [0usize, 1, 15, 30] {
+            let mut a = vec![false; k];
+            let mut b = vec![false; k];
+            a[p] = true;
+            b[p + 1] = true;
+            let packed = tropical_matmul_gpu_andor_packed(&a, 1, k, &b, 1).unwrap();
+            let byte = tropical_matmul_gpu::<TropicalAndOr>(&a, 1, k, &b, 1).unwrap();
+            assert!(!packed[0], "adjacent bits p={p}/{} must NOT match", p + 1);
+            assert_eq!(packed, byte, "packed != byte for adjacent mismatch p={p}");
+        }
+    }
+
+    #[test]
+    fn test_andor_kpack_guaranteed_false_row() {
+        use tropical_gemm::types::TropicalAndOr;
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+        // M=2, K=40, N=2. Row i=0 of A is entirely false -> the whole output row 0 must
+        // be false regardless of B. Row i=1 shares bit 0 with both B columns -> true.
+        let (m, k, n) = (2usize, 40, 2);
+        let mut a = vec![false; m * k]; // col-major: a[col*m + row]
+        let mut b = vec![false; k * n]; // col-major: b[col*k + row]
+        for col in 0..k {
+            a[col * m + 1] = true; // row 1 all-true; row 0 stays all-false
+        }
+        b[0] = true; // B[0,0]  (col 0, k=0)  == index 0*k + 0
+        b[k] = true; // B[0,1]  (col 1, k=0)  == index 1*k + 0
+        let packed = tropical_matmul_gpu_andor_packed(&a, m, k, &b, n).unwrap();
+        let byte = tropical_matmul_gpu::<TropicalAndOr>(&a, m, k, &b, n).unwrap();
+        // col-major C[row + col*m]: row 0 false in both columns, row 1 true in both.
+        assert!(!packed[0] && !packed[2], "all-false A row must give a false output row");
+        assert!(packed[1] && packed[3], "shared-bit row must be true");
+        assert_eq!(packed, byte, "packed != byte for guaranteed-false-row case");
+    }
+
+    #[test]
+    fn test_andor_kpack_packed_buffers_reusable() {
+        use tropical_gemm::types::TropicalAndOr;
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+        // GPU-resident path: pack once, run twice against two different B operands,
+        // reusing the packed A. Both results must match the byte kernel.
+        let ctx = cuda_context_or_skip().unwrap();
+        let (m, k, n) = (8, 40, 6);
+        let a = pseudo_bools(m * k, 0.5, 1);
+        let b1 = pseudo_bools(k * n, 0.5, 2);
+        let b2 = pseudo_bools(k * n, 0.3, 3);
+
+        let a_gpu = GpuMatrix::from_host(ctx, &a, m, k).unwrap();
+        let packed_a = pack_andor_rows_gpu(ctx, &a_gpu).unwrap();
+
+        for b in [&b1, &b2] {
+            let b_gpu = GpuMatrix::from_host(ctx, b, k, n).unwrap();
+            let packed_b = pack_andor_cols_gpu(ctx, &b_gpu).unwrap();
+            let mut c_gpu = GpuMatrix::<bool>::alloc(ctx, m, n).unwrap();
+            tropical_gemm_gpu_andor_packed(ctx, &packed_a, &packed_b, &mut c_gpu).unwrap();
+            let got = c_gpu.to_host(ctx).unwrap();
+            let expected = tropical_matmul_gpu::<TropicalAndOr>(&a, m, k, b, n).unwrap();
+            assert_eq!(got, expected, "reused packed A produced wrong result");
+        }
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_bitwise_u32() {
+        use tropical_gemm::types::TropicalBitwise;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Same 2x3 * 3x2 boolean problem as the AndOr test, but each u32 carries
+        // the boolean in bit 0 (a single populated lane). Column-major.
+        let a = vec![0x1u32, 0x0, 0x0, 0x0, 0x1, 0x0];
+        let b = vec![0x1u32, 0x1, 0x0, 0x0, 0x1, 0x1];
+
+        let c = tropical_matmul_gpu::<TropicalBitwise<u32>>(&a, 2, 3, &b, 2).unwrap();
+
+        // C[i,j] = OR_k (A[i,k] AND B[k,j]); only bit 0 is populated.
+        assert_eq!(c[0], 0x1, "C[0,0] expected lane0 set");
+        assert_eq!(c[1], 0x0, "C[1,0] expected 0 (all-false row)");
+        assert_eq!(c[2], 0x1, "C[0,1] expected lane0 set");
+        assert_eq!(c[3], 0x0, "C[1,1] expected 0");
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_bitwise_u32_multilane() {
+        use tropical_gemm::types::TropicalBitwise;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Two independent problems in bit 0 and bit 1. Bit 0: same as above (C00=1).
+        // Bit 1: A all-ones, B all-ones -> every C cell has bit 1 set.
+        // A (2x3) and B (3x2), column-major, each u32 holds {bit0, bit1}.
+        let a = vec![0b11u32, 0b10, 0b10, 0b10, 0b11, 0b10];
+        let b = vec![0b11u32, 0b11, 0b10, 0b10, 0b11, 0b11];
+
+        let c = tropical_matmul_gpu::<TropicalBitwise<u32>>(&a, 2, 3, &b, 2).unwrap();
+
+        // Bit 1 (all-ones problem) is set in every cell; bit 0 matches the AndOr
+        // result {1,0,1,0}.
+        assert_eq!(c[0], 0b11, "C[0,0]");
+        assert_eq!(c[1], 0b10, "C[1,0]");
+        assert_eq!(c[2], 0b11, "C[0,1]");
+        assert_eq!(c[3], 0b10, "C[1,1]");
+    }
+
+    #[test]
+    fn test_tropical_matmul_gpu_bitwise_u64() {
+        use tropical_gemm::types::TropicalBitwise;
+
+        if cuda_context_or_skip().is_none() {
+            return;
+        }
+
+        // Bit 0 carries the boolean problem; also set bit 63 in the all-ones lane
+        // to exercise the high word of u64.
+        let hi: u64 = 1u64 << 63;
+        let a = vec![1u64 | hi, hi, hi, hi, 1u64 | hi, hi];
+        let b = vec![1u64 | hi, 1u64 | hi, hi, hi, 1u64 | hi, 1u64 | hi];
+
+        let c = tropical_matmul_gpu::<TropicalBitwise<u64>>(&a, 2, 3, &b, 2).unwrap();
+
+        assert_eq!(c[0], 1u64 | hi, "C[0,0]");
+        assert_eq!(c[1], hi, "C[1,0]");
+        assert_eq!(c[2], 1u64 | hi, "C[0,1]");
+        assert_eq!(c[3], hi, "C[1,1]");
     }
 
     #[test]

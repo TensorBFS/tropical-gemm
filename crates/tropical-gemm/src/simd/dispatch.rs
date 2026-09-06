@@ -1,7 +1,9 @@
 use super::detect::{simd_level, SimdLevel};
 use super::kernels::*;
 use crate::core::{tropical_gemm_inner, TilingParams, Transpose};
-use crate::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
+use crate::types::{
+    TropicalBitwise, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring,
+};
 
 /// Runtime-dispatched GEMM that selects the best kernel for the current CPU.
 ///
@@ -240,6 +242,8 @@ impl_kernel_dispatch_portable!(
     TropicalMaxMul<i32>,
     TropicalMaxMul<i64>
 );
+
+impl_kernel_dispatch_portable!(TropicalBitwise<u32>, TropicalBitwise<u64>);
 
 #[cfg(test)]
 mod tests {

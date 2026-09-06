@@ -21,7 +21,10 @@ use crate::memory::{
     ExternalGpuMatrix, ExternalGpuTensor3, GpuMatrix, GpuMatrixWithArgmax, GpuTensor3WithArgmax,
 };
 use cudarc::driver::{CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits};
-use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
+use tropical_gemm::types::{
+    TropicalAndOr, TropicalBitwise, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
+    TropicalSemiring,
+};
 
 /// Maximum extent of `gridDim.z` on all CUDA compute capabilities (the batch
 /// dimension of the strided-batched kernels maps to `blockIdx.z`). A single
@@ -402,6 +405,139 @@ impl_cuda_kernel_i64! {
     TropicalMaxPlus<i64> => "tropical_maxplus_i64_nn", "tropical_maxplus_i64_nn_batched";
     TropicalMinPlus<i64> => "tropical_minplus_i64_nn", "tropical_minplus_i64_nn_batched";
     TropicalMaxMul<i64> => "tropical_maxmul_i64_nn", "tropical_maxmul_i64_nn_batched";
+}
+
+impl CudaKernel for TropicalAndOr {
+    const KERNEL_NAME: &'static str = "tropical_andor_bool_nn";
+    const BATCHED_KERNEL_NAME: &'static str = "tropical_andor_bool_nn_batched";
+    fn launch_gemm(
+        ctx: &CudaContext,
+        a: &GpuMatrix<bool>,
+        b: &GpuMatrix<bool>,
+        c: &mut GpuMatrix<bool>,
+    ) -> Result<()> {
+        launch_kernel_impl(
+            ctx,
+            Self::KERNEL_NAME,
+            a,
+            b,
+            c,
+            CudaContext::grid_dims_f32(a.rows(), b.cols()),
+            CudaContext::block_dims_f32(),
+        )
+    }
+    fn launch_gemm_batched(
+        ctx: &CudaContext,
+        a: &CudaSlice<bool>,
+        b: &CudaSlice<bool>,
+        c: &mut CudaSlice<bool>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Result<()> {
+        launch_kernel_batched_impl(
+            ctx,
+            Self::BATCHED_KERNEL_NAME,
+            a,
+            b,
+            c,
+            batch,
+            m,
+            k,
+            n,
+            CudaContext::grid_dims_f32(m, n).0,
+            CudaContext::block_dims_f32(),
+        )
+    }
+}
+impl CudaKernel for TropicalBitwise<u32> {
+    const KERNEL_NAME: &'static str = "tropical_bitwise_u32_nn";
+    const BATCHED_KERNEL_NAME: &'static str = "tropical_bitwise_u32_nn_batched";
+    fn launch_gemm(
+        ctx: &CudaContext,
+        a: &GpuMatrix<u32>,
+        b: &GpuMatrix<u32>,
+        c: &mut GpuMatrix<u32>,
+    ) -> Result<()> {
+        launch_kernel_impl(
+            ctx,
+            Self::KERNEL_NAME,
+            a,
+            b,
+            c,
+            CudaContext::grid_dims_f32(a.rows(), b.cols()),
+            CudaContext::block_dims_f32(),
+        )
+    }
+    fn launch_gemm_batched(
+        ctx: &CudaContext,
+        a: &CudaSlice<u32>,
+        b: &CudaSlice<u32>,
+        c: &mut CudaSlice<u32>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Result<()> {
+        launch_kernel_batched_impl(
+            ctx,
+            Self::BATCHED_KERNEL_NAME,
+            a,
+            b,
+            c,
+            batch,
+            m,
+            k,
+            n,
+            CudaContext::grid_dims_f32(m, n).0,
+            CudaContext::block_dims_f32(),
+        )
+    }
+}
+impl CudaKernel for TropicalBitwise<u64> {
+    const KERNEL_NAME: &'static str = "tropical_bitwise_u64_nn";
+    const BATCHED_KERNEL_NAME: &'static str = "tropical_bitwise_u64_nn_batched";
+    fn launch_gemm(
+        ctx: &CudaContext,
+        a: &GpuMatrix<u64>,
+        b: &GpuMatrix<u64>,
+        c: &mut GpuMatrix<u64>,
+    ) -> Result<()> {
+        launch_kernel_impl(
+            ctx,
+            Self::KERNEL_NAME,
+            a,
+            b,
+            c,
+            CudaContext::grid_dims_f64(a.rows(), b.cols()),
+            CudaContext::block_dims_f64(),
+        )
+    }
+    fn launch_gemm_batched(
+        ctx: &CudaContext,
+        a: &CudaSlice<u64>,
+        b: &CudaSlice<u64>,
+        c: &mut CudaSlice<u64>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Result<()> {
+        launch_kernel_batched_impl(
+            ctx,
+            Self::BATCHED_KERNEL_NAME,
+            a,
+            b,
+            c,
+            batch,
+            m,
+            k,
+            n,
+            CudaContext::grid_dims_f64(m, n).0,
+            CudaContext::block_dims_f64(),
+        )
+    }
 }
 
 // ============================================================================
