@@ -7,10 +7,8 @@
 //!
 //! | Architecture | Instruction Set | Register Width | Supported Types |
 //! |--------------|-----------------|----------------|-----------------|
-//! | x86_64 | AVX-512 | 512-bit | f32, f64 |
-//! | x86_64 | AVX2 | 256-bit | f32, f64 |
-//! | x86_64 | SSE4.1 | 128-bit | f32, f64 |
-//! | aarch64 | NEON | 128-bit | f32 |
+//! | x86_64 | AVX2 | 256-bit | f32/f64 argmax, u32/u64 Bitwise, selected float value kernels |
+//! | aarch64 | NEON | 128-bit | f32/f64 argmax, u32/u64 Bitwise, selected float value kernels |
 //! | Any | Portable | Scalar | All types |
 //!
 //! # Runtime Dispatch
@@ -47,10 +45,11 @@
 //! - [`dispatch`](dispatch): Runtime kernel selection ([`KernelDispatch`])
 //! - [`kernels`](kernels): Architecture-specific microkernel implementations
 
+mod argmax;
 mod detect;
 pub mod dispatch;
 pub mod kernels;
 
 pub use detect::{simd_level, SimdLevel};
-pub use dispatch::{tropical_gemm_dispatch, KernelDispatch};
+pub use dispatch::{tropical_gemm_dispatch, tropical_gemm_with_argmax_dispatch, KernelDispatch};
 pub use kernels::*;

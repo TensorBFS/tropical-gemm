@@ -11,6 +11,7 @@ and multiplication. Tropical semirings replace standard operations with max/min 
 | `MinPlus<T>` | min | + | +∞ | 0 | Shortest path, Dijkstra |
 | `MaxMul<T>` | max | × | 0 | 1 | Maximum probability |
 | `AndOr` | OR | AND | false | true | Graph reachability |
+| `Bitwise<u32/u64>` | OR | AND | 0 | ~0 | 32/64 independent Boolean lanes |
 
 ## MaxPlus Semiring
 
@@ -90,14 +91,35 @@ assert_eq!(product.value(), 15.0);
 - Fuzzy set operations
 - Reliability analysis
 
+## Boolean and bit-sliced operations
+
+`AndOr` works through the public CPU matrix/slice APIs using a portable Boolean
+kernel, and through the CUDA backend. CPU argmax returns the first true
+contribution's index, or zero when no contribution is true.
+
+`Bitwise<u32>` and `Bitwise<u64>` pack independent Boolean problems into each
+word's 32 or 64 bits. Their CPU value kernels use AVX2/NEON where available, with
+portable fallback; CUDA kernels are also available. This is distinct from
+packing the contraction axis of one Boolean matrix product.
+
+```rust
+use tropical_gemm::{tropical_matmul, Bitwise};
+let c = tropical_matmul::<Bitwise<u32>>(&[0b11], 1, 1, &[0b10], 1);
+assert_eq!(c[0].0, 0b10);
+```
+
+Bitwise has no `TropicalWithArgmax` implementation: each bit lane can have a
+different winning K index. Per-lane indices are deliberately deferred rather
+than returning a misleading single index for the entire word.
+
 ## Supported Scalar Types
 
 Each semiring supports multiple scalar types:
 
 | Scalar | MaxPlus | MinPlus | MaxMul | Notes |
 |--------|---------|---------|--------|-------|
-| `f32` | ✅ SIMD | ✅ SIMD | ✅ SIMD | Best performance |
-| `f64` | ✅ SIMD | ✅ | ✅ | Higher precision |
+| `f32` | ✅ | ✅ | ✅ | SIMD argmax for all three; value SIMD depends on architecture |
+| `f64` | ✅ | ✅ | ✅ | SIMD argmax for all three; MaxPlus also has SIMD values |
 | `i32` | ✅ | ✅ | ✅ | Integer operations |
 | `i64` | ✅ | ✅ | ✅ | Large integers |
 

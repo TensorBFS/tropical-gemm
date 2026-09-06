@@ -143,12 +143,12 @@ pub use api::{
     tropical_backward_a, tropical_backward_a_batched, tropical_backward_b,
     tropical_backward_b_batched, tropical_gemm, tropical_matmul, tropical_matmul_batched,
     tropical_matmul_batched_with_argmax, tropical_matmul_strided_batched,
-    tropical_matmul_with_argmax, TropicalGemm,
+    tropical_matmul_with_argmax, tropical_matmul_with_argmax_with_workspace, TropicalGemm,
 };
 pub use backend::{version_info, Backend};
 
 // Re-export commonly used types at crate root
-pub use core::{GemmWithArgmax, Layout, Transpose};
+pub use core::{GemmWithArgmax, GemmWorkspace, Layout, Transpose};
 pub use mat::{Mat, MatMut, MatRef, MatWithArgmax};
 pub use simd::{simd_level, KernelDispatch, SimdLevel};
 pub use types::{
@@ -175,9 +175,10 @@ pub mod prelude {
         tropical_backward_a, tropical_backward_a_batched, tropical_backward_b,
         tropical_backward_b_batched, tropical_matmul, tropical_matmul_batched,
         tropical_matmul_batched_with_argmax, tropical_matmul_strided_batched,
-        tropical_matmul_with_argmax, AndOr, Backend, Bitwise, CountingTropical, GemmWithArgmax,
-        Mat, MatMut, MatRef, MatWithArgmax, MaxMul, MaxPlus, MinPlus, Transpose, TropicalAndOr,
-        TropicalBitwise, TropicalGemm, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
-        TropicalSemiring, TropicalWithArgmax,
+        tropical_matmul_with_argmax, tropical_matmul_with_argmax_with_workspace, AndOr, Backend,
+        Bitwise, CountingTropical, GemmWithArgmax, GemmWorkspace, Mat, MatMut, MatRef,
+        MatWithArgmax, MaxMul, MaxPlus, MinPlus, Transpose, TropicalAndOr, TropicalBitwise,
+        TropicalGemm, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring,
+        TropicalWithArgmax,
     };
 }

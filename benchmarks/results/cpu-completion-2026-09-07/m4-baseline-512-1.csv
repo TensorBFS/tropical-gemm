@@ -1,0 +1,15 @@
+n,threads,semiring,scalar,mode,median_ms
+512,1,TropicalMaxPlus,f32,values,14.326625
+512,1,TropicalMaxPlus,f32,argmax,31.976000
+512,1,TropicalMinPlus,f32,values,14.663083
+512,1,TropicalMinPlus,f32,argmax,31.849666
+512,1,TropicalMaxMul,f32,values,18.803875
+512,1,TropicalMaxMul,f32,argmax,32.031250
+512,1,TropicalMaxPlus,f64,values,15.379000
+512,1,TropicalMaxPlus,f64,argmax,32.247333
+512,1,TropicalMinPlus,f64,values,19.045750
+512,1,TropicalMinPlus,f64,argmax,32.234458
+512,1,TropicalMaxMul,f64,values,19.060125
+512,1,TropicalMaxMul,f64,argmax,32.756917
+512,1,TropicalBitwise,u32,values,15.759541
+512,1,TropicalBitwise,u64,values,16.281750

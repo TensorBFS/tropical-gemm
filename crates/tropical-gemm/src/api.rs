@@ -101,13 +101,28 @@ pub fn tropical_matmul_with_argmax<T: TropicalWithArgmax<Index = u32> + KernelDi
     b: &[T::Scalar],
     n: usize,
 ) -> GemmWithArgmax<T> {
+    tropical_matmul_with_argmax_with_workspace(a, m, k, b, n, &mut crate::GemmWorkspace::new())
+}
+
+/// Tropical matrix multiplication with argmax and reusable packing storage.
+/// Output values and indices are newly allocated; workspace is reused across calls.
+pub fn tropical_matmul_with_argmax_with_workspace<
+    T: TropicalWithArgmax<Index = u32> + KernelDispatch,
+>(
+    a: &[T::Scalar],
+    m: usize,
+    k: usize,
+    b: &[T::Scalar],
+    n: usize,
+    workspace: &mut crate::GemmWorkspace<T::Scalar>,
+) -> GemmWithArgmax<T> {
     assert_eq!(a.len(), matrix_size(m, k), "A dimensions mismatch");
     assert_eq!(b.len(), matrix_size(k, n), "B dimensions mismatch");
 
     let mut result = GemmWithArgmax::new(m, n);
 
     unsafe {
-        crate::core::tropical_gemm_with_argmax_portable::<T>(
+        T::dispatch_gemm_with_argmax_with_workspace(
             m,
             n,
             k,
@@ -118,6 +133,7 @@ pub fn tropical_matmul_with_argmax<T: TropicalWithArgmax<Index = u32> + KernelDi
             n,
             Transpose::NoTrans,
             &mut result,
+            workspace,
         );
     }
 
@@ -193,6 +209,23 @@ impl<T: TropicalSemiring + KernelDispatch> TropicalGemm<T> {
         c: &mut [T],
         ldc: usize,
     ) {
+        self.execute_with_workspace(a, lda, b, ldb, c, ldc, &mut crate::GemmWorkspace::new());
+    }
+
+    /// Execute with caller-owned packing storage. Inputs and output use the
+    /// same dimensions and strides as [`Self::execute`]. Built-in semirings
+    /// reuse the buffers on subsequent calls, including parallel GEMMs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with_workspace(
+        self,
+        a: &[T::Scalar],
+        lda: usize,
+        b: &[T::Scalar],
+        ldb: usize,
+        c: &mut [T],
+        ldc: usize,
+        workspace: &mut crate::GemmWorkspace<T::Scalar>,
+    ) {
         let (ar, ac) = match self.trans_a {
             Transpose::NoTrans => (self.m, self.k),
             Transpose::Trans => (self.k, self.m),
@@ -205,7 +238,7 @@ impl<T: TropicalSemiring + KernelDispatch> TropicalGemm<T> {
         validate_matrix(b.len(), br, bc, ldb, "B");
         validate_matrix(c.len(), self.m, self.n, ldc, "C");
         unsafe {
-            tropical_gemm_dispatch::<T>(
+            T::dispatch_gemm_with_workspace(
                 self.m,
                 self.n,
                 self.k,
@@ -217,6 +250,7 @@ impl<T: TropicalSemiring + KernelDispatch> TropicalGemm<T> {
                 self.trans_b,
                 c.as_mut_ptr(),
                 ldc,
+                workspace,
             );
         }
     }
