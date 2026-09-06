@@ -11,9 +11,11 @@ This guide helps you get the best performance from tropical-gemm.
 | > 256×256 | GPU | GPU computation advantage |
 | > 1024×1024 | GPU (strongly) | 100-800x speedup |
 
-### Benchmark Results (MaxPlus f32)
+### Historical Benchmark Results (MaxPlus f32)
 
-Tested on NVIDIA RTX A4500 (Ampere) with AMD Ryzen 9 5900X.
+Tested on NVIDIA RTX A4500 (Ampere) with AMD Ryzen 9 5900X. These older CPU
+measurements predate single-GEMM threading; use the reproducible CPU benchmark
+below when choosing a backend for your workload.
 
 | Size | CPU AVX2 | GPU | GPU Speedup |
 |------|----------|-----|-------------|
@@ -68,32 +70,75 @@ sizes). This followed fixing the one real difference between the two kernels (is
 
 ## CPU Optimization
 
-### SIMD Detection
+### CPU threads
 
-Ensure optimal SIMD is being used:
+The default `parallel` feature parallelizes both batches and individual large
+GEMMs, including argmax operations. Each task owns an output rectangle and
+performs its entire K reduction, preserving serial reduction order and
+first-winner argmax ties. Row or column boundaries align to microkernel tiles.
+
+Small calls stay serial. The splitter currently requires at least 4,194,304
+scalar products and budgets at least 2,097,152 per task, capped by the active
+Rayon pool and the available output tiles. These thresholds are implementation
+details, not an API guarantee. K alone is never split: very narrow outputs may
+remain serial even with a large K.
+
+Set `RAYON_NUM_THREADS` before the first CPU call (including Python calls), or
+use a caller-owned Rayon pool in Rust:
 
 ```rust
-use tropical_gemm::{simd_level, SimdLevel};
+use tropical_gemm::{tropical_matmul, TropicalMaxPlus};
 
-match simd_level() {
-    SimdLevel::Avx512 => println!("Best: AVX-512"),
-    SimdLevel::Avx2 => println!("Good: AVX2"),
-    SimdLevel::Sse41 => println!("Okay: SSE4.1"),
-    SimdLevel::Neon => println!("ARM: NEON"),
-    SimdLevel::None => println!("Slow: Portable fallback"),
-}
+let pool = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+let a = vec![1.0f32; 512 * 512];
+let b = vec![2.0f32; 512 * 512];
+let c = pool.install(|| tropical_matmul::<TropicalMaxPlus<f32>>(&a, 512, 512, &b, 512));
+assert_eq!(c[0].0, 3.0);
 ```
+
+Nested batched calls reuse the same pool without creating another set of OS
+threads. Compile the core crate with `default-features = false` for serial
+execution. Custom kernels passed to the low-level GEMM functions must be `Sync`,
+as they may be shared across workers. Packing buffers are bounded by each
+submatrix's actual panel dimensions; workspace reuse is still separate work.
+
+Measure your workload in release mode:
+
+```bash
+# M N K samples thread-counts; CSV medians include allocations and packing.
+cargo run --release -p tropical-gemm --example bench_threads -- 512 512 512 7 1,2,4,8
+```
+
+The example covers values, argmax, and a batch of four matrices. Repeated
+measurements on a shared server can vary with CPU contention, clock changes,
+and memory placement. See the [CPU threading measurements](https://github.com/TensorBFS/tropical-gemm/blob/main/benchmarks/results/2026-09-07-cpu-threading.md)
+for baseline comparisons and raw results.
+
+### SIMD Detection
+
+`simd_level()` reports hardware capabilities:
+
+```rust
+println!("CPU capabilities: {:?}", tropical_gemm::simd_level());
+```
+
+An AVX-512-capable CPU currently uses the AVX2 value kernels where implemented;
+there is no dedicated AVX-512 kernel. Dispatch depends on the semiring and scalar
+type, and CPU argmax currently uses the portable microkernel. Threading applies
+to both SIMD and portable kernels.
 
 ### Memory Layout
 
-Row-major contiguous data is fastest:
+The slice-based API accepts contiguous row-major scalars. `Mat` and `MatRef` use
+column-major storage. Supply the layout expected by the API to avoid conversion:
 
 ```rust
-// GOOD: Contiguous row-major
-let a = Mat::<MaxPlus<f32>>::from_fn(m, k, |i, j| data[i * k + j]);
+use tropical_gemm::{Mat, MaxPlus};
 
-// SLOWER: Non-contiguous requires packing overhead
-let a_ref = MatRef::from_slice_strided(&data, m, k, stride);
+// Column-major storage for the matrix [[1, 2], [3, 4]].
+let a = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+let c = &a * &a;
+assert_eq!(c.get_value(0, 0), 5.0);
 ```
 
 ### Cache Efficiency
