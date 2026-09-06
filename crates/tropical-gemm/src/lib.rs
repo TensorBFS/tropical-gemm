@@ -152,9 +152,9 @@ pub use core::{GemmWithArgmax, Layout, Transpose};
 pub use mat::{Mat, MatMut, MatRef, MatWithArgmax};
 pub use simd::{simd_level, KernelDispatch, SimdLevel};
 pub use types::{
-    BitwiseScalar, CountingTropical, SimdTropical, TropicalAndOr, TropicalBitwise,
-    TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalScalar, TropicalSemiring,
-    TropicalWithArgmax,
+    AdditiveTropical, BitwiseScalar, CountingTropical, SimdTropical, TropicalAndOr,
+    TropicalBitwise, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalScalar,
+    TropicalSemiring, TropicalWithArgmax,
 };
 
 // Convenient type aliases

@@ -89,7 +89,7 @@ if cuda_available():
         maxmul_matmul_gpu_with_argmax,
     )
 
-__version__ = "0.2.0"
+from tropical_gemm._core import __version__
 
 __all__ = [
     # f32 operations

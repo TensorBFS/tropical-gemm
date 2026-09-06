@@ -39,3 +39,22 @@ fn bool_and_bitwise_batched_match_cpu() {
     check::<TropicalBitwise<u32>>(|i| 1u32.rotate_left((i % 32) as u32));
     check::<TropicalBitwise<u64>>(|i| 1u64.rotate_left((i % 64) as u32));
 }
+
+#[test]
+fn direct_launch_rejects_invalid_buffers() {
+    use tropical_gemm::TropicalMaxPlus;
+    use tropical_gemm_cuda::{CudaKernelWithArgmax, GpuMatrix, GpuMatrixWithArgmax};
+    let Ok(Ok(ctx)) = std::panic::catch_unwind(get_global_context) else {
+        return;
+    };
+    let a = GpuMatrix::from_host(ctx, &[1f32; 6], 2, 3).unwrap();
+    let b = GpuMatrix::from_host(ctx, &[2f32; 6], 3, 2).unwrap();
+    let mut c = GpuMatrix::<f32>::alloc(ctx, 1, 1).unwrap();
+    assert!(TropicalMaxPlus::<f32>::launch_gemm(ctx, &a, &b, &mut c).is_err());
+    let mut c = GpuMatrix::<f32>::alloc(ctx, 2, 2).unwrap();
+    *c.as_slice_mut() = ctx.stream().alloc_zeros::<f32>(1).unwrap();
+    assert!(TropicalMaxPlus::<f32>::launch_gemm(ctx, &a, &b, &mut c).is_err());
+    let mut c = GpuMatrixWithArgmax::<f32>::alloc(ctx, 2, 2).unwrap();
+    c.argmax = GpuMatrix::alloc(ctx, 1, 1).unwrap();
+    assert!(TropicalMaxPlus::<f32>::launch_gemm_with_argmax(ctx, &a, &b, &mut c).is_err());
+}

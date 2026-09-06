@@ -81,4 +81,4 @@ pub use max_mul::TropicalMaxMul;
 pub use max_plus::TropicalMaxPlus;
 pub use min_plus::TropicalMinPlus;
 pub use scalar::TropicalScalar;
-pub use traits::{SimdTropical, TropicalSemiring, TropicalWithArgmax};
+pub use traits::{AdditiveTropical, SimdTropical, TropicalSemiring, TropicalWithArgmax};

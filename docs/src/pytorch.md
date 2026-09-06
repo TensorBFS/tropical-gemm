@@ -262,3 +262,16 @@ See `crates/tropical-gemm-python/examples/pytorch_tropical.py` for:
 - Shortest/longest path examples
 - Optimization demos
 - GPU benchmarks
+
+## Precision and CUDA streams
+
+CPU batched and non-batched operations preserve `torch.float64` precision,
+including the indices used to route gradients. CUDA DLPack functions currently
+accept `torch.float32` inputs and export signed 32-bit argmax indices for
+compatibility with PyTorch 2.0 and later.
+
+The DLPack functions synchronize their CUDA stream before returning raw capsules,
+so tensors can safely be consumed on another stream. CUDA tensor objects are
+asked to establish a dependency on the library's input stream. Callers supplying
+raw input capsules must ensure the input data is ready before the call. The Rust
+GPU APIs retain their asynchronous launch behavior.

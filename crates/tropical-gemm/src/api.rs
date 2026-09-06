@@ -5,6 +5,22 @@ use crate::types::{TropicalSemiring, TropicalWithArgmax};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+fn matrix_size(rows: usize, cols: usize) -> usize {
+    rows.checked_mul(cols).expect("matrix dimensions overflow")
+}
+
+fn validate_matrix(len: usize, rows: usize, cols: usize, ld: usize, name: &str) {
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    assert!(ld >= cols, "{name}: leading dimension is too small");
+    let span = (rows - 1)
+        .checked_mul(ld)
+        .and_then(|n| n.checked_add(cols))
+        .expect("matrix dimensions overflow");
+    assert!(len >= span, "{name}: buffer is too short");
+}
+
 /// Simple tropical matrix multiplication: C = A ⊗ B
 ///
 /// Computes C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j])
@@ -37,10 +53,10 @@ pub fn tropical_matmul<T: TropicalSemiring + KernelDispatch>(
     b: &[T::Scalar],
     n: usize,
 ) -> Vec<T> {
-    assert_eq!(a.len(), m * k, "A dimensions mismatch");
-    assert_eq!(b.len(), k * n, "B dimensions mismatch");
+    assert_eq!(a.len(), matrix_size(m, k), "A dimensions mismatch");
+    assert_eq!(b.len(), matrix_size(k, n), "B dimensions mismatch");
 
-    let mut c = vec![T::tropical_zero(); m * n];
+    let mut c = vec![T::tropical_zero(); matrix_size(m, n)];
 
     unsafe {
         tropical_gemm_dispatch::<T>(
@@ -85,8 +101,8 @@ pub fn tropical_matmul_with_argmax<T: TropicalWithArgmax<Index = u32> + KernelDi
     b: &[T::Scalar],
     n: usize,
 ) -> GemmWithArgmax<T> {
-    assert_eq!(a.len(), m * k, "A dimensions mismatch");
-    assert_eq!(b.len(), k * n, "B dimensions mismatch");
+    assert_eq!(a.len(), matrix_size(m, k), "A dimensions mismatch");
+    assert_eq!(b.len(), matrix_size(k, n), "B dimensions mismatch");
 
     let mut result = GemmWithArgmax::new(m, n);
 
@@ -177,6 +193,17 @@ impl<T: TropicalSemiring + KernelDispatch> TropicalGemm<T> {
         c: &mut [T],
         ldc: usize,
     ) {
+        let (ar, ac) = match self.trans_a {
+            Transpose::NoTrans => (self.m, self.k),
+            Transpose::Trans => (self.k, self.m),
+        };
+        let (br, bc) = match self.trans_b {
+            Transpose::NoTrans => (self.k, self.n),
+            Transpose::Trans => (self.n, self.k),
+        };
+        validate_matrix(a.len(), ar, ac, lda, "A");
+        validate_matrix(b.len(), br, bc, ldb, "B");
+        validate_matrix(c.len(), self.m, self.n, ldc, "C");
         unsafe {
             tropical_gemm_dispatch::<T>(
                 self.m,
@@ -280,18 +307,18 @@ where
     for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
         assert_eq!(
             a.len(),
-            m * k,
+            matrix_size(m, k),
             "A[{}] dimensions mismatch: expected {}, got {}",
             i,
-            m * k,
+            matrix_size(m, k),
             a.len()
         );
         assert_eq!(
             b.len(),
-            k * n,
+            matrix_size(k, n),
             "B[{}] dimensions mismatch: expected {}, got {}",
             i,
-            k * n,
+            matrix_size(k, n),
             b.len()
         );
     }
@@ -356,18 +383,18 @@ where
     for (i, (a, b)) in a_batch.iter().zip(b_batch.iter()).enumerate() {
         assert_eq!(
             a.len(),
-            m * k,
+            matrix_size(m, k),
             "A[{}] dimensions mismatch: expected {}, got {}",
             i,
-            m * k,
+            matrix_size(m, k),
             a.len()
         );
         assert_eq!(
             b.len(),
-            k * n,
+            matrix_size(k, n),
             "B[{}] dimensions mismatch: expected {}, got {}",
             i,
-            k * n,
+            matrix_size(k, n),
             b.len()
         );
     }
@@ -437,30 +464,30 @@ where
     T::Scalar: Send + Sync + Copy,
     T: Send + Sync,
 {
-    let a_stride = m * k;
-    let b_stride = k * n;
-    let c_stride = m * n;
+    let a_stride = matrix_size(m, k);
+    let b_stride = matrix_size(k, n);
+    let c_stride = matrix_size(m, n);
 
     assert_eq!(
         a.len(),
-        batch_size * a_stride,
+        matrix_size(batch_size, a_stride),
         "A size mismatch: expected {}, got {}",
-        batch_size * a_stride,
+        matrix_size(batch_size, a_stride),
         a.len()
     );
     assert_eq!(
         b.len(),
-        batch_size * b_stride,
+        matrix_size(batch_size, b_stride),
         "B size mismatch: expected {}, got {}",
-        batch_size * b_stride,
+        matrix_size(batch_size, b_stride),
         b.len()
     );
 
-    if batch_size == 0 {
+    if batch_size == 0 || c_stride == 0 {
         return Vec::new();
     }
 
-    let mut c = vec![T::tropical_zero(); batch_size * c_stride];
+    let mut c = vec![T::tropical_zero(); matrix_size(batch_size, c_stride)];
 
     #[cfg(feature = "parallel")]
     {
@@ -567,10 +594,10 @@ pub fn tropical_backward_a<T: Copy + Default + std::ops::AddAssign>(
     k: usize,
     n: usize,
 ) -> Vec<T> {
-    assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
-    assert_eq!(argmax.len(), m * n, "argmax size mismatch");
+    assert_eq!(grad_c.len(), matrix_size(m, n), "grad_c size mismatch");
+    assert_eq!(argmax.len(), matrix_size(m, n), "argmax size mismatch");
 
-    let mut grad_a = vec![T::default(); m * k];
+    let mut grad_a = vec![T::default(); matrix_size(m, k)];
 
     for i in 0..m {
         for j in 0..n {
@@ -631,10 +658,10 @@ pub fn tropical_backward_b<T: Copy + Default + std::ops::AddAssign>(
     k: usize,
     n: usize,
 ) -> Vec<T> {
-    assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
-    assert_eq!(argmax.len(), m * n, "argmax size mismatch");
+    assert_eq!(grad_c.len(), matrix_size(m, n), "grad_c size mismatch");
+    assert_eq!(argmax.len(), matrix_size(m, n), "argmax size mismatch");
 
-    let mut grad_b = vec![T::default(); k * n];
+    let mut grad_b = vec![T::default(); matrix_size(k, n)];
 
     for i in 0..m {
         for j in 0..n {

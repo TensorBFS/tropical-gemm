@@ -42,8 +42,11 @@ def _get_dtype_funcs(dtype: torch.dtype):
     if dtype == torch.float64:
         return {
             "maxplus": tropical_gemm.maxplus_matmul_with_argmax_f64,
+            "maxplus_batched": tropical_gemm.maxplus_matmul_batched_with_argmax_f64,
             "minplus": tropical_gemm.minplus_matmul_with_argmax_f64,
+            "minplus_batched": tropical_gemm.minplus_matmul_batched_with_argmax_f64,
             "maxmul": tropical_gemm.maxmul_matmul_with_argmax_f64,
+            "maxmul_batched": tropical_gemm.maxmul_matmul_batched_with_argmax_f64,
             "backward_a": tropical_gemm.backward_a_f64,
             "backward_b": tropical_gemm.backward_b_f64,
             "maxmul_backward_a": tropical_gemm.maxmul_backward_a_f64,
@@ -54,8 +57,11 @@ def _get_dtype_funcs(dtype: torch.dtype):
         # Default to f32 for float32 and other types
         return {
             "maxplus": tropical_gemm.maxplus_matmul_with_argmax,
+            "maxplus_batched": tropical_gemm.maxplus_matmul_batched_with_argmax,
             "minplus": tropical_gemm.minplus_matmul_with_argmax,
+            "minplus_batched": tropical_gemm.minplus_matmul_batched_with_argmax,
             "maxmul": tropical_gemm.maxmul_matmul_with_argmax,
+            "maxmul_batched": tropical_gemm.maxmul_matmul_batched_with_argmax,
             "backward_a": tropical_gemm.backward_a,
             "backward_b": tropical_gemm.backward_b,
             "maxmul_backward_a": tropical_gemm.maxmul_backward_a,
@@ -280,8 +286,8 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
 
         # Save inputs and argmax for backward (needed for multiplicative gradient)
         ctx.save_for_backward(
-            torch.from_numpy(a_np),
-            torch.from_numpy(b_np),
+            a.detach(),
+            b.detach(),
             torch.from_numpy(argmax_np),
         )
         ctx.k = k
@@ -301,8 +307,8 @@ class TropicalMaxMulMatmul(torch.autograd.Function):
 
         grad_c_np = grad_c.cpu().numpy()
         argmax_np = argmax.numpy().astype(np.int32)
-        a_np = a.numpy()
-        b_np = b.numpy()
+        a_np = np.ascontiguousarray(a.cpu().numpy(), dtype=funcs["np_dtype"])
+        b_np = np.ascontiguousarray(b.cpu().numpy(), dtype=funcs["np_dtype"])
 
         if grad_c_np.dtype != funcs["np_dtype"]:
             grad_c_np = grad_c_np.astype(funcs["np_dtype"])
@@ -603,16 +609,17 @@ class TropicalMaxPlusMatmulBatched(torch.autograd.Function):
             # Cast to int64 for PyTorch scatter operations
             argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
         else:
-            # CPU path
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
+            # Preserve double precision, including the winning index.
+            funcs = _get_dtype_funcs(a.dtype)
+            a_np = a.detach().cpu().numpy().astype(funcs["np_dtype"])
+            b_np = b.detach().cpu().numpy().astype(funcs["np_dtype"])
 
             if not a_np.flags["C_CONTIGUOUS"]:
                 a_np = np.ascontiguousarray(a_np)
             if not b_np.flags["C_CONTIGUOUS"]:
                 b_np = np.ascontiguousarray(b_np)
 
-            c_flat, argmax_flat = tropical_gemm.maxplus_matmul_batched_with_argmax(
+            c_flat, argmax_flat = funcs["maxplus_batched"](
                 a_np, b_np
             )
 
@@ -699,16 +706,17 @@ class TropicalMinPlusMatmulBatched(torch.autograd.Function):
             # Cast to int64 for PyTorch scatter operations
             argmax = torch.from_dlpack(argmax_capsule).to(torch.int64)
         else:
-            # CPU path
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
+            # Preserve double precision, including the winning index.
+            funcs = _get_dtype_funcs(a.dtype)
+            a_np = a.detach().cpu().numpy().astype(funcs["np_dtype"])
+            b_np = b.detach().cpu().numpy().astype(funcs["np_dtype"])
 
             if not a_np.flags["C_CONTIGUOUS"]:
                 a_np = np.ascontiguousarray(a_np)
             if not b_np.flags["C_CONTIGUOUS"]:
                 b_np = np.ascontiguousarray(b_np)
 
-            c_flat, argmax_flat = tropical_gemm.minplus_matmul_batched_with_argmax(
+            c_flat, argmax_flat = funcs["minplus_batched"](
                 a_np, b_np
             )
 
@@ -801,16 +809,17 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
             # Save tensors for backward pass
             ctx.save_for_backward(a.detach(), b.detach(), argmax)
         else:
-            # CPU path
-            a_np = a.detach().cpu().numpy().astype(np.float32)
-            b_np = b.detach().cpu().numpy().astype(np.float32)
+            # Preserve double precision, including the winning index.
+            funcs = _get_dtype_funcs(a.dtype)
+            a_np = a.detach().cpu().numpy().astype(funcs["np_dtype"])
+            b_np = b.detach().cpu().numpy().astype(funcs["np_dtype"])
 
             if not a_np.flags["C_CONTIGUOUS"]:
                 a_np = np.ascontiguousarray(a_np)
             if not b_np.flags["C_CONTIGUOUS"]:
                 b_np = np.ascontiguousarray(b_np)
 
-            c_flat, argmax_flat = tropical_gemm.maxmul_matmul_batched_with_argmax(
+            c_flat, argmax_flat = funcs["maxmul_batched"](
                 a_np, b_np
             )
 
@@ -820,8 +829,8 @@ class TropicalMaxMulMatmulBatched(torch.autograd.Function):
             )
             # Save tensors on the same device as input for backward pass
             ctx.save_for_backward(
-                torch.from_numpy(a_np).to(a.device),
-                torch.from_numpy(b_np).to(a.device),
+                a.detach().to(dtype=c.dtype),
+                b.detach().to(dtype=c.dtype),
                 argmax,
             )
 

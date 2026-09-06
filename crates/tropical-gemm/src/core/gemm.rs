@@ -67,7 +67,16 @@ pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T>>(
     params: &TilingParams,
     kernel: &K,
 ) {
-    if m == 0 || n == 0 || k == 0 {
+    if m == 0 || n == 0 {
+        return;
+    }
+    // Initialize once per GEMM; microkernels accumulate subsequent K panels.
+    for i in 0..m {
+        for j in 0..n {
+            c.add(i * ldc + j).write(T::tropical_zero());
+        }
+    }
+    if k == 0 {
         return;
     }
 
@@ -181,7 +190,16 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
     params: &TilingParams,
     kernel: &K,
 ) {
-    if m == 0 || n == 0 || k == 0 {
+    if m == 0 || n == 0 {
+        return;
+    }
+    for i in 0..m {
+        for j in 0..n {
+            *result.get_mut(i, j) = T::tropical_zero();
+            *result.get_argmax_mut(i, j) = 0;
+        }
+    }
+    if k == 0 {
         return;
     }
 

@@ -47,7 +47,9 @@ impl<'a, S: TropicalSemiring> MatRef<'a, S> {
     pub fn from_slice(data: &'a [S::Scalar], nrows: usize, ncols: usize) -> Self {
         assert_eq!(
             data.len(),
-            nrows * ncols,
+            nrows
+                .checked_mul(ncols)
+                .expect("matrix dimensions overflow"),
             "data length {} != nrows {} * ncols {}",
             data.len(),
             nrows,
@@ -68,17 +70,15 @@ impl<'a, S: TropicalSemiring> MatRef<'a, S> {
     where
         S::Scalar: Copy,
     {
-        // We need to get scalars from the Mat<S> which stores S values
-        // Since S wraps Scalar, we can use value() to extract
-        // But MatRef needs &[Scalar], not &[S]
-        // This is a design tension - for now we'll use unsafe transmute
-        // since S is repr(transparent) over Scalar
-        //
-        // Safety: TropicalMaxPlus<T>, TropicalMinPlus<T>, etc. are all
-        // repr(transparent) newtype wrappers over T
-        let scalar_slice = unsafe {
-            std::slice::from_raw_parts(mat.data.as_ptr() as *const S::Scalar, mat.data.len())
-        };
+        let scalar_slice = S::scalar_slice(&mat.data).unwrap_or_else(|| {
+            mat.scalars
+                .get_or_init(|| mat.data.iter().map(S::value).collect())
+        });
+        assert_eq!(
+            scalar_slice.len(),
+            mat.data.len(),
+            "invalid scalar projection"
+        );
         Self {
             data: scalar_slice,
             nrows: mat.nrows,
@@ -223,6 +223,7 @@ where
 
         MatWithArgmax {
             values: Mat {
+                scalars: Default::default(),
                 data: result.values,
                 nrows: m,
                 ncols: n,
