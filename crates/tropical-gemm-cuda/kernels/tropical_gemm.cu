@@ -84,6 +84,25 @@ __device__ __forceinline__ float  mul_f32(float a, float b)   { return a * b; }
 __device__ __forceinline__ double add_f64(double a, double b) { return a + b; }
 __device__ __forceinline__ double mul_f64(double a, double b) { return a * b; }
 
+// Boolean (AndOr) semiring: add = OR, mul = AND, zero = false, one = true.
+// false is a true absorbing zero (false AND x = false), so no sentinel/drift like
+// the integer MaxPlus types -- the out-of-range tile PAD is simply false.
+//
+// Use *bitwise* &/| (not logical &&/||): for 0/1 bytes they are equivalent, but
+// bitwise ops let ptxas keep the values in byte/integer form (LOP3) instead of
+// round-tripping each byte through a predicate (ISETP -> PLOP3 -> P2R), which
+// measured ~1.6x slower than the reference's fused byte-wise path on sm_86.
+__device__ __forceinline__ bool or_bool(bool a, bool b)  { return a | b; }
+__device__ __forceinline__ bool and_bool(bool a, bool b) { return a & b; }
+
+// Bit-packed boolean (Bitwise) semiring: add = OR, mul = AND, zero = 0, one = ~0.
+// Each bit-lane is an independent boolean problem. zero = 0 is a true absorbing
+// zero for AND (0 & x = 0), so the out-of-range tile PAD is simply 0.
+__device__ __forceinline__ unsigned int or_u32(unsigned int a, unsigned int b)  { return a | b; }
+__device__ __forceinline__ unsigned int and_u32(unsigned int a, unsigned int b) { return a & b; }
+__device__ __forceinline__ unsigned long long or_u64(unsigned long long a, unsigned long long b)  { return a | b; }
+__device__ __forceinline__ unsigned long long and_u64(unsigned long long a, unsigned long long b) { return a & b; }
+
 // Drifted tropical-zero detection for argmax canonicalization. A no-contribution
 // output cell's value sits in "infinity territory" (past S/2) after the
 // guard-free add drifts it (`S + data`). Used ONLY at the O(M*N) write-out (not
@@ -945,3 +964,127 @@ TROPICAL_GEMM_BATCHED_I32(tropical_maxmul_i32_nn_batched,  0,           max_i32,
 TROPICAL_GEMM_BATCHED_I64(tropical_maxplus_i64_nn_batched, NEG_INF_I64, max_i64, add_i64)
 TROPICAL_GEMM_BATCHED_I64(tropical_minplus_i64_nn_batched, INF_I64,     min_i64, add_i64)
 TROPICAL_GEMM_BATCHED_I64(tropical_maxmul_i64_nn_batched,  0LL,         max_i64, mul_i64)
+
+// Boolean and bitwise forward kernels share the same 64-bit tile I/O.
+extern "C" __global__ void tropical_andor_bool_nn(
+    const bool* __restrict__ A, const bool* __restrict__ B,
+    bool* __restrict__ C, int M, int N, int K) {
+    TROPICAL_GEMM_BODY(bool, 64, 32, 64, false, or_bool, and_bool, A, B, C)
+}
+extern "C" __global__ void tropical_andor_bool_nn_batched(
+    const bool* __restrict__ A, const bool* __restrict__ B,
+    bool* __restrict__ C, int M, int N, int K,
+    long long strideA, long long strideB, long long strideC) {
+    TROPICAL_GEMM_BODY(bool, 64, 32, 64, false, or_bool, and_bool,
+        (A + (long long)blockIdx.z * strideA),
+        (B + (long long)blockIdx.z * strideB),
+        (C + (long long)blockIdx.z * strideC))
+}
+extern "C" __global__ void tropical_bitwise_u32_nn(
+    const unsigned int* __restrict__ A, const unsigned int* __restrict__ B,
+    unsigned int* __restrict__ C, int M, int N, int K) {
+    TROPICAL_GEMM_BODY(unsigned int, 64, 32, 64, 0u, or_u32, and_u32, A, B, C)
+}
+extern "C" __global__ void tropical_bitwise_u32_nn_batched(
+    const unsigned int* __restrict__ A, const unsigned int* __restrict__ B,
+    unsigned int* __restrict__ C, int M, int N, int K,
+    long long strideA, long long strideB, long long strideC) {
+    TROPICAL_GEMM_BODY(unsigned int, 64, 32, 64, 0u, or_u32, and_u32,
+        (A + (long long)blockIdx.z * strideA),
+        (B + (long long)blockIdx.z * strideB),
+        (C + (long long)blockIdx.z * strideC))
+}
+extern "C" __global__ void tropical_bitwise_u64_nn(
+    const unsigned long long* __restrict__ A, const unsigned long long* __restrict__ B,
+    unsigned long long* __restrict__ C, int M, int N, int K) {
+    TROPICAL_GEMM_BODY(unsigned long long, 32, 16, 32, 0ull, or_u64, and_u64, A, B, C)
+}
+extern "C" __global__ void tropical_bitwise_u64_nn_batched(
+    const unsigned long long* __restrict__ A, const unsigned long long* __restrict__ B,
+    unsigned long long* __restrict__ C, int M, int N, int K,
+    long long strideA, long long strideB, long long strideC) {
+    TROPICAL_GEMM_BODY(unsigned long long, 32, 16, 32, 0ull, or_u64, and_u64,
+        (A + (long long)blockIdx.z * strideA),
+        (B + (long long)blockIdx.z * strideB),
+        (C + (long long)blockIdx.z * strideC))
+}
+
+// K-PACKED BOOLEAN (AndOr) GEMM — pack the contraction dim K into 32-bit words
+// ============================================================================
+// Distinct from the byte AndOr kernel and from TropicalBitwise (which packs the
+// problem axis). Here we pack the *contraction* axis of a single boolean matmul:
+//   C[i,j] = OR_k (A[i,k] AND B[k,j])  ==  any_w( Apacked(i,w) & Bpacked(j,w) )
+// Column-major throughout. Kw = ceil(K/32). Bit b of word w holds K-element 32*w+b
+// (LSB-first). Tail bits (32*w+b >= K) are explicitly zeroed; 0 is AND's absorbing
+// element, so padding lanes are inert and the GEMM K-loop is branchless.
+
+// Pack A (M×K col-major bool) -> Apacked (M×Kw col-major u32). One thread per (i,w).
+extern "C" __global__ void pack_rows_u32(
+    const bool* __restrict__ A,
+    unsigned int* __restrict__ Apacked,
+    int M, int K)
+{
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    int Kw = K / 32 + (K % 32 != 0);
+    if (idx >= (long long)M * Kw) return;
+    int i = idx % M;
+    int w = idx / M;
+    //   // == ceil(K/32) without (K+31) overflow near INT_MAX
+    if (i >= M || w >= Kw) return;
+    unsigned int word = 0u;
+    #pragma unroll
+    for (int b = 0; b < 32; ++b) {
+        int k = 32 * w + b;
+        if (k < K) {
+            // static_cast<unsigned> BEFORE the shift: a high-bit shift of a
+            // promoted `bool`/`int` would be signed; the cast keeps it well-defined.
+            word |= static_cast<unsigned int>(A[(size_t)k * M + i]) << b;
+        }
+    }
+    Apacked[(size_t)w * M + i] = word;
+}
+
+// Pack B (K×N col-major bool) -> Bpacked (Kw×N col-major u32). One thread per (j,w).
+extern "C" __global__ void pack_cols_u32(
+    const bool* __restrict__ B,
+    unsigned int* __restrict__ Bpacked,
+    int N, int K)
+{
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    int Kw = K / 32 + (K % 32 != 0);
+    if (idx >= (long long)N * Kw) return;
+    int j = idx / Kw;
+    int w = idx % Kw;
+    //   // == ceil(K/32) without (K+31) overflow near INT_MAX
+    if (j >= N || w >= Kw) return;
+    unsigned int word = 0u;
+    #pragma unroll
+    for (int b = 0; b < 32; ++b) {
+        int k = 32 * w + b;
+        if (k < K) {
+            word |= static_cast<unsigned int>(B[(size_t)j * K + k]) << b;
+        }
+    }
+    Bpacked[(size_t)j * Kw + w] = word;
+}
+
+// Direct K-packed GEMM: one thread per output cell C[i,j]. No shared memory and no
+// barrier, so the `acc == 0` early-exit is correct here (it is NOT valid in a tiled
+// kernel). Apacked is M×Kw col-major, Bpacked is Kw×N col-major, C is M×N col-major.
+extern "C" __global__ void tropical_andor_kpack_direct_u32(
+    const unsigned int* __restrict__ Apacked,
+    const unsigned int* __restrict__ Bpacked,
+    bool* __restrict__ C,
+    int M, int N, int Kw)
+{
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long long)M * N) return;
+    int i = idx % M;
+    int j = idx / M;
+    if (i >= M || j >= N) return;
+    unsigned int acc = 0u;
+    for (int w = 0; w < Kw && acc == 0u; ++w) {
+        acc |= Apacked[(size_t)w * M + i] & Bpacked[(size_t)j * Kw + w];
+    }
+    C[(size_t)j * M + i] = (acc != 0u);
+}
