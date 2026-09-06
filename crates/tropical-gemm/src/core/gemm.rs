@@ -4,6 +4,9 @@ use super::packing::{pack_a, pack_b, packed_a_size, packed_b_size, Layout, Trans
 use super::tiling::{BlockIterator, TilingParams};
 use crate::types::{TropicalSemiring, TropicalWithArgmax};
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 /// Tropical GEMM: C = A ⊗ B
 ///
 /// Computes C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j])
@@ -50,9 +53,59 @@ pub unsafe fn tropical_gemm_portable<T: TropicalSemiring>(
 
 /// Tropical GEMM with custom kernel and tiling parameters.
 ///
+/// With the `parallel` feature, large outputs are partitioned across Rayon
+/// workers. The shared microkernel must implement `Sync`. Each output cell
+/// retains its complete, serial K reduction.
+///
 /// # Safety
 /// Same requirements as `tropical_gemm_portable`
-pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T>>(
+pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T> + Sync>(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: *const T::Scalar,
+    lda: usize,
+    trans_a: Transpose,
+    b: *const T::Scalar,
+    ldb: usize,
+    trans_b: Transpose,
+    c: *mut T,
+    ldc: usize,
+    params: &TilingParams,
+    kernel: &K,
+) {
+    #[cfg(feature = "parallel")]
+    if let Some(tiles) = split_gemm::<T>(
+        m,
+        n,
+        k,
+        a,
+        lda,
+        trans_a,
+        b,
+        ldb,
+        trans_b,
+        c,
+        std::ptr::null_mut(),
+        ldc,
+        K::MR,
+        K::NR,
+    ) {
+        tiles.into_par_iter().for_each(|tile| unsafe {
+            tropical_gemm_serial::<T, K>(
+                tile.m, tile.n, k, tile.a, lda, trans_a, tile.b, ldb, trans_b, tile.c, ldc, params,
+                kernel,
+            );
+        });
+        return;
+    }
+    tropical_gemm_serial::<T, K>(
+        m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, params, kernel,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn tropical_gemm_serial<T: TropicalSemiring, K: Microkernel<T>>(
     m: usize,
     n: usize,
     k: usize,
@@ -84,8 +137,10 @@ pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T>>(
     // For repeated GEMM calls, consider adding a workspace-based API:
     //   pub struct GemmWorkspace<T> { packed_a: Vec<T>, packed_b: Vec<T> }
     //   pub fn tropical_gemm_with_workspace(..., workspace: &mut GemmWorkspace<T>)
-    let mut packed_a = vec![T::Scalar::scalar_zero(); packed_a_size(params.mc, params.kc, K::MR)];
-    let mut packed_b = vec![T::Scalar::scalar_zero(); packed_b_size(params.kc, params.nc, K::NR)];
+    let mut packed_a =
+        vec![T::Scalar::scalar_zero(); packed_a_size(m.min(params.mc), k.min(params.kc), K::MR)];
+    let mut packed_b =
+        vec![T::Scalar::scalar_zero(); packed_b_size(k.min(params.kc), n.min(params.nc), K::NR)];
 
     // BLIS-style 5-loop blocking
     // Loop 5: blocks of n
@@ -171,11 +226,15 @@ pub unsafe fn tropical_gemm_with_argmax_portable<T: TropicalWithArgmax<Index = u
 
 /// Tropical GEMM with argmax tracking and custom kernel.
 ///
+/// Large outputs use disjoint Rayon tasks when `parallel` is enabled. The
+/// shared microkernel must implement `Sync`; K order and first-winner ties
+/// are unchanged.
+///
 /// # Safety
 /// Same requirements as `tropical_gemm_portable`
 pub unsafe fn tropical_gemm_with_argmax_inner<
     T: TropicalWithArgmax<Index = u32>,
-    K: MicrokernelWithArgmax<T>,
+    K: MicrokernelWithArgmax<T> + Sync,
 >(
     m: usize,
     n: usize,
@@ -190,25 +249,88 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
     params: &TilingParams,
     kernel: &K,
 ) {
+    let ldc = result.ld;
+    let (c, argmax) = result.as_mut_ptrs();
+    #[cfg(feature = "parallel")]
+    if let Some(tiles) = split_gemm::<T>(
+        m,
+        n,
+        k,
+        a,
+        lda,
+        trans_a,
+        b,
+        ldb,
+        trans_b,
+        c,
+        argmax,
+        ldc,
+        K::MR,
+        K::NR,
+    ) {
+        tiles.into_par_iter().for_each(|tile| unsafe {
+            tropical_gemm_with_argmax_serial::<T, K>(
+                tile.m,
+                tile.n,
+                k,
+                tile.a,
+                lda,
+                trans_a,
+                tile.b,
+                ldb,
+                trans_b,
+                tile.c,
+                tile.argmax,
+                ldc,
+                params,
+                kernel,
+            );
+        });
+        return;
+    }
+    tropical_gemm_with_argmax_serial::<T, K>(
+        m, n, k, a, lda, trans_a, b, ldb, trans_b, c, argmax, ldc, params, kernel,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn tropical_gemm_with_argmax_serial<
+    T: TropicalWithArgmax<Index = u32>,
+    K: MicrokernelWithArgmax<T>,
+>(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: *const T::Scalar,
+    lda: usize,
+    trans_a: Transpose,
+    b: *const T::Scalar,
+    ldb: usize,
+    trans_b: Transpose,
+    c: *mut T,
+    argmax: *mut u32,
+    ldc: usize,
+    params: &TilingParams,
+    kernel: &K,
+) {
     if m == 0 || n == 0 {
         return;
     }
     for i in 0..m {
         for j in 0..n {
-            *result.get_mut(i, j) = T::tropical_zero();
-            *result.get_argmax_mut(i, j) = 0;
+            c.add(i * ldc + j).write(T::tropical_zero());
+            argmax.add(i * ldc + j).write(0);
         }
     }
     if k == 0 {
         return;
     }
 
-    let ldc = result.ld;
-    let (c, argmax) = result.as_mut_ptrs();
-
     // TODO(#34): Avoid repeated allocation by accepting caller-provided workspace.
-    let mut packed_a = vec![T::Scalar::scalar_zero(); packed_a_size(params.mc, params.kc, K::MR)];
-    let mut packed_b = vec![T::Scalar::scalar_zero(); packed_b_size(params.kc, params.nc, K::NR)];
+    let mut packed_a =
+        vec![T::Scalar::scalar_zero(); packed_a_size(m.min(params.mc), k.min(params.kc), K::MR)];
+    let mut packed_b =
+        vec![T::Scalar::scalar_zero(); packed_b_size(k.min(params.kc), n.min(params.nc), K::NR)];
 
     // BLIS-style 5-loop blocking
     for (jc, nc) in BlockIterator::new(n, params.nc) {
@@ -269,11 +391,88 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
     // `is_no_contribution` is a const `false`.
     for i in 0..m {
         for j in 0..n {
-            if result.get(i, j).is_no_contribution() {
-                *result.get_argmax_mut(i, j) = 0;
+            if (*c.add(i * ldc + j)).is_no_contribution() {
+                argmax.add(i * ldc + j).write(0);
             }
         }
     }
+}
+
+// Each tile owns the writes to a disjoint rectangle of C (and argmax).
+// Inputs remain shared and immutable until the Rayon join completes. Keeping
+// only raw pointers avoids creating overlapping mutable slices for column splits.
+#[cfg(feature = "parallel")]
+struct GemmTile<T: TropicalSemiring> {
+    m: usize,
+    n: usize,
+    a: *const T::Scalar,
+    b: *const T::Scalar,
+    c: *mut T,
+    argmax: *mut u32,
+}
+
+// SAFETY: split_gemm is the only constructor and partitions the output without
+// overlap. T and T::Scalar are Send + Sync, and the unsafe GEMM caller guarantees
+// valid, non-aliasing input/output storage for the entire synchronous call.
+#[cfg(feature = "parallel")]
+unsafe impl<T: TropicalSemiring> Send for GemmTile<T> {}
+
+#[cfg(feature = "parallel")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn split_gemm<T: TropicalSemiring>(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: *const T::Scalar,
+    lda: usize,
+    trans_a: Transpose,
+    b: *const T::Scalar,
+    ldb: usize,
+    trans_b: Transpose,
+    c: *mut T,
+    argmax: *mut u32,
+    ldc: usize,
+    mr: usize,
+    nr: usize,
+) -> Option<Vec<GemmTile<T>>> {
+    // Avoid starting the Rayon pool for small calls. Limit the number of tasks
+    // as well as total work so machines with many cores do not create tiny GEMMs.
+    const MIN_WORK_PER_TASK: usize = 2 * 1024 * 1024;
+    let work = m.saturating_mul(n).saturating_mul(k);
+    if m == 0 || n == 0 || k == 0 || work / MIN_WORK_PER_TASK < 2 {
+        return None;
+    }
+    let workers = rayon::current_num_threads().min(work / MIN_WORK_PER_TASK);
+    let split_rows = m >= n;
+    let (dim, tile) = if split_rows { (m, mr) } else { (n, nr) };
+    let blocks = dim.div_ceil(tile);
+    let workers = workers.min(blocks);
+    if workers < 2 {
+        return None;
+    }
+    let chunk = blocks.div_ceil(workers) * tile;
+    let mut tiles = Vec::with_capacity(workers);
+    for (start, len) in BlockIterator::new(dim, chunk) {
+        let (row, col, rows, cols) = if split_rows {
+            (start, 0, len, n)
+        } else {
+            (0, start, m, len)
+        };
+        let offset = row * ldc + col;
+        tiles.push(GemmTile {
+            m: rows,
+            n: cols,
+            a: a_panel_ptr(a, row, 0, lda, trans_a),
+            b: b_panel_ptr(b, 0, col, ldb, trans_b),
+            c: c.add(offset),
+            argmax: if argmax.is_null() {
+                argmax
+            } else {
+                argmax.add(offset)
+            },
+        });
+    }
+    Some(tiles)
 }
 
 /// Get pointer to A panel considering transpose.
