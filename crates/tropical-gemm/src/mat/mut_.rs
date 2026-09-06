@@ -18,7 +18,9 @@ impl<'a, S: TropicalSemiring> MatMut<'a, S> {
     pub fn from_slice(data: &'a mut [S], nrows: usize, ncols: usize) -> Self {
         assert_eq!(
             data.len(),
-            nrows * ncols,
+            nrows
+                .checked_mul(ncols)
+                .expect("matrix dimensions overflow"),
             "data length {} != nrows {} * ncols {}",
             data.len(),
             nrows,

@@ -25,6 +25,7 @@ use super::{MatRef, MatWithArgmax};
 #[derive(Debug, Clone)]
 pub struct Mat<S: TropicalSemiring> {
     pub(crate) data: Vec<S>,
+    pub(crate) scalars: std::sync::OnceLock<Vec<S::Scalar>>,
     pub(crate) nrows: usize,
     pub(crate) ncols: usize,
 }
@@ -36,7 +37,13 @@ impl<S: TropicalSemiring> Mat<S> {
     /// For MinPlus, this fills with +∞.
     pub fn zeros(nrows: usize, ncols: usize) -> Self {
         Self {
-            data: vec![S::tropical_zero(); nrows * ncols],
+            scalars: Default::default(),
+            data: vec![
+                S::tropical_zero();
+                nrows
+                    .checked_mul(ncols)
+                    .expect("matrix dimensions overflow")
+            ],
             nrows,
             ncols,
         }
@@ -64,10 +71,17 @@ impl<S: TropicalSemiring> Mat<S> {
         F: FnMut(usize, usize) -> S,
     {
         // Column-major: iterate column by column
-        let data = (0..nrows * ncols)
+        let data = (0..nrows
+            .checked_mul(ncols)
+            .expect("matrix dimensions overflow"))
             .map(|idx| f(idx % nrows, idx / nrows))
             .collect();
-        Self { data, nrows, ncols }
+        Self {
+            data,
+            nrows,
+            ncols,
+            scalars: Default::default(),
+        }
     }
 
     /// Create a matrix from column-major scalar data.
@@ -80,14 +94,21 @@ impl<S: TropicalSemiring> Mat<S> {
     {
         assert_eq!(
             data.len(),
-            nrows * ncols,
+            nrows
+                .checked_mul(ncols)
+                .expect("matrix dimensions overflow"),
             "data length {} != nrows {} * ncols {}",
             data.len(),
             nrows,
             ncols
         );
         let data = data.iter().map(|&s| S::from_scalar(s)).collect();
-        Self { data, nrows, ncols }
+        Self {
+            data,
+            nrows,
+            ncols,
+            scalars: Default::default(),
+        }
     }
 
     /// Create a matrix from row-major scalar data.
@@ -98,41 +119,59 @@ impl<S: TropicalSemiring> Mat<S> {
     ///
     /// This method performs an O(m×n) transpose operation. For performance-critical code,
     /// provide data in column-major order and use [`from_col_major`] instead.
-    #[deprecated(note = "use from_col_major instead for direct column-major input; this method has O(m×n) transpose overhead")]
+    #[deprecated(
+        note = "use from_col_major instead for direct column-major input; this method has O(m×n) transpose overhead"
+    )]
     pub fn from_row_major(data: &[S::Scalar], nrows: usize, ncols: usize) -> Self
     where
         S::Scalar: Copy,
     {
         assert_eq!(
             data.len(),
-            nrows * ncols,
+            nrows
+                .checked_mul(ncols)
+                .expect("matrix dimensions overflow"),
             "data length {} != nrows {} * ncols {}",
             data.len(),
             nrows,
             ncols
         );
         // Convert row-major to column-major
-        let col_major: Vec<S> = (0..nrows * ncols)
+        let col_major: Vec<S> = (0..nrows
+            .checked_mul(ncols)
+            .expect("matrix dimensions overflow"))
             .map(|idx| {
                 let i = idx % nrows;
                 let j = idx / nrows;
                 S::from_scalar(data[i * ncols + j])
             })
             .collect();
-        Self { data: col_major, nrows, ncols }
+        Self {
+            data: col_major,
+            nrows,
+            ncols,
+            scalars: Default::default(),
+        }
     }
 
     /// Create a matrix from a vector of semiring values.
     pub fn from_vec(data: Vec<S>, nrows: usize, ncols: usize) -> Self {
         assert_eq!(
             data.len(),
-            nrows * ncols,
+            nrows
+                .checked_mul(ncols)
+                .expect("matrix dimensions overflow"),
             "data length {} != nrows {} * ncols {}",
             data.len(),
             nrows,
             ncols
         );
-        Self { data, nrows, ncols }
+        Self {
+            data,
+            nrows,
+            ncols,
+            scalars: Default::default(),
+        }
     }
 
     /// Number of rows.
@@ -156,6 +195,7 @@ impl<S: TropicalSemiring> Mat<S> {
     /// Get the underlying data as a mutable slice.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [S] {
+        self.scalars.take();
         &mut self.data
     }
 
@@ -185,16 +225,13 @@ impl<S: TropicalSemiring> Mat<S> {
     where
         S::Scalar: Copy,
     {
-        // Extract scalars from semiring values
-        // This requires that the data is laid out such that we can get scalars
-        // For now, we create a view that extracts values on-the-fly
-        // This is a limitation - ideally we'd have a separate scalar buffer
         MatRef::from_mat(self)
     }
 
     /// Get a mutable pointer to the data.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut S {
+        self.scalars.take();
         self.data.as_mut_ptr()
     }
 }
@@ -237,6 +274,7 @@ impl<S: TropicalSemiring> IndexMut<(usize, usize)> for Mat<S> {
             self.ncols
         );
         // Column-major indexing
+        self.scalars.take();
         &mut self.data[j * self.nrows + i]
     }
 }
@@ -291,17 +329,17 @@ where
         // in the correct column-major layout.
         unsafe {
             tropical_gemm_dispatch::<S>(
-                n,                           // rows of C^T = cols of C
-                m,                           // cols of C^T = rows of C
+                n, // rows of C^T = cols of C
+                m, // cols of C^T = rows of C
                 k,
-                b_ref.as_slice().as_ptr(),   // B becomes first operand (B^T)
-                k,                           // lda = nrows of B in col-major
+                b_ref.as_slice().as_ptr(), // B becomes first operand (B^T)
+                k,                         // lda = nrows of B in col-major
                 Transpose::NoTrans,
-                a_ref.as_slice().as_ptr(),   // A becomes second operand (A^T)
-                m,                           // ldb = nrows of A in col-major
+                a_ref.as_slice().as_ptr(), // A becomes second operand (A^T)
+                m,                         // ldb = nrows of A in col-major
                 Transpose::NoTrans,
                 c.data.as_mut_ptr(),
-                m,                           // ldc = nrows of C in col-major
+                m, // ldc = nrows of C in col-major
             );
         }
 
@@ -413,6 +451,7 @@ where
         // The result is stored as (n×m) row-major = (m×n) column-major
         MatWithArgmax {
             values: Mat {
+                scalars: Default::default(),
                 data: result.values,
                 nrows: m,
                 ncols: n,

@@ -117,8 +117,18 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
     /// assert_eq!(grad_a.nrows(), 2);
     /// assert_eq!(grad_a.ncols(), 3);
     /// ```
+    /// Only MaxPlus/MinPlus support routing without the original inputs.
+    /// MaxMul requires `backward_a_maxmul` instead:
+    ///
+    /// ```compile_fail
+    /// use tropical_gemm::{Mat, MaxMul};
+    /// let a = Mat::<MaxMul<f64>>::from_col_major(&[2.0], 1, 1);
+    /// let result = a.matmul_argmax(&a);
+    /// let _ = result.backward_a(&a, 1);
+    /// ```
     pub fn backward_a<G>(&self, grad_c: &Mat<G>, k: usize) -> Mat<G>
     where
+        S: crate::types::AdditiveTropical,
         G: crate::TropicalSemiring,
         G::Scalar: Copy + Default + std::ops::AddAssign,
     {
@@ -181,6 +191,7 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
     /// ```
     pub fn backward_b<G>(&self, grad_c: &Mat<G>, k: usize) -> Mat<G>
     where
+        S: crate::types::AdditiveTropical,
         G: crate::TropicalSemiring,
         G::Scalar: Copy + Default + std::ops::AddAssign,
     {
@@ -204,6 +215,58 @@ impl<S: crate::TropicalWithArgmax<Index = u32>> MatWithArgmax<S> {
         }
 
         Mat::from_col_major(&grad_b_data, k, n)
+    }
+}
+
+impl<T: crate::types::TropicalScalar> MatWithArgmax<crate::TropicalMaxMul<T>> {
+    /// MaxMul gradient with respect to A, using the winning values from B.
+    pub fn backward_a_maxmul<G>(&self, grad_c: &Mat<G>, b: &Mat<crate::TropicalMaxMul<T>>) -> Mat<G>
+    where
+        G: crate::TropicalSemiring<Scalar = T>,
+        T: Default + std::ops::AddAssign,
+    {
+        let (m, n, k) = (self.nrows(), self.ncols(), b.nrows());
+        assert_eq!(
+            (grad_c.nrows(), grad_c.ncols()),
+            (m, n),
+            "grad_c dimensions mismatch"
+        );
+        assert_eq!(b.ncols(), n, "B columns mismatch");
+        let mut grad = vec![T::default(); m.checked_mul(k).expect("matrix dimensions overflow")];
+        for j in 0..n {
+            for i in 0..m {
+                let p = self.get_argmax(i, j) as usize;
+                if p < k {
+                    grad[p * m + i] += grad_c.get_value(i, j).scalar_mul(b.get_value(p, j));
+                }
+            }
+        }
+        Mat::from_col_major(&grad, m, k)
+    }
+
+    /// MaxMul gradient with respect to B, using the winning values from A.
+    pub fn backward_b_maxmul<G>(&self, grad_c: &Mat<G>, a: &Mat<crate::TropicalMaxMul<T>>) -> Mat<G>
+    where
+        G: crate::TropicalSemiring<Scalar = T>,
+        T: Default + std::ops::AddAssign,
+    {
+        let (m, n, k) = (self.nrows(), self.ncols(), a.ncols());
+        assert_eq!(
+            (grad_c.nrows(), grad_c.ncols()),
+            (m, n),
+            "grad_c dimensions mismatch"
+        );
+        assert_eq!(a.nrows(), m, "A rows mismatch");
+        let mut grad = vec![T::default(); k.checked_mul(n).expect("matrix dimensions overflow")];
+        for j in 0..n {
+            for i in 0..m {
+                let p = self.get_argmax(i, j) as usize;
+                if p < k {
+                    grad[j * k + p] += grad_c.get_value(i, j).scalar_mul(a.get_value(i, p));
+                }
+            }
+        }
+        Mat::from_col_major(&grad, k, n)
     }
 }
 

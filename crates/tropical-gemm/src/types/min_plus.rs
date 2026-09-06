@@ -28,6 +28,11 @@ impl<T: TropicalScalar> TropicalMinPlus<T> {
 impl<T: TropicalScalar> TropicalSemiring for TropicalMinPlus<T> {
     type Scalar = T;
 
+    fn scalar_slice(values: &[Self]) -> Option<&[Self::Scalar]> {
+        // SAFETY: this type is repr(transparent) over its scalar field.
+        Some(unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), values.len()) })
+    }
+
     #[inline(always)]
     fn tropical_zero() -> Self {
         Self(T::pos_infinity())

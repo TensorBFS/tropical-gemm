@@ -468,6 +468,7 @@ where
     /// ```
     pub fn backward_a<G>(&self, ctx: &CudaContext, grad_c: &Mat<G>, k: usize) -> Result<Mat<G>>
     where
+        S: tropical_gemm::types::AdditiveTropical,
         G: TropicalSemiring,
         G::Scalar: Copy + Default + std::ops::AddAssign,
     {
@@ -535,6 +536,7 @@ where
     /// ```
     pub fn backward_b<G>(&self, ctx: &CudaContext, grad_c: &Mat<G>, k: usize) -> Result<Mat<G>>
     where
+        S: tropical_gemm::types::AdditiveTropical,
         G: TropicalSemiring,
         G::Scalar: Copy + Default + std::ops::AddAssign,
     {

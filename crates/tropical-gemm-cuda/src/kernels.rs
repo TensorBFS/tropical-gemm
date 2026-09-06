@@ -90,6 +90,27 @@ where
     ) -> Result<()>;
 }
 
+fn validate_matrix<T: DeviceRepr + Default + Clone + ValidAsZeroBits>(
+    matrix: &GpuMatrix<T>,
+    rows: usize,
+    cols: usize,
+) -> Result<()> {
+    let len = rows
+        .checked_mul(cols)
+        .ok_or_else(|| CudaError::DimensionMismatch("matrix dimensions overflow".into()))?;
+    if rows > i32::MAX as usize
+        || cols > i32::MAX as usize
+        || matrix.rows() != rows
+        || matrix.cols() != cols
+        || matrix.as_slice().len() != len
+    {
+        return Err(CudaError::DimensionMismatch(
+            "incompatible GEMM buffer dimensions or length".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Helper function to launch a CUDA kernel with given grid/block dimensions.
 fn launch_kernel_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>(
     ctx: &CudaContext,
@@ -103,6 +124,12 @@ fn launch_kernel_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>(
     let m = a.rows();
     let k = a.cols();
     let n = b.cols();
+    validate_matrix(a, m, k)?;
+    validate_matrix(b, k, n)?;
+    validate_matrix(c, m, n)?;
+    if m == 0 || n == 0 {
+        return Ok(());
+    }
 
     let kernel = ctx.get_kernel(kernel_name)?;
     let cfg = LaunchConfig {
@@ -164,9 +191,23 @@ fn launch_kernel_batched_impl<T: DeviceRepr + ValidAsZeroBits + Default + Clone>
         }
         Ok(())
     };
-    want(batch * m * k, a.len(), "operand A")?;
-    want(batch * k * n, b.len(), "operand B")?;
-    want(batch * m * n, c.len(), "output C")?;
+    let extent = |r: usize, c: usize| -> Result<usize> {
+        if r > i32::MAX as usize || c > i32::MAX as usize {
+            return Err(CudaError::DimensionMismatch(
+                "dimension exceeds i32::MAX".into(),
+            ));
+        }
+        batch
+            .checked_mul(r)
+            .and_then(|v| v.checked_mul(c))
+            .ok_or_else(|| CudaError::DimensionMismatch("batched dimensions overflow".into()))
+    };
+    want(extent(m, k)?, a.len(), "operand A")?;
+    want(extent(k, n)?, b.len(), "operand B")?;
+    want(extent(m, n)?, c.len(), "output C")?;
+    if batch == 0 || m == 0 || n == 0 {
+        return Ok(());
+    }
 
     let kernel = ctx.get_kernel(kernel_name)?;
 
@@ -580,6 +621,13 @@ fn launch_kernel_with_argmax_impl<T: DeviceRepr + ValidAsZeroBits + Default + Cl
     let m = a.rows();
     let k = a.cols();
     let n = b.cols();
+    validate_matrix(a, m, k)?;
+    validate_matrix(b, k, n)?;
+    validate_matrix(&c.matrix, m, n)?;
+    validate_matrix(&c.argmax, m, n)?;
+    if m == 0 || n == 0 {
+        return Ok(());
+    }
 
     let kernel = ctx.get_kernel(kernel_name)?;
     let cfg = LaunchConfig {

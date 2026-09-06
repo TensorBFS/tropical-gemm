@@ -55,6 +55,11 @@ impl<T: BitwiseScalar> TropicalBitwise<T> {
 impl<T: BitwiseScalar> TropicalSemiring for TropicalBitwise<T> {
     type Scalar = T;
 
+    fn scalar_slice(values: &[Self]) -> Option<&[Self::Scalar]> {
+        // SAFETY: this type is repr(transparent) over its scalar field.
+        Some(unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), values.len()) })
+    }
+
     #[inline(always)]
     fn tropical_zero() -> Self {
         Self(T::ZERO)
@@ -181,8 +186,8 @@ mod tests {
     // API, which requires KernelDispatch (added in this task).
     #[test]
     fn lane0_matches_andor() {
-        use crate::types::TropicalAndOr;
         use crate::tropical_matmul;
+        use crate::types::TropicalAndOr;
 
         // 2x3 * 3x2 column-major boolean problem (same as the GPU AndOr test).
         let a_bool = [true, false, false, false, true, false];
@@ -197,10 +202,17 @@ mod tests {
         // Safety: 2x3 * 3x2, all leading dims match, no aliasing.
         unsafe {
             crate::core::tropical_gemm_portable::<TropicalAndOr>(
-                2, 2, 3,
-                a_bool.as_ptr(), 2, crate::Transpose::NoTrans,
-                b_bool.as_ptr(), 3, crate::Transpose::NoTrans,
-                c_ao.as_mut_ptr(), 2,
+                2,
+                2,
+                3,
+                a_bool.as_ptr(),
+                2,
+                crate::Transpose::NoTrans,
+                b_bool.as_ptr(),
+                3,
+                crate::Transpose::NoTrans,
+                c_ao.as_mut_ptr(),
+                2,
             );
         }
 

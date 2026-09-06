@@ -12,6 +12,12 @@ pub trait TropicalSemiring: Copy + Clone + Send + Sync + Debug + PartialEq + 'st
     /// The underlying scalar type.
     type Scalar: TropicalScalar;
 
+    /// Borrow scalar storage when the representation permits it.
+    /// The default uses a cached value projection in owned matrix views.
+    fn scalar_slice(_values: &[Self]) -> Option<&[Self::Scalar]> {
+        None
+    }
+
     /// Returns the additive identity (zero element for ⊕).
     fn tropical_zero() -> Self;
 
@@ -76,3 +82,9 @@ pub trait SimdTropical: TropicalSemiring {
     /// The SIMD width in elements.
     const SIMD_WIDTH: usize;
 }
+
+/// Semirings whose multiplication is ordinary addition, with unit local derivatives.
+/// Used to restrict gradient routing that does not require the input operands.
+pub trait AdditiveTropical: TropicalWithArgmax<Index = u32> {}
+impl<T: super::TropicalScalar> AdditiveTropical for super::TropicalMaxPlus<T> {}
+impl<T: super::TropicalScalar> AdditiveTropical for super::TropicalMinPlus<T> {}

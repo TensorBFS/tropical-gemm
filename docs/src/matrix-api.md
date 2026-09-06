@@ -105,10 +105,28 @@ let value = result.get_value(0, 0);    // 8.0
 let k_idx = result.get_argmax(0, 0);   // 2
 
 // Compute gradients
-let grad_c = vec![1.0f64; 4];  // upstream gradient (m × n)
-let grad_a = result.backward_a(&grad_c);
-let grad_b = result.backward_b(&grad_c);
+let grad_c = Mat::<MaxPlus<f64>>::from_col_major(&[1.0; 4], 2, 2);
+let grad_a = result.backward_a(&grad_c, 3);
+let grad_b = result.backward_b(&grad_c, 3);
 ```
+
+`backward_a` and `backward_b` apply to MaxPlus and MinPlus. MaxMul needs the
+winning input values as well as the indices:
+
+```rust
+use tropical_gemm::{Mat, MaxMul};
+let a = Mat::<MaxMul<f64>>::from_col_major(&[2.0], 1, 1);
+let b = Mat::<MaxMul<f64>>::from_col_major(&[3.0], 1, 1);
+let grad_c = Mat::<MaxMul<f64>>::from_col_major(&[1.0], 1, 1);
+let result = a.matmul_argmax(&b);
+let grad_a = result.backward_a_maxmul(&grad_c, &b); // 3
+let grad_b = result.backward_b_maxmul(&grad_c, &a); // 2
+```
+
+`Mat::as_ref()` borrows scalar storage for transparent semiring wrappers. For
+multi-field types such as `CountingTropical`, it caches a scalar projection and
+invalidates that cache whenever the matrix is mutably accessed. `MatRef` remains
+copyable; `MatRef::from_slice()` always borrows its input directly.
 
 ## Batched Operations
 

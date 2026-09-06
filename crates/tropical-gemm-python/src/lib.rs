@@ -8,7 +8,10 @@
 //! - `cuda`: Enable GPU acceleration via CUDA
 
 use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods, ToPyArray};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods,
+    ToPyArray,
+};
 use pyo3::prelude::*;
 
 // Use fully qualified path to avoid naming conflict with the pymodule
@@ -1447,207 +1450,128 @@ fn maxmul_matmul_2d_i64<'py>(
 ///     Tuple of (C, argmax) where:
 ///     - C: Result tensor of shape (batch × M × N) as flattened array
 ///     - argmax: Indices of shape (batch × M × N) as flattened array
+fn batched_with_argmax<'py, S>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, S::Scalar>,
+    b: PyReadonlyArray3<'py, S::Scalar>,
+) -> PyResult<(Bound<'py, PyArray1<S::Scalar>>, Bound<'py, PyArray1<i32>>)>
+where
+    S: ::tropical_gemm::TropicalWithArgmax<Index = u32> + ::tropical_gemm::simd::KernelDispatch,
+    S::Scalar: numpy::Element,
+{
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let batch = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    // Release GIL during heavy compute
+    let (c_result, argmax_result) = py.detach(|| {
+        let stride_a = m * k;
+        let stride_b = k * n;
+        let stride_c = m * n;
+
+        let mut c_result = vec![S::tropical_zero().value(); batch * stride_c];
+        let mut argmax_result = vec![0i32; batch * stride_c];
+
+        for i in 0..batch {
+            let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
+            let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
+
+            let result: GemmWithArgmax<S> =
+                tropical_matmul_with_argmax::<S>(a_slice, m, k, b_slice, n);
+
+            for (j, val) in result.values.iter().enumerate() {
+                c_result[i * stride_c + j] = val.value();
+            }
+            for (j, &idx) in result.argmax.iter().enumerate() {
+                argmax_result[i * stride_c + j] = idx as i32;
+            }
+        }
+
+        (c_result, argmax_result)
+    });
+
+    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+}
+
+/// Batched tropical GEMM with first-winner indices, preserving f32 precision.
 #[pyfunction]
 fn maxplus_matmul_batched_with_argmax<'py>(
     py: Python<'py>,
     a: PyReadonlyArray3<'py, f32>,
     b: PyReadonlyArray3<'py, f32>,
 ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
-    let a_shape = a.shape();
-    let b_shape = b.shape();
-    let batch = a_shape[0];
-    let m = a_shape[1];
-    let k = a_shape[2];
-    let n = b_shape[2];
-
-    if batch != b_shape[0] {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Batch size mismatch: A has batch {}, B has batch {}",
-            batch, b_shape[0]
-        )));
-    }
-
-    if k != b_shape[1] {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
-            m, k, b_shape[1], n
-        )));
-    }
-
-    // Clone to owned data before releasing GIL
-    let a_data = a.as_slice()?.to_vec();
-    let b_data = b.as_slice()?.to_vec();
-
-    // Release GIL during heavy compute
-    let (c_result, argmax_result) = py.detach(|| {
-        let stride_a = m * k;
-        let stride_b = k * n;
-        let stride_c = m * n;
-
-        let mut c_result = vec![0.0f32; batch * stride_c];
-        let mut argmax_result = vec![0i32; batch * stride_c];
-
-        for i in 0..batch {
-            let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
-            let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
-
-            let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
-                tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(a_slice, m, k, b_slice, n);
-
-            for (j, val) in result.values.iter().enumerate() {
-                c_result[i * stride_c + j] = val.value();
-            }
-            for (j, &idx) in result.argmax.iter().enumerate() {
-                argmax_result[i * stride_c + j] = idx as i32;
-            }
-        }
-
-        (c_result, argmax_result)
-    });
-
-    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+    batched_with_argmax::<TropicalMaxPlus<f32>>(py, a, b)
 }
 
-/// Batched MinPlus tropical matrix multiplication with argmax tracking.
-///
-/// Args:
-///     a: Input tensor of shape (batch, M, K)
-///     b: Input tensor of shape (batch, K, N)
-///
-/// Returns:
-///     Tuple of (C, argmax) where:
-///     - C: Result tensor of shape (batch × M × N) as flattened array
-///     - argmax: Indices of shape (batch × M × N) as flattened array
+/// Batched tropical GEMM with first-winner indices, preserving f32 precision.
 #[pyfunction]
 fn minplus_matmul_batched_with_argmax<'py>(
     py: Python<'py>,
     a: PyReadonlyArray3<'py, f32>,
     b: PyReadonlyArray3<'py, f32>,
 ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
-    let a_shape = a.shape();
-    let b_shape = b.shape();
-    let batch = a_shape[0];
-    let m = a_shape[1];
-    let k = a_shape[2];
-    let n = b_shape[2];
-
-    if batch != b_shape[0] {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Batch size mismatch: A has batch {}, B has batch {}",
-            batch, b_shape[0]
-        )));
-    }
-
-    if k != b_shape[1] {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
-            m, k, b_shape[1], n
-        )));
-    }
-
-    // Clone to owned data before releasing GIL
-    let a_data = a.as_slice()?.to_vec();
-    let b_data = b.as_slice()?.to_vec();
-
-    // Release GIL during heavy compute
-    let (c_result, argmax_result) = py.detach(|| {
-        let stride_a = m * k;
-        let stride_b = k * n;
-        let stride_c = m * n;
-
-        let mut c_result = vec![0.0f32; batch * stride_c];
-        let mut argmax_result = vec![0i32; batch * stride_c];
-
-        for i in 0..batch {
-            let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
-            let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
-
-            let result: GemmWithArgmax<TropicalMinPlus<f32>> =
-                tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(a_slice, m, k, b_slice, n);
-
-            for (j, val) in result.values.iter().enumerate() {
-                c_result[i * stride_c + j] = val.value();
-            }
-            for (j, &idx) in result.argmax.iter().enumerate() {
-                argmax_result[i * stride_c + j] = idx as i32;
-            }
-        }
-
-        (c_result, argmax_result)
-    });
-
-    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+    batched_with_argmax::<TropicalMinPlus<f32>>(py, a, b)
 }
 
-/// Batched MaxMul tropical matrix multiplication with argmax tracking.
-///
-/// Args:
-///     a: Input tensor of shape (batch, M, K)
-///     b: Input tensor of shape (batch, K, N)
-///
-/// Returns:
-///     Tuple of (C, argmax) where:
-///     - C: Result tensor of shape (batch × M × N) as flattened array
-///     - argmax: Indices of shape (batch × M × N) as flattened array
+/// Batched tropical GEMM with first-winner indices, preserving f32 precision.
 #[pyfunction]
 fn maxmul_matmul_batched_with_argmax<'py>(
     py: Python<'py>,
     a: PyReadonlyArray3<'py, f32>,
     b: PyReadonlyArray3<'py, f32>,
 ) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
-    let a_shape = a.shape();
-    let b_shape = b.shape();
-    let batch = a_shape[0];
-    let m = a_shape[1];
-    let k = a_shape[2];
-    let n = b_shape[2];
+    batched_with_argmax::<TropicalMaxMul<f32>>(py, a, b)
+}
 
-    if batch != b_shape[0] {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Batch size mismatch: A has batch {}, B has batch {}",
-            batch, b_shape[0]
-        )));
-    }
+/// Batched tropical GEMM with first-winner indices, preserving f64 precision.
+#[pyfunction]
+fn maxplus_matmul_batched_with_argmax_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f64>,
+    b: PyReadonlyArray3<'py, f64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i32>>)> {
+    batched_with_argmax::<TropicalMaxPlus<f64>>(py, a, b)
+}
 
-    if k != b_shape[1] {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
-            m, k, b_shape[1], n
-        )));
-    }
+/// Batched tropical GEMM with first-winner indices, preserving f64 precision.
+#[pyfunction]
+fn minplus_matmul_batched_with_argmax_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f64>,
+    b: PyReadonlyArray3<'py, f64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i32>>)> {
+    batched_with_argmax::<TropicalMinPlus<f64>>(py, a, b)
+}
 
-    // Clone to owned data before releasing GIL
-    let a_data = a.as_slice()?.to_vec();
-    let b_data = b.as_slice()?.to_vec();
-
-    // Release GIL during heavy compute
-    let (c_result, argmax_result) = py.detach(|| {
-        let stride_a = m * k;
-        let stride_b = k * n;
-        let stride_c = m * n;
-
-        let mut c_result = vec![0.0f32; batch * stride_c];
-        let mut argmax_result = vec![0i32; batch * stride_c];
-
-        for i in 0..batch {
-            let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
-            let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
-
-            let result: GemmWithArgmax<TropicalMaxMul<f32>> =
-                tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(a_slice, m, k, b_slice, n);
-
-            for (j, val) in result.values.iter().enumerate() {
-                c_result[i * stride_c + j] = val.value();
-            }
-            for (j, &idx) in result.argmax.iter().enumerate() {
-                argmax_result[i * stride_c + j] = idx as i32;
-            }
-        }
-
-        (c_result, argmax_result)
-    });
-
-    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+/// Batched tropical GEMM with first-winner indices, preserving f64 precision.
+#[pyfunction]
+fn maxmul_matmul_batched_with_argmax_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f64>,
+    b: PyReadonlyArray3<'py, f64>,
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i32>>)> {
+    batched_with_argmax::<TropicalMaxMul<f64>>(py, a, b)
 }
 
 // ============================================================================
@@ -1658,14 +1582,13 @@ fn maxmul_matmul_batched_with_argmax<'py>(
 mod gpu {
     use super::*;
     use pyo3_dlpack::{
-        cuda_device, dtype_f32, dtype_u32, DLDeviceType, IntoDLPack, PyTensor, TensorInfo,
+        cuda_device, dtype_f32, dtype_i32, DLDeviceType, IntoDLPack, PyTensor, TensorInfo,
     };
     use std::ffi::c_void;
     use tropical_gemm_cuda::{
         get_context_for_device, launch_gemm_external_batched_with_argmax_f32,
-        launch_gemm_external_with_argmax_f32, tropical_matmul_gpu,
-        tropical_matmul_gpu_with_argmax, ExternalGpuMatrix, ExternalGpuTensor3,
-        GpuMatrix, GpuTensor3,
+        launch_gemm_external_with_argmax_f32, tropical_matmul_gpu, tropical_matmul_gpu_with_argmax,
+        ExternalGpuMatrix, ExternalGpuTensor3, GpuMatrix, GpuTensor3,
     };
 
     // ========================================================================
@@ -1689,7 +1612,11 @@ mod gpu {
                 tensor.rows() as i64,
                 tensor.cols() as i64,
             ];
-            Self { tensor, shape, device_id }
+            Self {
+                tensor,
+                shape,
+                device_id,
+            }
         }
     }
 
@@ -1719,7 +1646,11 @@ mod gpu {
                 tensor.rows() as i64,
                 tensor.cols() as i64,
             ];
-            Self { tensor, shape, device_id }
+            Self {
+                tensor,
+                shape,
+                device_id,
+            }
         }
     }
 
@@ -1728,7 +1659,7 @@ mod gpu {
             TensorInfo::contiguous(
                 self.tensor.device_ptr() as *mut c_void,
                 cuda_device(self.device_id),
-                dtype_u32(),
+                dtype_i32(),
                 self.shape.to_vec(),
             )
         }
@@ -1744,7 +1675,11 @@ mod gpu {
     impl DLPackGpuMatrixF32 {
         fn new(matrix: GpuMatrix<f32>, device_id: i32) -> Self {
             let shape = [matrix.rows() as i64, matrix.cols() as i64];
-            Self { matrix, shape, device_id }
+            Self {
+                matrix,
+                shape,
+                device_id,
+            }
         }
     }
 
@@ -1770,7 +1705,11 @@ mod gpu {
     impl DLPackGpuMatrixU32 {
         fn new(matrix: GpuMatrix<u32>, device_id: i32) -> Self {
             let shape = [matrix.rows() as i64, matrix.cols() as i64];
-            Self { matrix, shape, device_id }
+            Self {
+                matrix,
+                shape,
+                device_id,
+            }
         }
     }
 
@@ -1779,10 +1718,32 @@ mod gpu {
             TensorInfo::contiguous(
                 self.matrix.device_ptr() as *mut c_void,
                 cuda_device(self.device_id),
-                dtype_u32(),
+                dtype_i32(),
                 self.shape.to_vec(),
             )
         }
+    }
+
+    fn contiguous_strides(shape: &[i64], strides: Option<&[i64]>) -> bool {
+        let Some(strides) = strides else {
+            return true;
+        };
+        if strides.len() != shape.len() {
+            return false;
+        }
+        let mut expected = 1i64;
+        for (&size, &stride) in shape.iter().zip(strides).rev() {
+            // Singleton axes never advance the pointer; exporters may normalize
+            // their stride to 1 even when PyTorch reports another contiguous stride.
+            if size != 1 && stride != expected {
+                return false;
+            }
+            let Some(next) = expected.checked_mul(size) else {
+                return false;
+            };
+            expected = next;
+        }
+        true
     }
 
     /// Helper function to extract a PyTensor from a Python object.
@@ -1791,6 +1752,16 @@ mod gpu {
         // Objects implementing the DLPack protocol expose __dlpack__();
         // PyTensor::from_pyany calls it and consumes the returned capsule.
         if obj.hasattr("__dlpack__")? {
+            if obj.hasattr("__dlpack_device__")? {
+                let (device_type, _): (i32, i32) =
+                    obj.call_method0("__dlpack_device__")?.extract()?;
+                if device_type == 2 {
+                    let kwargs = pyo3::types::PyDict::new(py);
+                    kwargs.set_item("stream", 1i32)?;
+                    let capsule = obj.call_method("__dlpack__", (), Some(&kwargs))?;
+                    return PyTensor::from_capsule(capsule.cast::<pyo3::types::PyCapsule>()?);
+                }
+            }
             PyTensor::from_pyany(py, obj)
         } else {
             // Fallback: the object is already a DLPack capsule.
@@ -2040,7 +2011,13 @@ mod gpu {
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
     ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        dlpack_2d_impl(py, a, b, "tropical_maxplus_f32_nn_with_argmax", Algebra::MaxPlus)
+        dlpack_2d_impl(
+            py,
+            a,
+            b,
+            "tropical_maxplus_f32_nn_with_argmax",
+            Algebra::MaxPlus,
+        )
     }
 
     /// MinPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
@@ -2052,7 +2029,13 @@ mod gpu {
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
     ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        dlpack_2d_impl(py, a, b, "tropical_minplus_f32_nn_with_argmax", Algebra::MinPlus)
+        dlpack_2d_impl(
+            py,
+            a,
+            b,
+            "tropical_minplus_f32_nn_with_argmax",
+            Algebra::MinPlus,
+        )
     }
 
     /// MaxMul matrix multiplication using DLPack for zero-copy GPU tensor exchange.
@@ -2064,7 +2047,13 @@ mod gpu {
         a: Bound<'_, pyo3::PyAny>,
         b: Bound<'_, pyo3::PyAny>,
     ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        dlpack_2d_impl(py, a, b, "tropical_maxmul_f32_nn_with_argmax", Algebra::MaxMul)
+        dlpack_2d_impl(
+            py,
+            a,
+            b,
+            "tropical_maxmul_f32_nn_with_argmax",
+            Algebra::MaxMul,
+        )
     }
 
     /// Algebra type for CPU dispatch in 2D DLPack functions.
@@ -2145,6 +2134,13 @@ mod gpu {
         let k = a_shape[1] as usize;
         let k2 = b_shape[0] as usize;
         let n = b_shape[1] as usize;
+        // CUDA kernels take signed 32-bit extents; this also makes the signed
+        // DLPack argmax representation lossless (including on PyTorch 2.0–2.2).
+        if [m, k, k2, n].iter().any(|&d| d > i32::MAX as usize) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "dimension exceeds i32::MAX",
+            ));
+        }
 
         if k != k2 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -2166,10 +2162,8 @@ mod gpu {
         let b_strides = b_tensor.strides();
 
         // For row-major (C-contiguous): strides should be [cols, 1]
-        let a_contiguous = a_strides.is_none()
-            || a_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == k as i64);
-        let b_contiguous = b_strides.is_none()
-            || b_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == n as i64);
+        let a_contiguous = contiguous_strides(a_shape, a_strides);
+        let b_contiguous = contiguous_strides(b_shape, b_strides);
 
         if !a_contiguous || !b_contiguous {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -2199,6 +2193,12 @@ mod gpu {
                 .map_err(|e| {
                     pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
                 })?;
+
+                // A raw capsule cannot establish a dependency on the consumer's stream.
+                // Complete the launch while the producer tensors are still alive.
+                ctx.stream()
+                    .synchronize()
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
                 // Split result into matrix and argmax, then wrap for DLPack export
                 let (c_matrix, argmax_matrix) = result.into_parts();
@@ -2417,6 +2417,13 @@ mod gpu {
         let batch_b = b_shape[0] as usize;
         let k2 = b_shape[1] as usize;
         let n = b_shape[2] as usize;
+        // CUDA kernels take signed 32-bit extents; this also makes the signed
+        // DLPack argmax representation lossless (including on PyTorch 2.0–2.2).
+        if [m, k, k2, n].iter().any(|&d| d > i32::MAX as usize) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "dimension exceeds i32::MAX",
+            ));
+        }
 
         if batch != batch_b {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -2445,14 +2452,8 @@ mod gpu {
         let b_strides = b_tensor.strides();
 
         // For 3D row-major (C-contiguous): strides should be [m*k, k, 1]
-        let a_contiguous = a_strides.is_none()
-            || a_strides.map_or(false, |s| {
-                s.len() == 3 && s[2] == 1 && s[1] == k as i64 && s[0] == (m * k) as i64
-            });
-        let b_contiguous = b_strides.is_none()
-            || b_strides.map_or(false, |s| {
-                s.len() == 3 && s[2] == 1 && s[1] == n as i64 && s[0] == (k * n) as i64
-            });
+        let a_contiguous = contiguous_strides(a_shape, a_strides);
+        let b_contiguous = contiguous_strides(b_shape, b_strides);
 
         if !a_contiguous || !b_contiguous {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -2469,17 +2470,30 @@ mod gpu {
         let b_ext = unsafe { ExternalGpuTensor3::from_raw_contiguous(b_ptr, batch, k, n) };
 
         // Get CUDA context for the input device
-        let ctx = get_context_for_device(device_id as usize).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
-        })?;
+        let ctx = get_context_for_device(device_id as usize)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e)))?;
 
         // Launch batched kernel
         let result = unsafe {
-            launch_gemm_external_batched_with_argmax_f32(ctx, kernel_name, &a_ext, &b_ext, batch, m, k, n)
+            launch_gemm_external_batched_with_argmax_f32(
+                ctx,
+                kernel_name,
+                &a_ext,
+                &b_ext,
+                batch,
+                m,
+                k,
+                n,
+            )
         }
         .map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
         })?;
+
+        // Raw capsules have no consumer-stream handshake; complete before ownership transfer.
+        ctx.stream()
+            .synchronize()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         // Split result into tensor and argmax, then wrap for DLPack export
         let (c_tensor, argmax_tensor) = result.into_parts();
@@ -2537,6 +2551,7 @@ mod gpu {
 /// Tropical GEMM Python module (native Rust extension).
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // f32 operations
     m.add_function(wrap_pyfunction!(maxplus_matmul, m)?)?;
     m.add_function(wrap_pyfunction!(minplus_matmul, m)?)?;
@@ -2563,8 +2578,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Batched operations (3D arrays)
     m.add_function(wrap_pyfunction!(maxplus_matmul_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(maxplus_matmul_batched_with_argmax_f64, m)?)?;
     m.add_function(wrap_pyfunction!(minplus_matmul_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_batched_with_argmax_f64, m)?)?;
     m.add_function(wrap_pyfunction!(maxmul_matmul_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_batched_with_argmax_f64, m)?)?;
 
     // i32 operations
     m.add_function(wrap_pyfunction!(maxplus_matmul_i32, m)?)?;

@@ -22,7 +22,7 @@ pub struct GemmWithArgmax<T: TropicalWithArgmax<Index = u32>> {
 impl<T: TropicalWithArgmax<Index = u32>> GemmWithArgmax<T> {
     /// Create a new result container with tropical zeros.
     pub fn new(m: usize, n: usize) -> Self {
-        let size = m * n;
+        let size = m.checked_mul(n).expect("matrix dimensions overflow");
         Self {
             values: vec![T::tropical_zero(); size],
             argmax: vec![0u32; size],
@@ -35,7 +35,7 @@ impl<T: TropicalWithArgmax<Index = u32>> GemmWithArgmax<T> {
     /// Create a new result container with specified leading dimension.
     pub fn with_ld(m: usize, n: usize, ld: usize) -> Self {
         assert!(ld >= n, "Leading dimension must be >= n");
-        let size = m * ld;
+        let size = m.checked_mul(ld).expect("matrix dimensions overflow");
         Self {
             values: vec![T::tropical_zero(); size],
             argmax: vec![0u32; size],
