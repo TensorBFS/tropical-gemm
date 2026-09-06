@@ -14,12 +14,19 @@ use crate::error::{CudaError, Result};
 use crate::memory::GpuMatrix;
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
-/// Square thread-block edge for the pack and direct kernels (256 threads/block).
-const TILE: usize = 16;
-
-#[inline]
-fn ceil_div(a: usize, b: usize) -> u32 {
-    a.div_ceil(b) as u32
+/// Use grid.x alone: CUDA grid.y is limited to 65,535 blocks.
+fn launch_config(elements: usize) -> Result<LaunchConfig> {
+    let blocks = elements.div_ceil(256);
+    if blocks > i32::MAX as usize {
+        return Err(CudaError::DimensionMismatch(
+            "K-packed launch exceeds grid.x limit".into(),
+        ));
+    }
+    Ok(LaunchConfig {
+        grid_dim: (blocks as u32, 1, 1),
+        block_dim: (256, 1, 1),
+        shared_mem_bytes: 0,
+    })
 }
 
 /// Convert a dimension to the `int` extent the CUDA kernels take, rejecting values
@@ -82,11 +89,7 @@ fn launch_pack_rows(
 ) -> Result<()> {
     let kw = k.div_ceil(32);
     let kernel = ctx.get_kernel("pack_rows_u32")?;
-    let cfg = LaunchConfig {
-        grid_dim: (ceil_div(m, TILE), ceil_div(kw, TILE), 1),
-        block_dim: (TILE as u32, TILE as u32, 1),
-        shared_mem_bytes: 0,
-    };
+    let cfg = launch_config(m * kw)?;
     let m_i32 = dim_i32("M", m)?;
     let k_i32 = dim_i32("K", k)?;
     let stream = ctx.stream();
@@ -99,7 +102,6 @@ fn launch_pack_rows(
     unsafe {
         builder.launch(cfg)?;
     }
-    stream.synchronize()?;
     Ok(())
 }
 
@@ -113,11 +115,7 @@ fn launch_pack_cols(
 ) -> Result<()> {
     let kw = k.div_ceil(32);
     let kernel = ctx.get_kernel("pack_cols_u32")?;
-    let cfg = LaunchConfig {
-        grid_dim: (ceil_div(n, TILE), ceil_div(kw, TILE), 1),
-        block_dim: (TILE as u32, TILE as u32, 1),
-        shared_mem_bytes: 0,
-    };
+    let cfg = launch_config(n * kw)?;
     let n_i32 = dim_i32("N", n)?;
     let k_i32 = dim_i32("K", k)?;
     let stream = ctx.stream();
@@ -130,7 +128,6 @@ fn launch_pack_cols(
     unsafe {
         builder.launch(cfg)?;
     }
-    stream.synchronize()?;
     Ok(())
 }
 
@@ -192,11 +189,7 @@ pub fn tropical_gemm_gpu_andor_packed(
     let kw = a.k.div_ceil(32);
 
     let kernel = ctx.get_kernel("tropical_andor_kpack_direct_u32")?;
-    let cfg = LaunchConfig {
-        grid_dim: (ceil_div(m, TILE), ceil_div(n, TILE), 1),
-        block_dim: (TILE as u32, TILE as u32, 1),
-        shared_mem_bytes: 0,
-    };
+    let cfg = launch_config(m * n)?;
     let m_i32 = dim_i32("M", m)?;
     let n_i32 = dim_i32("N", n)?;
     let kw_i32 = dim_i32("Kw", kw)?;
@@ -212,7 +205,6 @@ pub fn tropical_gemm_gpu_andor_packed(
     unsafe {
         builder.launch(cfg)?;
     }
-    stream.synchronize()?;
     Ok(())
 }
 
@@ -318,7 +310,11 @@ mod tests {
         a[32] = true;
         let packed = reference_pack_rows(&a, 1, 33);
         assert_eq!(packed.len(), 2, "Kw=ceil(33/32)=2 words for M=1");
-        assert_eq!(packed[0], (1u32 << 0) | (1u32 << 31), "word 0: bits 0 and 31");
+        assert_eq!(
+            packed[0],
+            (1u32 << 0) | (1u32 << 31),
+            "word 0: bits 0 and 31"
+        );
         // Word 1 holds only k=32 in bit 0; bits 1..32 are tail (k>=33) and must be 0.
         assert_eq!(packed[1], 1u32 << 0, "word 1: bit 0 set, tail bits zero");
     }
@@ -399,5 +395,17 @@ mod tests {
         let got = words.to_host(ctx).unwrap();
         let expected = reference_pack_cols(&b, n, k);
         assert_eq!(got, expected, "col pack: tail not cleared in dirty buffer");
+    }
+    #[test]
+    fn gpu_packed_large_column_extent() {
+        let Some(ctx) = ctx_or_skip() else { return };
+        let n = 16 * 65535 + 1;
+        let a = GpuMatrix::from_host(ctx, &[true], 1, 1).unwrap();
+        let b = GpuMatrix::from_host(ctx, &vec![true; n], 1, n).unwrap();
+        let pa = pack_andor_rows_gpu(ctx, &a).unwrap();
+        let pb = pack_andor_cols_gpu(ctx, &b).unwrap();
+        let mut c = GpuMatrix::alloc(ctx, 1, n).unwrap();
+        tropical_gemm_gpu_andor_packed(ctx, &pa, &pb, &mut c).unwrap();
+        assert!(c.to_host(ctx).unwrap().into_iter().all(|v| v));
     }
 }

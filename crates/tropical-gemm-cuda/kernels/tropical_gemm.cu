@@ -40,8 +40,16 @@
 #define INF_I64 (1LL << 60)
 #define NEG_INF_I64 (-(1LL << 60))
 
-// Memory layout helpers
+// Memory layout helpers.
+// OFFSET_COL is `int` arithmetic: use it ONLY for shared-memory tiles (As/Bs)
+// and per-thread accumulator indices, whose leading dimension is a tile size, so
+// the product can never reach 2^31. OFFSET_COL64 forces the multiply into 64-bit
+// (32x32->64, a single IMAD.WIDE on the device) for GLOBAL-memory accesses, where
+// a single matrix with >= 2^31 elements (col*ld) would otherwise overflow `int`
+// and corrupt addressing (issue #63). The cast wraps the multiply itself, not the
+// finished sum -- `(long long)(col*ld+row)` would already have overflowed.
 #define OFFSET_COL(row, col, ld) ((col) * (ld) + (row))
+#define OFFSET_COL64(row, col, ld) ((long long)(col) * (ld) + (row))
 
 // Integer max/min functions
 __device__ __forceinline__ int max_i32(int a, int b) { return a > b ? a : b; }
@@ -66,6 +74,15 @@ __device__ __forceinline__ int mul_i32(int a, int b) {
 __device__ __forceinline__ long long mul_i64(long long a, long long b) {
     return a * b;
 }
+
+// Float/double tropical multiply in function form, so the shared kernel body
+// (TROPICAL_GEMM_BODY) can take MUL_FN as a call for every scalar type instead
+// of special-casing the `+`/`*` operator for floats. These inline to a bare
+// add/mul -- identical codegen to the operator form.
+__device__ __forceinline__ float  add_f32(float a, float b)   { return a + b; }
+__device__ __forceinline__ float  mul_f32(float a, float b)   { return a * b; }
+__device__ __forceinline__ double add_f64(double a, double b) { return a + b; }
+__device__ __forceinline__ double mul_f64(double a, double b) { return a * b; }
 
 // Boolean (AndOr) semiring: add = OR, mul = AND, zero = false, one = true.
 // false is a true absorbing zero (false AND x = false), so no sentinel/drift like
@@ -141,9 +158,9 @@ __device__ double atomicAddDouble(double* address, double val) {
         int col = A_TILE_COL + i + tile_idx;                                   \
         int dst = OFFSET_COL(A_TILE_ROW, i + A_TILE_COL, BLOCK_SIZE_M);        \
         if (BLOCK_IDX == DIM_GRID_X - 1 || tile_idx >= K - BLOCK_SIZE_K)       \
-            As[dst] = (row < M && col < K) ? SRC[OFFSET_COL(row, col, M)] : (PAD); \
+            As[dst] = (row < M && col < K) ? SRC[OFFSET_COL64(row, col, M)] : (PAD); \
         else                                                                  \
-            As[dst] = SRC[OFFSET_COL(row, col, M)];                           \
+            As[dst] = SRC[OFFSET_COL64(row, col, M)];                         \
     }
 
 // B tile -> Bs. B is column-major with leading dimension K.
@@ -154,9 +171,9 @@ __device__ double atomicAddDouble(double* address, double val) {
         int col = BLOCK_SIZE_N * BLOCK_IDY + i + B_TILE_COL;                   \
         int dst = OFFSET_COL(B_TILE_ROW, i + B_TILE_COL, BLOCK_SIZE_K);        \
         if (tile_idx >= K - BLOCK_SIZE_K || BLOCK_IDY == DIM_GRID_Y - 1)       \
-            Bs[dst] = (row < K && col < N) ? SRC[OFFSET_COL(row, col, K)] : (PAD); \
+            Bs[dst] = (row < K && col < N) ? SRC[OFFSET_COL64(row, col, K)] : (PAD); \
         else                                                                  \
-            Bs[dst] = SRC[OFFSET_COL(row, col, K)];                           \
+            Bs[dst] = SRC[OFFSET_COL64(row, col, K)];                         \
     }
 
 // Edge block iff last block-row or last block-col; interior blocks are fully in
@@ -172,7 +189,7 @@ __device__ double atomicAddDouble(double* address, double val) {
             int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
             int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
             if (!TILE_IS_EDGE || (row < M && col < N))                         \
-                DST[OFFSET_COL(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
+                DST[OFFSET_COL64(row, col, M)] = accum[OFFSET_COL(tm, tn, THREAD_SIZE_M)]; \
         }                                                                      \
     }
 
@@ -185,7 +202,7 @@ __device__ double atomicAddDouble(double* address, double val) {
             int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
             int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
             if (!TILE_IS_EDGE || (row < M && col < N)) {                       \
-                int out_idx = OFFSET_COL(row, col, M);                         \
+                long long out_idx = OFFSET_COL64(row, col, M);                 \
                 int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
                 DST[out_idx] = accum[local_idx];                               \
                 ARGMAX_DST[out_idx] = accum_idx[local_idx];                    \
@@ -203,7 +220,7 @@ __device__ double atomicAddDouble(double* address, double val) {
             int row = BLOCK_SIZE_M * BLOCK_IDX + THREAD_SIZE_M * threadIdx.x + tm; \
             int col = BLOCK_SIZE_N * BLOCK_IDY + THREAD_SIZE_N * threadIdx.y + tn; \
             if (!TILE_IS_EDGE || (row < M && col < N)) {                       \
-                int out_idx = OFFSET_COL(row, col, M);                         \
+                long long out_idx = OFFSET_COL64(row, col, M);                 \
                 int local_idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);             \
                 DST[out_idx] = accum[local_idx];                               \
                 ARGMAX_DST[out_idx] = (ZERO_FN)(accum[local_idx]) ? 0 : accum_idx[local_idx]; \
@@ -212,593 +229,113 @@ __device__ double atomicAddDouble(double* address, double val) {
     }
 
 // ============================================================================
-// F32 GEMM KERNEL MACRO
+// SHARED FORWARD GEMM KERNEL BODY
 // ============================================================================
-// Block sizes for f32: 64x32x64, Thread sizes: 4x4
-// Generates: tropical_{semiring}_f32_nn
+// The tiled max-/min-plus / max-mul inner kernel is identical across every
+// scalar type AND across the single-matrix and strided-batched entry points;
+// it differs only in (1) the scalar TYPE, (2) the block tiling sizes, and
+// (3) which operand base pointer each tile load/store reads. It lives here once
+// so the algorithm has a single source of truth. The thin wrappers below supply
+// the kernel signature and the operand base expressions: plain `A/B/C` for the
+// single-matrix kernels, `A + blockIdx.z*strideA` etc. for the batched ones.
+//
+// COMPARE_FN and MUL_FN are both function-style (e.g. fmaxf / add_f32) so the
+// body is type-agnostic; see the add_*/mul_* and max_*/min_* helpers above.
+// A_SRC/B_SRC/C_DST are spliced into `SRC[...]` / `DST[...]`, so a batched base
+// expression must be parenthesised by the caller.
 
-#define TROPICAL_GEMM_F32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_OP)           \
-extern "C" __global__ void KERNEL_NAME(                                        \
-    const float* __restrict__ A,                                               \
-    const float* __restrict__ B,                                               \
-    float* __restrict__ C,                                                     \
-    int M, int N, int K                                                        \
-) {                                                                            \
-    const int BLOCK_SIZE_M = 64;                                               \
-    const int BLOCK_SIZE_K = 32;                                               \
-    const int BLOCK_SIZE_N = 64;                                               \
-    const int THREAD_SIZE_M = 4;                                               \
-    const int THREAD_SIZE_N = 4;                                               \
-                                                                               \
-    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
-    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
-    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
-                                                                               \
-    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
-    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
-    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
-    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
-                                                                               \
-    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
-                                                                               \
-    __shared__ float As[BLOCK_SIZE_M * BLOCK_SIZE_K];                          \
-    __shared__ float Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];                          \
-                                                                               \
-    float accum[THREAD_SIZE_M * THREAD_SIZE_N];                                \
-    float regs_a[THREAD_SIZE_M];                                               \
-    float regs_b[THREAD_SIZE_N];                                               \
-                                                                               \
-    _Pragma("unroll")                                                          \
-    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
-        accum[i] = INIT_VAL;                                                   \
-    }                                                                          \
-                                                                               \
-    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
-    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
-    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
-    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
-    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
-    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
-                                                                               \
-    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        LOAD_A_TILE(A, INIT_VAL)                                          \
-                                                                               \
-        LOAD_B_TILE(B, INIT_VAL)                                          \
-                                                                               \
-        __syncthreads();                                                       \
-                                                                               \
-        _Pragma("unroll")                                                      \
-        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
-                                           k, BLOCK_SIZE_M)];                  \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
-                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
-                                           BLOCK_SIZE_K)];                     \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                _Pragma("unroll")                                              \
-                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
-                    float prod = regs_a[tm] MUL_OP regs_b[tn];                 \
-                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
-                    accum[idx] = COMPARE_FN(accum[idx], prod);                 \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-                                                                               \
-        STORE_C_TILE(C)                                                   \
+#define TROPICAL_GEMM_BODY(TYPE, BSM, BSK, BSN, INIT_VAL, COMPARE_FN, MUL_FN, A_SRC, B_SRC, C_DST) \
+    const int BLOCK_SIZE_M = BSM; \
+    const int BLOCK_SIZE_K = BSK; \
+    const int BLOCK_SIZE_N = BSN; \
+    const int THREAD_SIZE_M = 4; \
+    const int THREAD_SIZE_N = 4; \
+    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M; \
+    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N; \
+    const int THREAD_NUM_PER_BLOCK = bszm * bszn; \
+    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M; \
+    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N; \
+    int BLOCK_IDX = blockIdx.x % DIM_GRID_X; \
+    int BLOCK_IDY = blockIdx.x / DIM_GRID_X; \
+    const int tid = threadIdx.y * bszm + threadIdx.x; \
+    __shared__ TYPE As[BLOCK_SIZE_M * BLOCK_SIZE_K]; \
+    __shared__ TYPE Bs[BLOCK_SIZE_K * BLOCK_SIZE_N]; \
+    TYPE accum[THREAD_SIZE_M * THREAD_SIZE_N]; \
+    TYPE regs_a[THREAD_SIZE_M]; \
+    TYPE regs_b[THREAD_SIZE_N]; \
+    _Pragma("unroll") \
+    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) { \
+        accum[i] = INIT_VAL; \
+    } \
+    const int A_TILE_COL = tid / BLOCK_SIZE_M; \
+    const int A_TILE_ROW = tid % BLOCK_SIZE_M; \
+    const int B_TILE_COL = tid / BLOCK_SIZE_K; \
+    const int B_TILE_ROW = tid % BLOCK_SIZE_K; \
+    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M; \
+    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K; \
+    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) { \
+        LOAD_A_TILE(A_SRC, INIT_VAL) \
+        LOAD_B_TILE(B_SRC, INIT_VAL) \
+        __syncthreads(); \
+        _Pragma("unroll") \
+        for (int k = 0; k < BLOCK_SIZE_K; ++k) { \
+            _Pragma("unroll") \
+            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) { \
+                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm, k, BLOCK_SIZE_M)]; \
+            } \
+            _Pragma("unroll") \
+            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) { \
+                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn, BLOCK_SIZE_K)]; \
+            } \
+            _Pragma("unroll") \
+            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) { \
+                _Pragma("unroll") \
+                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) { \
+                    TYPE prod = MUL_FN(regs_a[tm], regs_b[tn]); \
+                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M); \
+                    accum[idx] = COMPARE_FN(accum[idx], prod); \
+                } \
+            } \
+        } \
+        __syncthreads(); \
+    } \
+    STORE_C_TILE(C_DST)
+
+// ============================================================================
+// SINGLE-MATRIX FORWARD GEMM KERNELS (blockIdx.x carries the M/N tiling)
+// ============================================================================
+// Block sizes: f32/i32 = 64x32x64, f64/i64 = 32x16x32 (8-byte types halve the tile).
+
+#define TROPICAL_GEMM_F32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const float* __restrict__ A, const float* __restrict__ B, \
+    float* __restrict__ C, int M, int N, int K \
+) { \
+    TROPICAL_GEMM_BODY(float, 64, 32, 64, INIT_VAL, COMPARE_FN, MUL_FN, A, B, C) \
 }
 
-// ============================================================================
-// F64 GEMM KERNEL MACRO
-// ============================================================================
-// Block sizes for f64: 32x16x32, Thread sizes: 4x4
-
-#define TROPICAL_GEMM_F64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_OP)           \
-extern "C" __global__ void KERNEL_NAME(                                        \
-    const double* __restrict__ A,                                              \
-    const double* __restrict__ B,                                              \
-    double* __restrict__ C,                                                    \
-    int M, int N, int K                                                        \
-) {                                                                            \
-    const int BLOCK_SIZE_M = 32;                                               \
-    const int BLOCK_SIZE_K = 16;                                               \
-    const int BLOCK_SIZE_N = 32;                                               \
-    const int THREAD_SIZE_M = 4;                                               \
-    const int THREAD_SIZE_N = 4;                                               \
-                                                                               \
-    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
-    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
-    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
-                                                                               \
-    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
-    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
-    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
-    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
-                                                                               \
-    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
-                                                                               \
-    __shared__ double As[BLOCK_SIZE_M * BLOCK_SIZE_K];                         \
-    __shared__ double Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];                         \
-                                                                               \
-    double accum[THREAD_SIZE_M * THREAD_SIZE_N];                               \
-    double regs_a[THREAD_SIZE_M];                                              \
-    double regs_b[THREAD_SIZE_N];                                              \
-                                                                               \
-    _Pragma("unroll")                                                          \
-    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
-        accum[i] = INIT_VAL;                                                   \
-    }                                                                          \
-                                                                               \
-    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
-    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
-    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
-    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
-    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
-    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
-                                                                               \
-    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        LOAD_A_TILE(A, INIT_VAL)                                          \
-                                                                               \
-        LOAD_B_TILE(B, INIT_VAL)                                          \
-                                                                               \
-        __syncthreads();                                                       \
-                                                                               \
-        _Pragma("unroll")                                                      \
-        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
-                                           k, BLOCK_SIZE_M)];                  \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
-                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
-                                           BLOCK_SIZE_K)];                     \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                _Pragma("unroll")                                              \
-                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
-                    double prod = regs_a[tm] MUL_OP regs_b[tn];                \
-                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
-                    accum[idx] = COMPARE_FN(accum[idx], prod);                 \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-                                                                               \
-        STORE_C_TILE(C)                                                   \
+#define TROPICAL_GEMM_F64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const double* __restrict__ A, const double* __restrict__ B, \
+    double* __restrict__ C, int M, int N, int K \
+) { \
+    TROPICAL_GEMM_BODY(double, 32, 16, 32, INIT_VAL, COMPARE_FN, MUL_FN, A, B, C) \
 }
 
-// ============================================================================
-// I32 GEMM KERNEL MACRO
-// ============================================================================
-// Block sizes for i32: 64x32x64, Thread sizes: 4x4 (same as f32)
-// Multiply is a bare add (MUL_FN); the tropical zero is a large sentinel.
-
-#define TROPICAL_GEMM_I32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN)           \
-extern "C" __global__ void KERNEL_NAME(                                        \
-    const int* __restrict__ A,                                                 \
-    const int* __restrict__ B,                                                 \
-    int* __restrict__ C,                                                       \
-    int M, int N, int K                                                        \
-) {                                                                            \
-    const int BLOCK_SIZE_M = 64;                                               \
-    const int BLOCK_SIZE_K = 32;                                               \
-    const int BLOCK_SIZE_N = 64;                                               \
-    const int THREAD_SIZE_M = 4;                                               \
-    const int THREAD_SIZE_N = 4;                                               \
-                                                                               \
-    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
-    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
-    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
-                                                                               \
-    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
-    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
-    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
-    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
-                                                                               \
-    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
-                                                                               \
-    __shared__ int As[BLOCK_SIZE_M * BLOCK_SIZE_K];                            \
-    __shared__ int Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];                            \
-                                                                               \
-    int accum[THREAD_SIZE_M * THREAD_SIZE_N];                                  \
-    int regs_a[THREAD_SIZE_M];                                                 \
-    int regs_b[THREAD_SIZE_N];                                                 \
-                                                                               \
-    _Pragma("unroll")                                                          \
-    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
-        accum[i] = INIT_VAL;                                                   \
-    }                                                                          \
-                                                                               \
-    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
-    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
-    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
-    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
-    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
-    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
-                                                                               \
-    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        LOAD_A_TILE(A, INIT_VAL)                                          \
-                                                                               \
-        LOAD_B_TILE(B, INIT_VAL)                                          \
-                                                                               \
-        __syncthreads();                                                       \
-                                                                               \
-        _Pragma("unroll")                                                      \
-        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
-                                           k, BLOCK_SIZE_M)];                  \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
-                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
-                                           BLOCK_SIZE_K)];                     \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                _Pragma("unroll")                                              \
-                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
-                    int prod = MUL_FN(regs_a[tm], regs_b[tn]);                  \
-                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
-                    accum[idx] = COMPARE_FN(accum[idx], prod);                 \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-                                                                               \
-        STORE_C_TILE(C)                                                   \
+#define TROPICAL_GEMM_I32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const int* __restrict__ A, const int* __restrict__ B, \
+    int* __restrict__ C, int M, int N, int K \
+) { \
+    TROPICAL_GEMM_BODY(int, 64, 32, 64, INIT_VAL, COMPARE_FN, MUL_FN, A, B, C) \
 }
 
-// ============================================================================
-// BOOL GEMM KERNEL MACRO (AndOr semiring)
-// ============================================================================
-// Identical tiling to I32 (64x32x64, 4x4 threads) but on a 1-byte `bool`
-// element. add = OR (COMPARE_FN), mul = AND (MUL_FN), tropical zero = false.
-// A 1-byte element uses *less* shared memory than i32, so the block config is
-// safe. false absorbs in AND/OR, so the out-of-range PAD is just INIT_VAL.
-
-#define TROPICAL_GEMM_BOOL(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN)           \
-extern "C" __global__ void KERNEL_NAME(                                        \
-    const bool* __restrict__ A,                                                \
-    const bool* __restrict__ B,                                                \
-    bool* __restrict__ C,                                                      \
-    int M, int N, int K                                                        \
-) {                                                                            \
-    const int BLOCK_SIZE_M = 64;                                               \
-    const int BLOCK_SIZE_K = 32;                                               \
-    const int BLOCK_SIZE_N = 64;                                               \
-    const int THREAD_SIZE_M = 4;                                               \
-    const int THREAD_SIZE_N = 4;                                               \
-                                                                               \
-    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
-    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
-    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
-                                                                               \
-    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
-    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
-    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
-    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
-                                                                               \
-    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
-                                                                               \
-    __shared__ bool As[BLOCK_SIZE_M * BLOCK_SIZE_K];                           \
-    __shared__ bool Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];                           \
-                                                                               \
-    bool accum[THREAD_SIZE_M * THREAD_SIZE_N];                                 \
-    bool regs_a[THREAD_SIZE_M];                                                \
-    bool regs_b[THREAD_SIZE_N];                                                \
-                                                                               \
-    _Pragma("unroll")                                                          \
-    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
-        accum[i] = INIT_VAL;                                                   \
-    }                                                                          \
-                                                                               \
-    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
-    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
-    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
-    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
-    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
-    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
-                                                                               \
-    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        LOAD_A_TILE(A, INIT_VAL)                                          \
-                                                                               \
-        LOAD_B_TILE(B, INIT_VAL)                                          \
-                                                                               \
-        __syncthreads();                                                       \
-                                                                               \
-        _Pragma("unroll")                                                      \
-        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
-                                           k, BLOCK_SIZE_M)];                  \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
-                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
-                                           BLOCK_SIZE_K)];                     \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                _Pragma("unroll")                                              \
-                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
-                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
-                    accum[idx] = COMPARE_FN(MUL_FN(regs_a[tm], regs_b[tn]),    \
-                                            accum[idx]);                       \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-                                                                               \
-        STORE_C_TILE(C)                                                   \
-}
-
-// ============================================================================
-// U32 GEMM KERNEL MACRO (Bitwise semiring, bit-packed boolean)
-// ============================================================================
-// Identical tiling to I32 (64x32x64, 4x4) on a 4-byte `unsigned int` element.
-// add = OR (COMPARE_FN), mul = AND (MUL_FN), tropical zero = 0; PAD = 0 is the
-// absorbing zero for AND. Being a 4-byte element, this shares the i32 kernel's
-// shared-load path rather than the 1-byte bool kernel's per-byte loads — verify
-// the win on HW with `cuobjdump -sass` (expect LDS, not LDS.U8).
-
-#define TROPICAL_GEMM_U32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN)            \
-extern "C" __global__ void KERNEL_NAME(                                        \
-    const unsigned int* __restrict__ A,                                        \
-    const unsigned int* __restrict__ B,                                        \
-    unsigned int* __restrict__ C,                                              \
-    int M, int N, int K                                                        \
-) {                                                                            \
-    const int BLOCK_SIZE_M = 64;                                               \
-    const int BLOCK_SIZE_K = 32;                                               \
-    const int BLOCK_SIZE_N = 64;                                               \
-    const int THREAD_SIZE_M = 4;                                               \
-    const int THREAD_SIZE_N = 4;                                               \
-                                                                               \
-    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
-    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
-    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
-                                                                               \
-    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
-    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
-    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
-    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
-                                                                               \
-    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
-                                                                               \
-    __shared__ unsigned int As[BLOCK_SIZE_M * BLOCK_SIZE_K];                   \
-    __shared__ unsigned int Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];                   \
-                                                                               \
-    unsigned int accum[THREAD_SIZE_M * THREAD_SIZE_N];                         \
-    unsigned int regs_a[THREAD_SIZE_M];                                        \
-    unsigned int regs_b[THREAD_SIZE_N];                                        \
-                                                                               \
-    _Pragma("unroll")                                                          \
-    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
-        accum[i] = INIT_VAL;                                                   \
-    }                                                                          \
-                                                                               \
-    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
-    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
-    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
-    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
-    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
-    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
-                                                                               \
-    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        LOAD_A_TILE(A, INIT_VAL)                                          \
-                                                                               \
-        LOAD_B_TILE(B, INIT_VAL)                                          \
-                                                                               \
-        __syncthreads();                                                       \
-                                                                               \
-        _Pragma("unroll")                                                      \
-        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
-                                           k, BLOCK_SIZE_M)];                  \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
-                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
-                                           BLOCK_SIZE_K)];                     \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                _Pragma("unroll")                                              \
-                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
-                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
-                    accum[idx] = COMPARE_FN(MUL_FN(regs_a[tm], regs_b[tn]),    \
-                                            accum[idx]);                       \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-                                                                               \
-        STORE_C_TILE(C)                                                   \
-}
-
-// ============================================================================
-// U64 GEMM KERNEL MACRO (Bitwise semiring, 64 lanes)
-// ============================================================================
-// Identical tiling to I64 (32x16x32, 4x4) on an 8-byte `unsigned long long`.
-
-#define TROPICAL_GEMM_U64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN)            \
-extern "C" __global__ void KERNEL_NAME(                                        \
-    const unsigned long long* __restrict__ A,                                  \
-    const unsigned long long* __restrict__ B,                                  \
-    unsigned long long* __restrict__ C,                                        \
-    int M, int N, int K                                                        \
-) {                                                                            \
-    const int BLOCK_SIZE_M = 32;                                               \
-    const int BLOCK_SIZE_K = 16;                                               \
-    const int BLOCK_SIZE_N = 32;                                               \
-    const int THREAD_SIZE_M = 4;                                               \
-    const int THREAD_SIZE_N = 4;                                               \
-                                                                               \
-    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
-    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
-    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
-                                                                               \
-    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
-    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
-    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
-    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
-                                                                               \
-    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
-                                                                               \
-    __shared__ unsigned long long As[BLOCK_SIZE_M * BLOCK_SIZE_K];             \
-    __shared__ unsigned long long Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];             \
-                                                                               \
-    unsigned long long accum[THREAD_SIZE_M * THREAD_SIZE_N];                   \
-    unsigned long long regs_a[THREAD_SIZE_M];                                  \
-    unsigned long long regs_b[THREAD_SIZE_N];                                  \
-                                                                               \
-    _Pragma("unroll")                                                          \
-    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
-        accum[i] = INIT_VAL;                                                   \
-    }                                                                          \
-                                                                               \
-    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
-    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
-    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
-    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
-    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
-    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
-                                                                               \
-    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        LOAD_A_TILE(A, INIT_VAL)                                          \
-                                                                               \
-        LOAD_B_TILE(B, INIT_VAL)                                          \
-                                                                               \
-        __syncthreads();                                                       \
-                                                                               \
-        _Pragma("unroll")                                                      \
-        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
-                                           k, BLOCK_SIZE_M)];                  \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
-                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
-                                           BLOCK_SIZE_K)];                     \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                _Pragma("unroll")                                              \
-                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
-                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
-                    accum[idx] = COMPARE_FN(MUL_FN(regs_a[tm], regs_b[tn]),    \
-                                            accum[idx]);                       \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-                                                                               \
-        STORE_C_TILE(C)                                                   \
-}
-
-// ============================================================================
-// I64 GEMM KERNEL MACRO
-// ============================================================================
-// Block sizes for i64: 32x16x32, Thread sizes: 4x4 (same as f64)
-
-#define TROPICAL_GEMM_I64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN)           \
-extern "C" __global__ void KERNEL_NAME(                                        \
-    const long long* __restrict__ A,                                           \
-    const long long* __restrict__ B,                                           \
-    long long* __restrict__ C,                                                 \
-    int M, int N, int K                                                        \
-) {                                                                            \
-    const int BLOCK_SIZE_M = 32;                                               \
-    const int BLOCK_SIZE_K = 16;                                               \
-    const int BLOCK_SIZE_N = 32;                                               \
-    const int THREAD_SIZE_M = 4;                                               \
-    const int THREAD_SIZE_N = 4;                                               \
-                                                                               \
-    const int bszm = BLOCK_SIZE_M / THREAD_SIZE_M;                             \
-    const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
-    const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
-                                                                               \
-    int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
-    int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
-    int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
-    int BLOCK_IDY = blockIdx.x / DIM_GRID_X;                                   \
-                                                                               \
-    const int tid = threadIdx.y * bszm + threadIdx.x;                          \
-                                                                               \
-    __shared__ long long As[BLOCK_SIZE_M * BLOCK_SIZE_K];                      \
-    __shared__ long long Bs[BLOCK_SIZE_K * BLOCK_SIZE_N];                      \
-                                                                               \
-    long long accum[THREAD_SIZE_M * THREAD_SIZE_N];                            \
-    long long regs_a[THREAD_SIZE_M];                                           \
-    long long regs_b[THREAD_SIZE_N];                                           \
-                                                                               \
-    _Pragma("unroll")                                                          \
-    for (int i = 0; i < THREAD_SIZE_M * THREAD_SIZE_N; ++i) {                  \
-        accum[i] = INIT_VAL;                                                   \
-    }                                                                          \
-                                                                               \
-    const int A_TILE_COL = tid / BLOCK_SIZE_M;                                 \
-    const int A_TILE_ROW = tid % BLOCK_SIZE_M;                                 \
-    const int B_TILE_COL = tid / BLOCK_SIZE_K;                                 \
-    const int B_TILE_ROW = tid % BLOCK_SIZE_K;                                 \
-    const int A_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_M;         \
-    const int B_TILE_COL_STRIDE = THREAD_NUM_PER_BLOCK / BLOCK_SIZE_K;         \
-                                                                               \
-    for (int tile_idx = 0; tile_idx < K; tile_idx += BLOCK_SIZE_K) {           \
-        LOAD_A_TILE(A, INIT_VAL)                                          \
-                                                                               \
-        LOAD_B_TILE(B, INIT_VAL)                                          \
-                                                                               \
-        __syncthreads();                                                       \
-                                                                               \
-        _Pragma("unroll")                                                      \
-        for (int k = 0; k < BLOCK_SIZE_K; ++k) {                               \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                regs_a[tm] = As[OFFSET_COL(threadIdx.x * THREAD_SIZE_M + tm,   \
-                                           k, BLOCK_SIZE_M)];                  \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                       \
-                regs_b[tn] = Bs[OFFSET_COL(k, threadIdx.y * THREAD_SIZE_N + tn,\
-                                           BLOCK_SIZE_K)];                     \
-            }                                                                  \
-            _Pragma("unroll")                                                  \
-            for (int tm = 0; tm < THREAD_SIZE_M; ++tm) {                       \
-                _Pragma("unroll")                                              \
-                for (int tn = 0; tn < THREAD_SIZE_N; ++tn) {                   \
-                    long long prod = MUL_FN(regs_a[tm], regs_b[tn]);           \
-                    int idx = OFFSET_COL(tm, tn, THREAD_SIZE_M);               \
-                    accum[idx] = COMPARE_FN(accum[idx], prod);                 \
-                }                                                              \
-            }                                                                  \
-        }                                                                      \
-        __syncthreads();                                                       \
-    }                                                                          \
-                                                                               \
-        STORE_C_TILE(C)                                                   \
+#define TROPICAL_GEMM_I64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const long long* __restrict__ A, const long long* __restrict__ B, \
+    long long* __restrict__ C, int M, int N, int K \
+) { \
+    TROPICAL_GEMM_BODY(long long, 32, 16, 32, INIT_VAL, COMPARE_FN, MUL_FN, A, B, C) \
 }
 
 // ============================================================================
@@ -1168,13 +705,13 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     TYPE* __restrict__ grad_a,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;                           \
-    int total = M * N;                                                         \
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;          \
+    long long total = (long long)M * N;                                        \
     if (idx < total) {                                                         \
-        int i = idx % M;                                                       \
+        int i = (int)(idx % M);                                                \
         int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
-            ATOMIC_ADD(&grad_a[i + k * M], grad_c[idx]);                       \
+            ATOMIC_ADD(&grad_a[i + (long long)k * M], grad_c[idx]);            \
         }                                                                      \
     }                                                                          \
 }
@@ -1186,13 +723,13 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     TYPE* __restrict__ grad_b,                                                 \
     int M, int N, int K                                                        \
 ) {                                                                            \
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;                           \
-    int total = M * N;                                                         \
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;          \
+    long long total = (long long)M * N;                                        \
     if (idx < total) {                                                         \
-        int j = idx / M;                                                       \
+        int j = (int)(idx / M);                                               \
         int k = (int)argmax[idx];                                              \
         if (k >= 0 && k < K) {                                                 \
-            ATOMIC_ADD(&grad_b[k + j * K], grad_c[idx]);                       \
+            ATOMIC_ADD(&grad_b[k + (long long)j * K], grad_c[idx]);            \
         }                                                                      \
     }                                                                          \
 }
@@ -1202,14 +739,14 @@ extern "C" __global__ void KERNEL_NAME(                                        \
 // ============================================================================
 
 // --- F32 Basic GEMM Kernels ---
-TROPICAL_GEMM_F32(tropical_maxplus_f32_nn, NEG_INF_F32, fmaxf, +)
-TROPICAL_GEMM_F32(tropical_minplus_f32_nn, INF_F32,     fminf, +)
-TROPICAL_GEMM_F32(tropical_maxmul_f32_nn,  0.0f,        fmaxf, *)
+TROPICAL_GEMM_F32(tropical_maxplus_f32_nn, NEG_INF_F32, fmaxf, add_f32)
+TROPICAL_GEMM_F32(tropical_minplus_f32_nn, INF_F32,     fminf, add_f32)
+TROPICAL_GEMM_F32(tropical_maxmul_f32_nn,  0.0f,        fmaxf, mul_f32)
 
 // --- F64 Basic GEMM Kernels ---
-TROPICAL_GEMM_F64(tropical_maxplus_f64_nn, NEG_INF_F64, fmax, +)
-TROPICAL_GEMM_F64(tropical_minplus_f64_nn, INF_F64,     fmin, +)
-TROPICAL_GEMM_F64(tropical_maxmul_f64_nn,  0.0,         fmax, *)
+TROPICAL_GEMM_F64(tropical_maxplus_f64_nn, NEG_INF_F64, fmax, add_f64)
+TROPICAL_GEMM_F64(tropical_minplus_f64_nn, INF_F64,     fmin, add_f64)
+TROPICAL_GEMM_F64(tropical_maxmul_f64_nn,  0.0,         fmax, mul_f64)
 
 // --- F32 GEMM with Argmax Kernels ---
 TROPICAL_GEMM_ARGMAX_F32(tropical_maxplus_f32_nn_with_argmax, NEG_INF_F32, >, +)
@@ -1230,13 +767,6 @@ TROPICAL_GEMM_I32(tropical_maxmul_i32_nn,  0,           max_i32, mul_i32)
 TROPICAL_GEMM_I64(tropical_maxplus_i64_nn, NEG_INF_I64, max_i64, add_i64)
 TROPICAL_GEMM_I64(tropical_minplus_i64_nn, INF_I64,     min_i64, add_i64)
 TROPICAL_GEMM_I64(tropical_maxmul_i64_nn,  0LL,         max_i64, mul_i64)
-
-// --- BOOL Basic GEMM Kernel (AndOr semiring) ---
-TROPICAL_GEMM_BOOL(tropical_andor_bool_nn, false, or_bool, and_bool)
-
-// --- U32/U64 Bitwise GEMM Kernels (bit-packed boolean) ---
-TROPICAL_GEMM_U32(tropical_bitwise_u32_nn, 0u,   or_u32, and_u32)
-TROPICAL_GEMM_U64(tropical_bitwise_u64_nn, 0ull, or_u64, and_u64)
 
 // --- I32 GEMM with Argmax Kernels ---
 // ZERO_FN canonicalizes a drifted tropical-zero cell's argmax to 0 at write-out.
@@ -1268,7 +798,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     float* __restrict__ C,                                                     \
     unsigned int* __restrict__ argmax,                                         \
     int M, int N, int K,                                                       \
-    int strideA, int strideB, int strideC                                      \
+    long long strideA, long long strideB, long long strideC                    \
 ) {                                                                            \
     const int BLOCK_SIZE_M = 64;                                               \
     const int BLOCK_SIZE_K = 32;                                               \
@@ -1280,7 +810,7 @@ extern "C" __global__ void KERNEL_NAME(                                        \
     const int bszn = BLOCK_SIZE_N / THREAD_SIZE_N;                             \
     const int THREAD_NUM_PER_BLOCK = bszm * bszn;                              \
                                                                                \
-    int batch_idx = blockIdx.z;                                                \
+    long long batch_idx = blockIdx.z;                                          \
     int DIM_GRID_X = (M + BLOCK_SIZE_M - 1) / BLOCK_SIZE_M;                    \
     int DIM_GRID_Y = (N + BLOCK_SIZE_N - 1) / BLOCK_SIZE_N;                    \
     int BLOCK_IDX = blockIdx.x % DIM_GRID_X;                                   \
@@ -1359,6 +889,126 @@ TROPICAL_GEMM_BATCHED_ARGMAX_F32(tropical_minplus_f32_nn_batched_with_argmax, IN
 TROPICAL_GEMM_BATCHED_ARGMAX_F32(tropical_maxmul_f32_nn_batched_with_argmax,  0.0f,        >, *)
 
 // ============================================================================
+// STRIDED-BATCHED FORWARD GEMM KERNELS (blockIdx.z selects the batch element)
+// ============================================================================
+// Same shared body as the single-matrix kernels; only the operand base pointers
+// differ -- each advances by its per-batch stride. This replaces omeinsum's
+// host-side per-slice clone_dtod loop with a single launch over already-
+// contiguous device buffers. The per-batch stride is `long long` and the base
+// offset `(long long)blockIdx.z * stride` is computed in 64-bit, so a single
+// matrix of >= 2^31 elements addresses correctly (issue #63); the host chunks
+// the batch under the gridDim.z cap and pre-offsets each chunk's base, so
+// blockIdx.z stays in range.
+
+#define TROPICAL_GEMM_BATCHED_F32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const float* __restrict__ A, const float* __restrict__ B, \
+    float* __restrict__ C, int M, int N, int K, \
+    long long strideA, long long strideB, long long strideC \
+) { \
+    TROPICAL_GEMM_BODY(float, 64, 32, 64, INIT_VAL, COMPARE_FN, MUL_FN, \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
+}
+
+#define TROPICAL_GEMM_BATCHED_F64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const double* __restrict__ A, const double* __restrict__ B, \
+    double* __restrict__ C, int M, int N, int K, \
+    long long strideA, long long strideB, long long strideC \
+) { \
+    TROPICAL_GEMM_BODY(double, 32, 16, 32, INIT_VAL, COMPARE_FN, MUL_FN, \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
+}
+
+#define TROPICAL_GEMM_BATCHED_I32(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const int* __restrict__ A, const int* __restrict__ B, \
+    int* __restrict__ C, int M, int N, int K, \
+    long long strideA, long long strideB, long long strideC \
+) { \
+    TROPICAL_GEMM_BODY(int, 64, 32, 64, INIT_VAL, COMPARE_FN, MUL_FN, \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
+}
+
+#define TROPICAL_GEMM_BATCHED_I64(KERNEL_NAME, INIT_VAL, COMPARE_FN, MUL_FN) \
+extern "C" __global__ void KERNEL_NAME( \
+    const long long* __restrict__ A, const long long* __restrict__ B, \
+    long long* __restrict__ C, int M, int N, int K, \
+    long long strideA, long long strideB, long long strideC \
+) { \
+    TROPICAL_GEMM_BODY(long long, 32, 16, 32, INIT_VAL, COMPARE_FN, MUL_FN, \
+        (A + (long long)blockIdx.z * strideA), \
+        (B + (long long)blockIdx.z * strideB), \
+        (C + (long long)blockIdx.z * strideC)) \
+}
+
+// --- Forward batched GEMM kernel instantiations (mirror the non-batched set) ---
+TROPICAL_GEMM_BATCHED_F32(tropical_maxplus_f32_nn_batched, NEG_INF_F32, fmaxf, add_f32)
+TROPICAL_GEMM_BATCHED_F32(tropical_minplus_f32_nn_batched, INF_F32,     fminf, add_f32)
+TROPICAL_GEMM_BATCHED_F32(tropical_maxmul_f32_nn_batched,  0.0f,        fmaxf, mul_f32)
+
+TROPICAL_GEMM_BATCHED_F64(tropical_maxplus_f64_nn_batched, NEG_INF_F64, fmax,  add_f64)
+TROPICAL_GEMM_BATCHED_F64(tropical_minplus_f64_nn_batched, INF_F64,     fmin,  add_f64)
+TROPICAL_GEMM_BATCHED_F64(tropical_maxmul_f64_nn_batched,  0.0,         fmax,  mul_f64)
+
+TROPICAL_GEMM_BATCHED_I32(tropical_maxplus_i32_nn_batched, NEG_INF_I32, max_i32, add_i32)
+TROPICAL_GEMM_BATCHED_I32(tropical_minplus_i32_nn_batched, INF_I32,     min_i32, add_i32)
+TROPICAL_GEMM_BATCHED_I32(tropical_maxmul_i32_nn_batched,  0,           max_i32, mul_i32)
+
+TROPICAL_GEMM_BATCHED_I64(tropical_maxplus_i64_nn_batched, NEG_INF_I64, max_i64, add_i64)
+TROPICAL_GEMM_BATCHED_I64(tropical_minplus_i64_nn_batched, INF_I64,     min_i64, add_i64)
+TROPICAL_GEMM_BATCHED_I64(tropical_maxmul_i64_nn_batched,  0LL,         max_i64, mul_i64)
+
+// Boolean and bitwise forward kernels share the same 64-bit tile I/O.
+extern "C" __global__ void tropical_andor_bool_nn(
+    const bool* __restrict__ A, const bool* __restrict__ B,
+    bool* __restrict__ C, int M, int N, int K) {
+    TROPICAL_GEMM_BODY(bool, 64, 32, 64, false, or_bool, and_bool, A, B, C)
+}
+extern "C" __global__ void tropical_andor_bool_nn_batched(
+    const bool* __restrict__ A, const bool* __restrict__ B,
+    bool* __restrict__ C, int M, int N, int K,
+    long long strideA, long long strideB, long long strideC) {
+    TROPICAL_GEMM_BODY(bool, 64, 32, 64, false, or_bool, and_bool,
+        (A + (long long)blockIdx.z * strideA),
+        (B + (long long)blockIdx.z * strideB),
+        (C + (long long)blockIdx.z * strideC))
+}
+extern "C" __global__ void tropical_bitwise_u32_nn(
+    const unsigned int* __restrict__ A, const unsigned int* __restrict__ B,
+    unsigned int* __restrict__ C, int M, int N, int K) {
+    TROPICAL_GEMM_BODY(unsigned int, 64, 32, 64, 0u, or_u32, and_u32, A, B, C)
+}
+extern "C" __global__ void tropical_bitwise_u32_nn_batched(
+    const unsigned int* __restrict__ A, const unsigned int* __restrict__ B,
+    unsigned int* __restrict__ C, int M, int N, int K,
+    long long strideA, long long strideB, long long strideC) {
+    TROPICAL_GEMM_BODY(unsigned int, 64, 32, 64, 0u, or_u32, and_u32,
+        (A + (long long)blockIdx.z * strideA),
+        (B + (long long)blockIdx.z * strideB),
+        (C + (long long)blockIdx.z * strideC))
+}
+extern "C" __global__ void tropical_bitwise_u64_nn(
+    const unsigned long long* __restrict__ A, const unsigned long long* __restrict__ B,
+    unsigned long long* __restrict__ C, int M, int N, int K) {
+    TROPICAL_GEMM_BODY(unsigned long long, 32, 16, 32, 0ull, or_u64, and_u64, A, B, C)
+}
+extern "C" __global__ void tropical_bitwise_u64_nn_batched(
+    const unsigned long long* __restrict__ A, const unsigned long long* __restrict__ B,
+    unsigned long long* __restrict__ C, int M, int N, int K,
+    long long strideA, long long strideB, long long strideC) {
+    TROPICAL_GEMM_BODY(unsigned long long, 32, 16, 32, 0ull, or_u64, and_u64,
+        (A + (long long)blockIdx.z * strideA),
+        (B + (long long)blockIdx.z * strideB),
+        (C + (long long)blockIdx.z * strideC))
+}
+
 // K-PACKED BOOLEAN (AndOr) GEMM — pack the contraction dim K into 32-bit words
 // ============================================================================
 // Distinct from the byte AndOr kernel and from TropicalBitwise (which packs the
@@ -1374,9 +1024,12 @@ extern "C" __global__ void pack_rows_u32(
     unsigned int* __restrict__ Apacked,
     int M, int K)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;   // row of A
-    int w = blockIdx.y * blockDim.y + threadIdx.y;   // output word index
-    int Kw = K / 32 + (K % 32 != 0);   // == ceil(K/32) without (K+31) overflow near INT_MAX
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    int Kw = K / 32 + (K % 32 != 0);
+    if (idx >= (long long)M * Kw) return;
+    int i = idx % M;
+    int w = idx / M;
+    //   // == ceil(K/32) without (K+31) overflow near INT_MAX
     if (i >= M || w >= Kw) return;
     unsigned int word = 0u;
     #pragma unroll
@@ -1397,9 +1050,12 @@ extern "C" __global__ void pack_cols_u32(
     unsigned int* __restrict__ Bpacked,
     int N, int K)
 {
-    int j = blockIdx.x * blockDim.x + threadIdx.x;   // column of B
-    int w = blockIdx.y * blockDim.y + threadIdx.y;   // output word index
-    int Kw = K / 32 + (K % 32 != 0);   // == ceil(K/32) without (K+31) overflow near INT_MAX
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    int Kw = K / 32 + (K % 32 != 0);
+    if (idx >= (long long)N * Kw) return;
+    int j = idx / Kw;
+    int w = idx % Kw;
+    //   // == ceil(K/32) without (K+31) overflow near INT_MAX
     if (j >= N || w >= Kw) return;
     unsigned int word = 0u;
     #pragma unroll
@@ -1421,8 +1077,10 @@ extern "C" __global__ void tropical_andor_kpack_direct_u32(
     bool* __restrict__ C,
     int M, int N, int Kw)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;   // row
-    int j = blockIdx.y * blockDim.y + threadIdx.y;   // column
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long long)M * N) return;
+    int i = idx % M;
+    int j = idx / M;
     if (i >= M || j >= N) return;
     unsigned int acc = 0u;
     for (int w = 0; w < Kw && acc == 0u; ++w) {

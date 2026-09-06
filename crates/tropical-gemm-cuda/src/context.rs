@@ -43,6 +43,9 @@ const KERNEL_NAMES: &[&str] = &[
     // Standard GEMM kernels (u32/u64 / Bitwise semiring)
     "tropical_bitwise_u32_nn",
     "tropical_bitwise_u64_nn",
+    "tropical_andor_bool_nn_batched",
+    "tropical_bitwise_u32_nn_batched",
+    "tropical_bitwise_u64_nn_batched",
     // K-packed AndOr GEMM (pack contraction dim K into u32 words)
     "pack_rows_u32",
     "pack_cols_u32",
@@ -72,6 +75,19 @@ const KERNEL_NAMES: &[&str] = &[
     "tropical_maxplus_f32_nn_batched_with_argmax",
     "tropical_minplus_f32_nn_batched_with_argmax",
     "tropical_maxmul_f32_nn_batched_with_argmax",
+    // Forward batched GEMM kernels (no argmax): one launch, blockIdx.z = batch.
+    "tropical_maxplus_f32_nn_batched",
+    "tropical_minplus_f32_nn_batched",
+    "tropical_maxmul_f32_nn_batched",
+    "tropical_maxplus_f64_nn_batched",
+    "tropical_minplus_f64_nn_batched",
+    "tropical_maxmul_f64_nn_batched",
+    "tropical_maxplus_i32_nn_batched",
+    "tropical_minplus_i32_nn_batched",
+    "tropical_maxmul_i32_nn_batched",
+    "tropical_maxplus_i64_nn_batched",
+    "tropical_minplus_i64_nn_batched",
+    "tropical_maxmul_i64_nn_batched",
 ];
 
 /// CUDA context for tropical GEMM operations.
