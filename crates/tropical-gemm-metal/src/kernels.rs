@@ -1,7 +1,7 @@
 //! Metal kernel trait and implementations.
 
 use crate::context::MetalContext;
-use crate::error::Result;
+use crate::error::{MetalError, Result};
 use crate::gpu_mat::{GpuMatrix, GpuMatrixWithArgmax};
 use metal::MTLSize;
 use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring};
@@ -9,7 +9,7 @@ use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, Tro
 /// Trait for types that can be computed on Metal GPU.
 pub trait MetalKernel: TropicalSemiring
 where
-    Self::Scalar: Copy + Default,
+    Self::Scalar: bytemuck::Pod + Default,
 {
     /// Kernel function name.
     const KERNEL_NAME: &'static str;
@@ -35,6 +35,14 @@ fn launch_kernel_impl(
     grid_size: MTLSize,
     threadgroup_size: MTLSize,
 ) -> Result<()> {
+    if a.cols() != b.rows() || c.rows() != a.rows() || c.cols() != b.cols() {
+        return Err(MetalError::DimensionMismatch(
+            "incompatible GEMM buffers".into(),
+        ));
+    }
+    if a.rows() == 0 || b.cols() == 0 {
+        return Ok(());
+    }
     let m = a.rows() as u32;
     let k = a.cols() as u32;
     let n = b.cols() as u32;
@@ -47,15 +55,30 @@ fn launch_kernel_impl(
     encoder.set_buffer(0, Some(a.as_buffer()), 0);
     encoder.set_buffer(1, Some(b.as_buffer()), 0);
     encoder.set_buffer(2, Some(c.as_buffer()), 0);
-    encoder.set_bytes(3, std::mem::size_of::<u32>() as u64, &m as *const u32 as *const _);
-    encoder.set_bytes(4, std::mem::size_of::<u32>() as u64, &n as *const u32 as *const _);
-    encoder.set_bytes(5, std::mem::size_of::<u32>() as u64, &k as *const u32 as *const _);
+    encoder.set_bytes(
+        3,
+        std::mem::size_of::<u32>() as u64,
+        &m as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        4,
+        std::mem::size_of::<u32>() as u64,
+        &n as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        5,
+        std::mem::size_of::<u32>() as u64,
+        &k as *const u32 as *const _,
+    );
 
     encoder.dispatch_thread_groups(grid_size, threadgroup_size);
     encoder.end_encoding();
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
+        return Err(MetalError::Execution("Metal command buffer failed".into()));
+    }
 
     Ok(())
 }
@@ -98,7 +121,7 @@ impl_metal_kernel_f32! {
 /// which is needed for gradient computation in tropical neural networks.
 pub trait MetalKernelWithArgmax: TropicalSemiring
 where
-    Self::Scalar: Copy + Default,
+    Self::Scalar: bytemuck::Pod + Default,
 {
     /// Kernel function name for the argmax variant.
     const ARGMAX_KERNEL_NAME: &'static str;
@@ -125,6 +148,14 @@ fn launch_kernel_with_argmax_impl(
     grid_size: MTLSize,
     threadgroup_size: MTLSize,
 ) -> Result<()> {
+    if a.cols() != b.rows() || c.rows() != a.rows() || c.cols() != b.cols() {
+        return Err(MetalError::DimensionMismatch(
+            "incompatible GEMM buffers".into(),
+        ));
+    }
+    if a.rows() == 0 || b.cols() == 0 {
+        return Ok(());
+    }
     let m = a.rows() as u32;
     let k = a.cols() as u32;
     let n = b.cols() as u32;
@@ -138,15 +169,30 @@ fn launch_kernel_with_argmax_impl(
     encoder.set_buffer(1, Some(b.as_buffer()), 0);
     encoder.set_buffer(2, Some(c.matrix.as_buffer()), 0);
     encoder.set_buffer(3, Some(c.argmax.as_buffer()), 0);
-    encoder.set_bytes(4, std::mem::size_of::<u32>() as u64, &m as *const u32 as *const _);
-    encoder.set_bytes(5, std::mem::size_of::<u32>() as u64, &n as *const u32 as *const _);
-    encoder.set_bytes(6, std::mem::size_of::<u32>() as u64, &k as *const u32 as *const _);
+    encoder.set_bytes(
+        4,
+        std::mem::size_of::<u32>() as u64,
+        &m as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        5,
+        std::mem::size_of::<u32>() as u64,
+        &n as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        6,
+        std::mem::size_of::<u32>() as u64,
+        &k as *const u32 as *const _,
+    );
 
     encoder.dispatch_thread_groups(grid_size, threadgroup_size);
     encoder.end_encoding();
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
+        return Err(MetalError::Execution("Metal command buffer failed".into()));
+    }
 
     Ok(())
 }
@@ -207,9 +253,21 @@ pub fn launch_backward_a(
     encoder.set_buffer(0, Some(grad_c.as_buffer()), 0);
     encoder.set_buffer(1, Some(argmax.as_buffer()), 0);
     encoder.set_buffer(2, Some(grad_a.as_buffer()), 0);
-    encoder.set_bytes(3, std::mem::size_of::<u32>() as u64, &m_u32 as *const u32 as *const _);
-    encoder.set_bytes(4, std::mem::size_of::<u32>() as u64, &n_u32 as *const u32 as *const _);
-    encoder.set_bytes(5, std::mem::size_of::<u32>() as u64, &k_u32 as *const u32 as *const _);
+    encoder.set_bytes(
+        3,
+        std::mem::size_of::<u32>() as u64,
+        &m_u32 as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        4,
+        std::mem::size_of::<u32>() as u64,
+        &n_u32 as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        5,
+        std::mem::size_of::<u32>() as u64,
+        &k_u32 as *const u32 as *const _,
+    );
 
     let threads_per_group = 256u64;
     let num_groups = ((total as u64) + threads_per_group - 1) / threads_per_group;
@@ -221,6 +279,9 @@ pub fn launch_backward_a(
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
+        return Err(MetalError::Execution("Metal command buffer failed".into()));
+    }
 
     Ok(())
 }
@@ -249,9 +310,21 @@ pub fn launch_backward_b(
     encoder.set_buffer(0, Some(grad_c.as_buffer()), 0);
     encoder.set_buffer(1, Some(argmax.as_buffer()), 0);
     encoder.set_buffer(2, Some(grad_b.as_buffer()), 0);
-    encoder.set_bytes(3, std::mem::size_of::<u32>() as u64, &m_u32 as *const u32 as *const _);
-    encoder.set_bytes(4, std::mem::size_of::<u32>() as u64, &n_u32 as *const u32 as *const _);
-    encoder.set_bytes(5, std::mem::size_of::<u32>() as u64, &k_u32 as *const u32 as *const _);
+    encoder.set_bytes(
+        3,
+        std::mem::size_of::<u32>() as u64,
+        &m_u32 as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        4,
+        std::mem::size_of::<u32>() as u64,
+        &n_u32 as *const u32 as *const _,
+    );
+    encoder.set_bytes(
+        5,
+        std::mem::size_of::<u32>() as u64,
+        &k_u32 as *const u32 as *const _,
+    );
 
     let threads_per_group = 256u64;
     let num_groups = ((total as u64) + threads_per_group - 1) / threads_per_group;
@@ -263,6 +336,9 @@ pub fn launch_backward_b(
 
     command_buffer.commit();
     command_buffer.wait_until_completed();
+    if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
+        return Err(MetalError::Execution("Metal command buffer failed".into()));
+    }
 
     Ok(())
 }

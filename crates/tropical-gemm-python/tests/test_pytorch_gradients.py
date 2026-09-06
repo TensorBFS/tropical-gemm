@@ -472,13 +472,15 @@ def test_gpu_maxplus_forward():
     """Test GPU MaxPlus forward pass matches CPU."""
     torch.manual_seed(42)
 
-    a = torch.randn(4, 3)
-    b = torch.randn(3, 5)
+    a_cpu = torch.randn(4, 3)
+    b_cpu = torch.randn(3, 5)
+    a_gpu = a_cpu.cuda()
+    b_gpu = b_cpu.cuda()
 
-    c_cpu = tropical_maxplus_matmul(a, b)
-    c_gpu = tropical_maxplus_matmul_gpu(a, b)
+    c_cpu = tropical_maxplus_matmul(a_cpu, b_cpu)
+    c_gpu = tropical_maxplus_matmul_gpu(a_gpu, b_gpu)
 
-    assert torch.allclose(c_cpu, c_gpu, atol=1e-4), f"GPU result differs from CPU"
+    assert torch.allclose(c_cpu, c_gpu.cpu(), atol=1e-4), f"GPU result differs from CPU"
 
 
 @pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
@@ -486,13 +488,15 @@ def test_gpu_minplus_forward():
     """Test GPU MinPlus forward pass matches CPU."""
     torch.manual_seed(42)
 
-    a = torch.randn(4, 3)
-    b = torch.randn(3, 5)
+    a_cpu = torch.randn(4, 3)
+    b_cpu = torch.randn(3, 5)
+    a_gpu = a_cpu.cuda()
+    b_gpu = b_cpu.cuda()
 
-    c_cpu = tropical_minplus_matmul(a, b)
-    c_gpu = tropical_minplus_matmul_gpu(a, b)
+    c_cpu = tropical_minplus_matmul(a_cpu, b_cpu)
+    c_gpu = tropical_minplus_matmul_gpu(a_gpu, b_gpu)
 
-    assert torch.allclose(c_cpu, c_gpu, atol=1e-4), f"GPU result differs from CPU"
+    assert torch.allclose(c_cpu, c_gpu.cpu(), atol=1e-4), f"GPU result differs from CPU"
 
 
 @pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
@@ -500,8 +504,8 @@ def test_gpu_maxplus_gradient():
     """Test GPU MaxPlus backward pass."""
     torch.manual_seed(42)
 
-    a = torch.tensor([[1.0, 10.0], [5.0, 2.0]], requires_grad=True)
-    b = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    a = torch.tensor([[1.0, 10.0], [5.0, 2.0]], device="cuda", requires_grad=True)
+    b = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda", requires_grad=True)
 
     c = tropical_maxplus_matmul_gpu(a, b)
     loss = c.sum()
@@ -519,9 +523,9 @@ def test_gpu_optimization():
     """Test GPU optimization convergence."""
     torch.manual_seed(42)
 
-    a = torch.randn(3, 4, requires_grad=True)
-    b = torch.randn(4, 3, requires_grad=True)
-    target = torch.randn(3, 3)
+    a = torch.randn(3, 4, device="cuda", requires_grad=True)
+    b = torch.randn(4, 3, device="cuda", requires_grad=True)
+    target = torch.randn(3, 3, device="cuda")
 
     optimizer = torch.optim.Adam([a, b], lr=0.1)
 
@@ -577,5 +581,912 @@ def test_main_module_exports():
     assert hasattr(tropical_gemm, "maxplus_matmul_with_argmax")
     assert hasattr(tropical_gemm, "backward_a")
     assert hasattr(tropical_gemm, "backward_b")
+
+
+# ============================================================================
+# DLPack integration tests
+# ============================================================================
+
+
+def test_dlpack_availability_flag():
+    """Test that _DLPACK_AVAILABLE flag is correctly exported."""
+    from tropical_gemm.pytorch import _DLPACK_AVAILABLE
+
+    # Flag should be a boolean
+    assert isinstance(_DLPACK_AVAILABLE, bool)
+
+    # If cuda_available() returns True, DLPack should be available
+    if tropical_gemm.cuda_available():
+        assert _DLPACK_AVAILABLE, "DLPack should be available when CUDA is enabled"
+
+
+def test_dlpack_functions_exist_when_cuda_available():
+    """Test that DLPack functions are exported when CUDA is available."""
+    if not tropical_gemm.cuda_available():
+        pytest.skip("CUDA not available")
+
+    assert hasattr(tropical_gemm, "maxplus_matmul_dlpack")
+    assert hasattr(tropical_gemm, "minplus_matmul_dlpack")
+    assert hasattr(tropical_gemm, "maxmul_matmul_dlpack")
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_maxplus_cpu_tensor():
+    """Test DLPack maxplus with CPU tensors (uses CPU backend)."""
+    torch.manual_seed(42)
+
+    a = torch.randn(10, 20, dtype=torch.float32)
+    b = torch.randn(20, 15, dtype=torch.float32)
+
+    # Call DLPack function with CPU tensors - should fall back to CPU backend
+    c_flat, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
+
+    # Convert to torch tensors
+    c = torch.from_numpy(np.array(c_flat).reshape(10, 15))
+
+    # Verify against reference implementation
+    a_np = a.numpy()
+    b_np = b.numpy()
+    c_ref_flat, argmax_ref_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(10, 15))
+
+    assert torch.allclose(c, c_ref), "DLPack CPU path should match reference"
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_minplus_cpu_tensor():
+    """Test DLPack minplus with CPU tensors."""
+    torch.manual_seed(42)
+
+    a = torch.randn(10, 20, dtype=torch.float32)
+    b = torch.randn(20, 15, dtype=torch.float32)
+
+    c_flat, _ = tropical_gemm.minplus_matmul_dlpack(a, b)
+    c = torch.from_numpy(np.array(c_flat).reshape(10, 15))
+
+    # Verify against reference
+    a_np = a.numpy()
+    b_np = b.numpy()
+    c_ref_flat, _ = tropical_gemm.minplus_matmul_with_argmax(a_np, b_np)
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(10, 15))
+
+    assert torch.allclose(c, c_ref), "DLPack minplus CPU path should match reference"
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_maxmul_cpu_tensor():
+    """Test DLPack maxmul with CPU tensors."""
+    torch.manual_seed(42)
+
+    a = torch.randn(10, 20, dtype=torch.float32).abs() + 0.1  # Positive values for maxmul
+    b = torch.randn(20, 15, dtype=torch.float32).abs() + 0.1
+
+    c_flat, _ = tropical_gemm.maxmul_matmul_dlpack(a, b)
+    c = torch.from_numpy(np.array(c_flat).reshape(10, 15))
+
+    # Verify against reference
+    a_np = a.numpy()
+    b_np = b.numpy()
+    c_ref_flat, _ = tropical_gemm.maxmul_matmul_with_argmax(a_np, b_np)
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(10, 15))
+
+    assert torch.allclose(c, c_ref), "DLPack maxmul CPU path should match reference"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_dlpack_gpu_tensor_zero_copy():
+    """Test that DLPack with GPU tensors uses the Rust CUDA backend."""
+    torch.manual_seed(42)
+
+    a = torch.randn(100, 50, dtype=torch.float32, device='cuda')
+    b = torch.randn(50, 80, dtype=torch.float32, device='cuda')
+
+    # This should use the zero-copy DLPack path with Rust CUDA backend
+    # Returns DLPack capsules - data stays on GPU
+    c_capsule, _ = tropical_gemm.maxplus_matmul_dlpack(a, b)
+    c = torch.from_dlpack(c_capsule).reshape(100, 80)
+
+    # Verify result is on GPU
+    assert c.is_cuda, "Result should be on GPU"
+
+    # Verify result matches CPU reference
+    a_cpu = a.cpu()
+    b_cpu = b.cpu()
+    c_ref_flat, _ = tropical_gemm.maxplus_matmul_with_argmax(a_cpu.numpy(), b_cpu.numpy())
+    c_ref = torch.from_numpy(np.array(c_ref_flat).reshape(100, 80))
+
+    assert torch.allclose(c.cpu(), c_ref, atol=1e-5), "GPU DLPack path should match CPU reference"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_autograd_uses_dlpack():
+    """Test that GPU autograd functions use DLPack when available."""
+    from tropical_gemm.pytorch import _DLPACK_AVAILABLE
+
+    if not _DLPACK_AVAILABLE:
+        pytest.skip("DLPack not available")
+
+    torch.manual_seed(42)
+
+    a = torch.randn(50, 30, dtype=torch.float32, device='cuda', requires_grad=True)
+    b = torch.randn(30, 40, dtype=torch.float32, device='cuda', requires_grad=True)
+
+    # Forward pass should use DLPack + Rust CUDA backend
+    c = tropical_maxplus_matmul_gpu(a, b)
+
+    # Result should be on the same device
+    assert c.device == a.device, "Output should be on same device as input"
+
+    # Backward should work
+    loss = c.sum()
+    loss.backward()
+
+    assert a.grad is not None, "grad_a should be computed"
+    assert b.grad is not None, "grad_b should be computed"
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_contiguity_check():
+    """Test that DLPack functions require contiguous tensors."""
+    a = torch.randn(10, 20, dtype=torch.float32)
+    b = torch.randn(20, 15, dtype=torch.float32)
+
+    # Create non-contiguous tensor (stride != 1)
+    a_noncontig = a[:, ::2]
+
+    # Should raise an error for non-contiguous tensors
+    with pytest.raises(Exception):  # Could be ValueError or RuntimeError
+        tropical_gemm.maxplus_matmul_dlpack(a_noncontig, b[:20//2, :])
+
+
+@pytest.mark.skipif(not tropical_gemm.cuda_available(), reason="CUDA not available")
+def test_dlpack_dtype_check():
+    """Test that DLPack functions only accept f32 tensors."""
+    a = torch.randn(10, 20, dtype=torch.float64)  # f64, not f32
+    b = torch.randn(20, 15, dtype=torch.float64)
+
+    with pytest.raises(Exception):  # Should raise error for non-f32
+        tropical_gemm.maxplus_matmul_dlpack(a, b)
+
+
+def test_tropical_gemm_has_metadata():
+    """Basic sanity checks on tropical_gemm module attributes."""
     assert hasattr(tropical_gemm, "cuda_available")
     assert hasattr(tropical_gemm, "__version__")
+
+
+# ============================================================================
+# Batched operation tests
+# ============================================================================
+
+
+from tropical_gemm.pytorch import (
+    TropicalMaxPlusMatmulBatched,
+    TropicalMinPlusMatmulBatched,
+    TropicalMaxMulMatmulBatched,
+    tropical_maxplus_matmul_batched,
+    tropical_minplus_matmul_batched,
+    tropical_maxmul_matmul_batched,
+)
+
+
+def test_batched_maxplus_forward_correctness():
+    """Test batched MaxPlus forward pass matches looped reference."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 4, 3, 5, 2
+    a = torch.randn(batch, m, k)
+    b = torch.randn(batch, k, n)
+
+    # Batched computation
+    c_batched = tropical_maxplus_matmul_batched(a, b)
+
+    # Reference: loop over batch
+    c_ref = torch.stack([
+        tropical_maxplus_matmul(a[i], b[i])
+        for i in range(batch)
+    ])
+
+    assert c_batched.shape == (batch, m, n)
+    assert torch.allclose(c_batched, c_ref, atol=1e-5), \
+        f"Batched result differs from reference:\n{c_batched}\nvs\n{c_ref}"
+
+
+def test_batched_minplus_forward_correctness():
+    """Test batched MinPlus forward pass matches looped reference."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 4, 3, 5, 2
+    a = torch.randn(batch, m, k)
+    b = torch.randn(batch, k, n)
+
+    c_batched = tropical_minplus_matmul_batched(a, b)
+
+    c_ref = torch.stack([
+        tropical_minplus_matmul(a[i], b[i])
+        for i in range(batch)
+    ])
+
+    assert c_batched.shape == (batch, m, n)
+    assert torch.allclose(c_batched, c_ref, atol=1e-5)
+
+
+def test_batched_maxmul_forward_correctness():
+    """Test batched MaxMul forward pass matches looped reference."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 4, 3, 5, 2
+    a = torch.randn(batch, m, k).abs() + 0.1
+    b = torch.randn(batch, k, n).abs() + 0.1
+
+    c_batched = tropical_maxmul_matmul_batched(a, b)
+
+    c_ref = torch.stack([
+        tropical_maxmul_matmul(a[i], b[i])
+        for i in range(batch)
+    ])
+
+    assert c_batched.shape == (batch, m, n)
+    assert torch.allclose(c_batched, c_ref, atol=1e-5)
+
+
+def test_batched_maxplus_gradient_structure():
+    """Verify gradient structure of batched MaxPlus matmul."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 3, 4, 2
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    # Each output element contributes to exactly one gradient
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01, "grad_A sum incorrect"
+    assert abs(b.grad.sum().item() - c.numel()) < 0.01, "grad_B sum incorrect"
+
+
+def test_batched_minplus_gradient_structure():
+    """Verify gradient structure of batched MinPlus matmul."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 3, 4, 2
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+
+    c = tropical_minplus_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01, "grad_A sum incorrect"
+    assert abs(b.grad.sum().item() - c.numel()) < 0.01, "grad_B sum incorrect"
+
+
+def test_batched_maxmul_gradient_structure():
+    """Verify gradient structure of batched MaxMul matmul."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 3, 4, 2
+    # Use positive values for MaxMul - create as leaf tensors
+    a = (torch.randn(batch, m, k).abs() + 0.1).requires_grad_(True)
+    b = (torch.randn(batch, k, n).abs() + 0.1).requires_grad_(True)
+
+    c = tropical_maxmul_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    assert a.grad is not None, "grad_A should not be None"
+    assert b.grad is not None, "grad_B should not be None"
+    assert a.grad.shape == (batch, m, k)
+    assert b.grad.shape == (batch, k, n)
+
+
+def test_batched_numerical_gradient_maxplus():
+    """Verify batched MaxPlus gradients using finite differences."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 2, 3, 2
+    # Use well-separated values to ensure unique argmax - create as leaf tensors
+    a = (torch.randn(batch, m, k) * 3).requires_grad_(True)
+    b = (torch.randn(batch, k, n) * 3).requires_grad_(True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for bi in range(batch):
+        for i in range(m):
+            for j in range(k):
+                a_plus = a.detach().clone()
+                a_plus[bi, i, j] += eps
+                a_minus = a.detach().clone()
+                a_minus[bi, i, j] -= eps
+
+                c_plus = tropical_maxplus_matmul_batched(a_plus, b.detach()).sum()
+                c_minus = tropical_maxplus_matmul_batched(a_minus, b.detach()).sum()
+
+                numerical_grad_a[bi, i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        f"grad_A mismatch:\nAnalytical: {analytical_grad_a}\nNumerical: {numerical_grad_a}"
+
+
+def test_batched_optimization_convergence():
+    """Test that batched gradients enable optimization to converge."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 3, 4, 5, 3
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+    target = torch.randn(batch, m, n)
+
+    optimizer = torch.optim.Adam([a, b], lr=0.1)
+
+    initial_loss = None
+    final_loss = None
+
+    for step in range(20):
+        optimizer.zero_grad()
+
+        c = tropical_maxplus_matmul_batched(a, b)
+        loss = ((c - target) ** 2).mean()
+
+        if step == 0:
+            initial_loss = loss.item()
+
+        loss.backward()
+        optimizer.step()
+
+        final_loss = loss.item()
+
+    assert final_loss < initial_loss, f"Loss did not decrease: {initial_loss} -> {final_loss}"
+
+
+def test_batched_single_batch():
+    """Test batched operation with batch size 1."""
+    torch.manual_seed(42)
+
+    a = torch.randn(1, 3, 4, requires_grad=True)
+    b = torch.randn(1, 4, 2, requires_grad=True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    assert c.shape == (1, 3, 2)
+
+    c.backward(torch.ones_like(c))
+    assert a.grad.shape == (1, 3, 4)
+    assert b.grad.shape == (1, 4, 2)
+
+
+def test_batched_large_batch():
+    """Test batched operation with larger batch size."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 16, 8, 10, 6
+    a = torch.randn(batch, m, k, requires_grad=True)
+    b = torch.randn(batch, k, n, requires_grad=True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    assert c.shape == (batch, m, n)
+
+    loss = c.sum()
+    loss.backward()
+
+    assert a.grad.shape == (batch, m, k)
+    assert b.grad.shape == (batch, k, n)
+
+
+def test_batched_gradient_accumulation():
+    """Test that batched gradients accumulate correctly."""
+    torch.manual_seed(42)
+
+    batch = 3
+    a = torch.randn(batch, 2, 3, requires_grad=True)
+    b = torch.randn(batch, 3, 2, requires_grad=True)
+
+    c1 = tropical_maxplus_matmul_batched(a, b)
+    c1.sum().backward()
+    grad_a_1 = a.grad.clone()
+
+    c2 = tropical_maxplus_matmul_batched(a, b)
+    c2.sum().backward()
+    grad_a_2 = a.grad.clone()
+
+    assert torch.allclose(grad_a_2, 2 * grad_a_1), "Gradient accumulation incorrect"
+
+
+# ============================================================================
+# Additional Batched CPU Gradient Tests
+# ============================================================================
+
+
+def test_batched_numerical_gradient_minplus():
+    """Verify batched MinPlus gradients using finite differences."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 2, 3, 2
+    a = (torch.randn(batch, m, k) * 3).requires_grad_(True)
+    b = (torch.randn(batch, k, n) * 3).requires_grad_(True)
+
+    c = tropical_minplus_matmul_batched(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for bi in range(batch):
+        for i in range(m):
+            for j in range(k):
+                a_plus = a.detach().clone()
+                a_plus[bi, i, j] += eps
+                a_minus = a.detach().clone()
+                a_minus[bi, i, j] -= eps
+
+                c_plus = tropical_minplus_matmul_batched(a_plus, b.detach()).sum()
+                c_minus = tropical_minplus_matmul_batched(a_minus, b.detach()).sum()
+
+                numerical_grad_a[bi, i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        f"MinPlus grad_A mismatch:\nAnalytical: {analytical_grad_a}\nNumerical: {numerical_grad_a}"
+
+
+def test_batched_numerical_gradient_maxmul():
+    """Verify batched MaxMul gradients using finite differences."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 2, 3, 2
+    # Use positive values for MaxMul
+    a = (torch.randn(batch, m, k).abs() * 2 + 0.5).requires_grad_(True)
+    b = (torch.randn(batch, k, n).abs() * 2 + 0.5).requires_grad_(True)
+
+    c = tropical_maxmul_matmul_batched(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for bi in range(batch):
+        for i in range(m):
+            for j in range(k):
+                a_plus = a.detach().clone()
+                a_plus[bi, i, j] += eps
+                a_minus = a.detach().clone()
+                a_minus[bi, i, j] -= eps
+
+                c_plus = tropical_maxmul_matmul_batched(a_plus, b.detach()).sum()
+                c_minus = tropical_maxmul_matmul_batched(a_minus, b.detach()).sum()
+
+                numerical_grad_a[bi, i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        f"MaxMul grad_A mismatch:\nAnalytical: {analytical_grad_a}\nNumerical: {numerical_grad_a}"
+
+
+def test_batched_gradient_sparsity():
+    """Test that batched tropical gradients have correct sparsity pattern."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 4, 5, 3
+    a = (torch.randn(batch, m, k) * 10).requires_grad_(True)
+    b = (torch.randn(batch, k, n) * 10).requires_grad_(True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    c.sum().backward()
+
+    # For each output C[b,i,j], exactly one k index contributes
+    # Multiple outputs may share the same argmax, so nnz <= batch * m * n
+    # But gradients must be non-trivial (sum equals number of outputs)
+    max_nnz = batch * m * n
+    actual_nnz = (a.grad != 0).sum().item()
+
+    assert 0 < actual_nnz <= max_nnz, \
+        f"Expected 0 < nnz <= {max_nnz}, got {actual_nnz}"
+    # Total gradient mass should equal number of outputs (each contributes 1)
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01, \
+        "Total gradient should equal number of output elements"
+
+
+# ============================================================================
+# Additional Non-Batched GPU Gradient Tests
+# ============================================================================
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_minplus_gradient():
+    """Verify MinPlus gradient computation on GPU."""
+    a = torch.randn(8, 6, device="cuda", requires_grad=True)
+    b = torch.randn(6, 10, device="cuda", requires_grad=True)
+
+    c = tropical_minplus_matmul(a, b)
+    c.sum().backward()
+
+    assert a.grad is not None, "grad_a should be computed"
+    assert b.grad is not None, "grad_b should be computed"
+    assert a.grad.device.type == "cuda", "grad_a should be on GPU"
+    assert b.grad.device.type == "cuda", "grad_b should be on GPU"
+    assert a.grad.shape == a.shape
+    assert b.grad.shape == b.shape
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_maxmul_gradient():
+    """Verify MaxMul gradient computation on GPU."""
+    # Use positive values for MaxMul
+    a = (torch.randn(8, 6, device="cuda").abs() + 0.1).requires_grad_(True)
+    b = (torch.randn(6, 10, device="cuda").abs() + 0.1).requires_grad_(True)
+
+    c = tropical_maxmul_matmul(a, b)
+    c.sum().backward()
+
+    assert a.grad is not None, "grad_a should be computed"
+    assert b.grad is not None, "grad_b should be computed"
+    assert a.grad.device.type == "cuda", "grad_a should be on GPU"
+    assert b.grad.device.type == "cuda", "grad_b should be on GPU"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_gradient_accumulation():
+    """Verify gradient accumulation works correctly on GPU."""
+    a = torch.randn(4, 3, device="cuda", requires_grad=True)
+    b = torch.randn(3, 5, device="cuda")
+
+    c1 = tropical_maxplus_matmul(a, b)
+    c1.sum().backward()
+    grad1 = a.grad.clone()
+
+    c2 = tropical_maxplus_matmul(a, b)
+    c2.sum().backward()
+
+    assert torch.allclose(a.grad, 2 * grad1), "GPU gradients should accumulate"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_gradient_sparsity():
+    """Test that GPU tropical gradients have correct sparsity pattern."""
+    torch.manual_seed(42)
+
+    m, k, n = 8, 6, 10
+    a = (torch.randn(m, k, device="cuda") * 10).requires_grad_(True)
+    b = (torch.randn(k, n, device="cuda") * 10).requires_grad_(True)
+
+    c = tropical_maxplus_matmul(a, b)
+    c.sum().backward()
+
+    # Multiple outputs may share same argmax, so nnz <= m * n
+    max_nnz = m * n
+    actual_nnz = (a.grad != 0).sum().item()
+
+    assert 0 < actual_nnz <= max_nnz, \
+        f"Expected 0 < nnz <= {max_nnz}, got {actual_nnz}"
+    # Total gradient mass should equal number of outputs
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01, \
+        "Total gradient should equal number of output elements"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_numerical_gradient_maxplus():
+    """Verify GPU MaxPlus gradients using finite differences."""
+    torch.manual_seed(42)
+
+    m, k, n = 3, 4, 3
+    a = (torch.randn(m, k, device="cuda") * 3).requires_grad_(True)
+    b = (torch.randn(k, n, device="cuda") * 3).requires_grad_(True)
+
+    c = tropical_maxplus_matmul(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for i in range(m):
+        for j in range(k):
+            a_plus = a.detach().clone()
+            a_plus[i, j] += eps
+            a_minus = a.detach().clone()
+            a_minus[i, j] -= eps
+
+            c_plus = tropical_maxplus_matmul(a_plus, b.detach()).sum()
+            c_minus = tropical_maxplus_matmul(a_minus, b.detach()).sum()
+
+            numerical_grad_a[i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        "GPU MaxPlus numerical gradient mismatch"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_numerical_gradient_minplus():
+    """Verify GPU MinPlus gradients using finite differences."""
+    torch.manual_seed(42)
+
+    m, k, n = 3, 4, 3
+    a = (torch.randn(m, k, device="cuda") * 3).requires_grad_(True)
+    b = (torch.randn(k, n, device="cuda") * 3).requires_grad_(True)
+
+    c = tropical_minplus_matmul(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for i in range(m):
+        for j in range(k):
+            a_plus = a.detach().clone()
+            a_plus[i, j] += eps
+            a_minus = a.detach().clone()
+            a_minus[i, j] -= eps
+
+            c_plus = tropical_minplus_matmul(a_plus, b.detach()).sum()
+            c_minus = tropical_minplus_matmul(a_minus, b.detach()).sum()
+
+            numerical_grad_a[i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        "GPU MinPlus numerical gradient mismatch"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_numerical_gradient_maxmul():
+    """Verify GPU MaxMul gradients using finite differences."""
+    torch.manual_seed(42)
+
+    m, k, n = 3, 4, 3
+    # Use positive values for MaxMul
+    a = (torch.randn(m, k, device="cuda").abs() * 2 + 0.5).requires_grad_(True)
+    b = (torch.randn(k, n, device="cuda").abs() * 2 + 0.5).requires_grad_(True)
+
+    c = tropical_maxmul_matmul(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for i in range(m):
+        for j in range(k):
+            a_plus = a.detach().clone()
+            a_plus[i, j] += eps
+            a_minus = a.detach().clone()
+            a_minus[i, j] -= eps
+
+            c_plus = tropical_maxmul_matmul(a_plus, b.detach()).sum()
+            c_minus = tropical_maxmul_matmul(a_minus, b.detach()).sum()
+
+            numerical_grad_a[i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        "GPU MaxMul numerical gradient mismatch"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_minplus_optimization():
+    """Test that GPU MinPlus gradients enable optimization to converge."""
+    torch.manual_seed(42)
+
+    a = torch.randn(8, 6, device="cuda", requires_grad=True)
+    b = torch.randn(6, 10, device="cuda")
+    target = torch.randn(8, 10, device="cuda")
+
+    optimizer = torch.optim.SGD([a], lr=0.1)
+
+    initial_loss = None
+    for step in range(10):
+        optimizer.zero_grad()
+        c = tropical_minplus_matmul(a, b)
+        loss = torch.nn.functional.mse_loss(c, target)
+        if initial_loss is None:
+            initial_loss = loss.item()
+        loss.backward()
+        optimizer.step()
+
+    assert loss.item() < initial_loss, \
+        f"GPU MinPlus loss should decrease: {initial_loss} -> {loss.item()}"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_gpu_maxmul_optimization():
+    """Test that GPU MaxMul gradients enable optimization to converge."""
+    torch.manual_seed(42)
+
+    # Use positive values for MaxMul
+    a = (torch.randn(8, 6, device="cuda").abs() + 0.1).requires_grad_(True)
+    b = (torch.randn(6, 10, device="cuda").abs() + 0.1)
+    target = torch.randn(8, 10, device="cuda").abs() + 1.0
+
+    optimizer = torch.optim.SGD([a], lr=0.01)
+
+    initial_loss = None
+    for step in range(10):
+        optimizer.zero_grad()
+        c = tropical_maxmul_matmul(a, b)
+        loss = torch.nn.functional.mse_loss(c, target)
+        if initial_loss is None:
+            initial_loss = loss.item()
+        loss.backward()
+        optimizer.step()
+        # Keep values positive for MaxMul
+        with torch.no_grad():
+            a.clamp_(min=0.01)
+
+    assert loss.item() < initial_loss, \
+        f"GPU MaxMul loss should decrease: {initial_loss} -> {loss.item()}"
+
+
+# ============================================================================
+# Batched GPU Gradient Tests
+# ============================================================================
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_batched_gpu_maxplus_gradient_structure():
+    """Verify gradient structure of batched MaxPlus matmul on GPU."""
+    batch, m, k, n = 2, 3, 4, 2
+    a = torch.randn(batch, m, k, device="cuda", requires_grad=True)
+    b = torch.randn(batch, k, n, device="cuda", requires_grad=True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    assert a.grad is not None and b.grad is not None
+    assert a.grad.device.type == "cuda"
+    assert b.grad.device.type == "cuda"
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_batched_gpu_minplus_gradient_structure():
+    """Verify gradient structure of batched MinPlus matmul on GPU."""
+    batch, m, k, n = 2, 3, 4, 2
+    a = torch.randn(batch, m, k, device="cuda", requires_grad=True)
+    b = torch.randn(batch, k, n, device="cuda", requires_grad=True)
+
+    c = tropical_minplus_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    assert a.grad is not None and b.grad is not None
+    assert a.grad.device.type == "cuda"
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_batched_gpu_maxmul_gradient_structure():
+    """Verify gradient structure of batched MaxMul matmul on GPU."""
+    batch, m, k, n = 2, 3, 4, 2
+    a = (torch.randn(batch, m, k, device="cuda").abs() + 0.1).requires_grad_(True)
+    b = (torch.randn(batch, k, n, device="cuda").abs() + 0.1).requires_grad_(True)
+
+    c = tropical_maxmul_matmul_batched(a, b)
+    c.backward(torch.ones_like(c))
+
+    assert a.grad is not None and b.grad is not None
+    assert a.grad.device.type == "cuda"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_batched_gpu_numerical_gradient():
+    """Verify batched GPU gradients using finite differences."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 2, 3, 2
+    a = (torch.randn(batch, m, k, device="cuda") * 3).requires_grad_(True)
+    b = (torch.randn(batch, k, n, device="cuda") * 3).requires_grad_(True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    loss = c.sum()
+    loss.backward()
+
+    analytical_grad_a = a.grad.clone()
+
+    eps = 1e-4
+    numerical_grad_a = torch.zeros_like(a)
+
+    for bi in range(batch):
+        for i in range(m):
+            for j in range(k):
+                a_plus = a.detach().clone()
+                a_plus[bi, i, j] += eps
+                a_minus = a.detach().clone()
+                a_minus[bi, i, j] -= eps
+
+                c_plus = tropical_maxplus_matmul_batched(a_plus, b.detach()).sum()
+                c_minus = tropical_maxplus_matmul_batched(a_minus, b.detach()).sum()
+
+                numerical_grad_a[bi, i, j] = (c_plus - c_minus) / (2 * eps)
+
+    assert torch.allclose(analytical_grad_a, numerical_grad_a, atol=0.1), \
+        "GPU batched numerical gradient mismatch"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_batched_gpu_optimization_convergence():
+    """Test that batched GPU gradients enable optimization to converge."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 3, 4, 5, 3
+    a = torch.randn(batch, m, k, device="cuda", requires_grad=True)
+    b = torch.randn(batch, k, n, device="cuda")
+    target = torch.randn(batch, m, n, device="cuda")
+
+    optimizer = torch.optim.SGD([a], lr=0.1)
+
+    initial_loss = None
+    for step in range(10):
+        optimizer.zero_grad()
+        c = tropical_maxplus_matmul_batched(a, b)
+        loss = torch.nn.functional.mse_loss(c, target)
+        if initial_loss is None:
+            initial_loss = loss.item()
+        loss.backward()
+        optimizer.step()
+
+    assert loss.item() < initial_loss, \
+        f"GPU batched loss should decrease: {initial_loss} -> {loss.item()}"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_batched_gpu_gradient_accumulation():
+    """Verify gradient accumulation works correctly for batched GPU operations."""
+    batch, m, k, n = 2, 3, 4, 2
+    a = torch.randn(batch, m, k, device="cuda", requires_grad=True)
+    b = torch.randn(batch, k, n, device="cuda")
+
+    c1 = tropical_maxplus_matmul_batched(a, b)
+    c1.sum().backward()
+    grad1 = a.grad.clone()
+
+    c2 = tropical_maxplus_matmul_batched(a, b)
+    c2.sum().backward()
+
+    assert torch.allclose(a.grad, 2 * grad1), "Batched GPU gradients should accumulate"
+
+
+@pytest.mark.skipif(not GPU_AVAILABLE, reason="CUDA not available")
+def test_batched_gpu_gradient_sparsity():
+    """Test that batched GPU tropical gradients have correct sparsity pattern."""
+    torch.manual_seed(42)
+
+    batch, m, k, n = 2, 4, 5, 3
+    a = (torch.randn(batch, m, k, device="cuda") * 10).requires_grad_(True)
+    b = (torch.randn(batch, k, n, device="cuda") * 10).requires_grad_(True)
+
+    c = tropical_maxplus_matmul_batched(a, b)
+    c.sum().backward()
+
+    # Multiple outputs may share same argmax, so nnz <= batch * m * n
+    max_nnz = batch * m * n
+    actual_nnz = (a.grad != 0).sum().item()
+
+    assert 0 < actual_nnz <= max_nnz, \
+        f"Expected 0 < nnz <= {max_nnz} on GPU, got {actual_nnz}"
+    # Total gradient mass should equal number of outputs
+    assert abs(a.grad.sum().item() - c.numel()) < 0.01, \
+        "Total GPU gradient should equal number of output elements"
+
+
+def test_batched_exports():
+    """Test that batched functions are exported correctly."""
+    from tropical_gemm import pytorch
+
+    assert hasattr(pytorch, "TropicalMaxPlusMatmulBatched")
+    assert hasattr(pytorch, "TropicalMinPlusMatmulBatched")
+    assert hasattr(pytorch, "TropicalMaxMulMatmulBatched")
+    assert hasattr(pytorch, "tropical_maxplus_matmul_batched")
+    assert hasattr(pytorch, "tropical_minplus_matmul_batched")
+    assert hasattr(pytorch, "tropical_maxmul_matmul_batched")

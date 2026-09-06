@@ -18,8 +18,8 @@ High-performance tropical matrix multiplication in Rust with SIMD and CUDA backe
 
 ```toml
 [dependencies]
-tropical-gemm = "0.1"
-tropical-gemm-cuda = "0.1"  # Optional GPU support
+tropical-gemm = "0.2"
+tropical-gemm-cuda = "0.2"  # Optional GPU support
 ```
 
 ## Quick Start

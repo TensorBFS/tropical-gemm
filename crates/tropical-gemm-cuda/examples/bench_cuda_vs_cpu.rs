@@ -94,9 +94,9 @@ fn bench_gpu_persistent<T: tropical_gemm_cuda::CudaKernel>(
 where
     T::Scalar: cudarc::driver::DeviceRepr + Default + Clone + cudarc::driver::ValidAsZeroBits,
 {
-    // Pre-allocate GPU memory
-    let a_gpu = GpuMatrix::from_host_row_major(ctx, a, n, n)?;
-    let b_gpu = GpuMatrix::from_host_row_major(ctx, b, n, n)?;
+    // Pre-allocate GPU memory (data layout doesn't affect benchmark timing)
+    let a_gpu = GpuMatrix::from_host(ctx, a, n, n)?;
+    let b_gpu = GpuMatrix::from_host(ctx, b, n, n)?;
 
     // Warmup
     for _ in 0..WARMUP_ITERS {

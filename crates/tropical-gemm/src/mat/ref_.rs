@@ -43,7 +43,7 @@ impl<'a, S: TropicalSemiring> Clone for MatRef<'a, S> {
 impl<'a, S: TropicalSemiring> MatRef<'a, S> {
     /// Create a matrix reference from a slice of scalars.
     ///
-    /// The data must be in row-major order with length `nrows * ncols`.
+    /// The data must be in column-major order with length `nrows * ncols`.
     pub fn from_slice(data: &'a [S::Scalar], nrows: usize, ncols: usize) -> Self {
         assert_eq!(
             data.len(),
@@ -123,7 +123,8 @@ impl<'a, S: TropicalSemiring> MatRef<'a, S> {
             j,
             self.ncols
         );
-        self.data[i * self.ncols + j]
+        // Column-major indexing
+        self.data[j * self.nrows + i]
     }
 
     /// Convert to an owned matrix.
@@ -131,7 +132,7 @@ impl<'a, S: TropicalSemiring> MatRef<'a, S> {
     where
         S::Scalar: Copy,
     {
-        Mat::from_row_major(self.data, self.nrows, self.ncols)
+        Mat::from_col_major(self.data, self.nrows, self.ncols)
     }
 }
 
@@ -151,21 +152,26 @@ impl<'a, S: TropicalSemiring + KernelDispatch> MatRef<'a, S> {
             self.nrows, self.ncols, b.nrows, b.ncols
         );
 
-        let mut c = Mat::<S>::zeros(self.nrows, b.ncols);
+        let m = self.nrows;
+        let n = b.ncols;
+        let k = self.ncols;
 
+        let mut c = Mat::<S>::zeros(m, n);
+
+        // Transpose trick for column-major: C = A * B becomes C^T = B^T * A^T
         unsafe {
             tropical_gemm_dispatch::<S>(
-                self.nrows,
-                b.ncols,
-                self.ncols,
-                self.data.as_ptr(),
-                self.ncols,
-                Transpose::NoTrans,
+                n,
+                m,
+                k,
                 b.data.as_ptr(),
-                b.ncols,
+                k,
+                Transpose::NoTrans,
+                self.data.as_ptr(),
+                m,
                 Transpose::NoTrans,
                 c.data.as_mut_ptr(),
-                b.ncols,
+                m,
             );
         }
 
@@ -197,25 +203,30 @@ where
         let n = b.ncols;
         let k = self.ncols;
 
-        let mut result = crate::core::GemmWithArgmax::<S>::new(m, n);
+        // Transpose trick for column-major: output (n×m) row-major = (m×n) col-major
+        let mut result = crate::core::GemmWithArgmax::<S>::new(n, m);
 
         unsafe {
             crate::core::tropical_gemm_with_argmax_portable::<S>(
-                m,
                 n,
+                m,
                 k,
-                self.data.as_ptr(),
-                self.ncols,
-                Transpose::NoTrans,
                 b.data.as_ptr(),
-                b.ncols,
+                k,
+                Transpose::NoTrans,
+                self.data.as_ptr(),
+                m,
                 Transpose::NoTrans,
                 &mut result,
             );
         }
 
         MatWithArgmax {
-            values: Mat::from_vec(result.values, m, n),
+            values: Mat {
+                data: result.values,
+                nrows: m,
+                ncols: n,
+            },
             argmax: result.argmax,
         }
     }

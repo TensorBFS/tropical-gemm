@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 //! Metal backend for tropical matrix multiplication.
 //!
 //! This crate provides GPU-accelerated tropical GEMM operations using Metal
@@ -127,7 +129,7 @@ pub fn tropical_matmul_metal<T>(
 ) -> Result<Vec<T::Scalar>>
 where
     T: MetalKernel,
-    T::Scalar: Copy + Default,
+    T::Scalar: bytemuck::Pod + Default,
 {
     if a.len() != m * k {
         return Err(MetalError::DimensionMismatch(format!(
@@ -175,7 +177,7 @@ pub fn tropical_gemm_metal<T>(
 ) -> Result<()>
 where
     T: MetalKernel,
-    T::Scalar: Copy + Default,
+    T::Scalar: bytemuck::Pod + Default,
 {
     if a.cols() != b.rows() {
         return Err(MetalError::DimensionMismatch(format!(
@@ -222,7 +224,7 @@ pub fn tropical_matmul_metal_with_argmax<T>(
 ) -> Result<(Vec<T::Scalar>, Vec<ArgmaxIndex>)>
 where
     T: MetalKernelWithArgmax,
-    T::Scalar: Copy + Default,
+    T::Scalar: bytemuck::Pod + Default,
 {
     if a.len() != m * k {
         return Err(MetalError::DimensionMismatch(format!(
@@ -256,7 +258,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tropical_gemm::types::{TropicalMaxPlus, TropicalMinPlus, TropicalMaxMul};
+    use tropical_gemm::types::{TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus};
 
     #[test]
     fn test_maxplus_basic() {
@@ -346,7 +348,8 @@ mod tests {
         let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
         let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
 
-        let (c, argmax) = tropical_matmul_metal_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
+        let (c, argmax) =
+            tropical_matmul_metal_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
         // C[0,0] = max(1+1, 2+3, 3+5) = 8, argmax = 2
         assert!((c[0] - 8.0).abs() < 1e-5);
@@ -371,8 +374,8 @@ mod tests {
         let k = 128;
         let n = 64;
 
-        let a: Vec<f32> = (0..m*k).map(|i| i as f32 * 0.01).collect();
-        let b: Vec<f32> = (0..k*n).map(|i| i as f32 * 0.01).collect();
+        let a: Vec<f32> = (0..m * k).map(|i| i as f32 * 0.01).collect();
+        let b: Vec<f32> = (0..k * n).map(|i| i as f32 * 0.01).collect();
 
         let c = tropical_matmul_metal::<TropicalMaxPlus<f32>>(&a, m, k, &b, n).unwrap();
 

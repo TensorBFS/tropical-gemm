@@ -30,6 +30,9 @@ tarpaulin-report.html
 cobertura.xml
 *.profraw
 lcov.info
+.coverage
 
 # Benchmarks
 /benchmarks/bench_c_cuda
+
+data/

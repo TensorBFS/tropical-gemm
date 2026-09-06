@@ -66,7 +66,8 @@ impl<'a, S: TropicalSemiring> MatMut<'a, S> {
             j,
             self.ncols
         );
-        &self.data[i * self.ncols + j]
+        // Column-major indexing
+        &self.data[j * self.nrows + i]
     }
 
     /// Get a mutable reference to the value at position (i, j).
@@ -84,7 +85,8 @@ impl<'a, S: TropicalSemiring> MatMut<'a, S> {
             j,
             self.ncols
         );
-        &mut self.data[i * self.ncols + j]
+        // Column-major indexing
+        &mut self.data[j * self.nrows + i]
     }
 }
 
@@ -108,10 +110,12 @@ mod tests {
 
     #[test]
     fn test_matmut_get() {
+        // Column-major: data stored column-by-column
+        // For 2×2 matrix [[1,2],[3,4]], col-major is [1,3,2,4]
         let mut data = vec![
             TropicalMaxPlus(1.0f64),
-            TropicalMaxPlus(2.0),
             TropicalMaxPlus(3.0),
+            TropicalMaxPlus(2.0),
             TropicalMaxPlus(4.0),
         ];
         let m = MatMut::from_slice(&mut data, 2, 2);

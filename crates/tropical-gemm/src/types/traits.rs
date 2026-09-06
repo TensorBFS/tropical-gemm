@@ -49,6 +49,23 @@ pub trait TropicalWithArgmax: TropicalSemiring {
         rhs: Self,
         rhs_idx: Self::Index,
     ) -> (Self, Self::Index);
+
+    /// Whether this (output) value is a tropical-zero "no contribution" cell
+    /// whose argmax index should be canonicalized at GEMM write-back.
+    ///
+    /// Integer tropical zeros use a guard-free in-band sentinel, so a
+    /// no-contribution cell's value drifts and its accumulated argmax adopts a
+    /// spurious `k`. Returning `true` lets the kernel reset that index to the
+    /// deterministic seed (`0`) so the whole repo agrees on one value for such
+    /// cells (and the backward pass routes no gradient there once that seed
+    /// becomes `-1`, a later step).
+    ///
+    /// Default `false`: exact-infinity types (floats) don't drift — their zero
+    /// cells already keep the seed — so the branch folds away for them.
+    #[inline(always)]
+    fn is_no_contribution(&self) -> bool {
+        false
+    }
 }
 
 /// Marker trait for tropical types that support SIMD acceleration.

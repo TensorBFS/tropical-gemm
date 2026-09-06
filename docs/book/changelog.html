@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-4715aa1c.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -185,10 +185,58 @@
 <h2 id="unreleased"><a class="header" href="#unreleased">[Unreleased]</a></h2>
 <h3 id="added"><a class="header" href="#added">Added</a></h3>
 <ul>
+<li><strong>CUDA: on-disk CUBIN cache (issue #41).</strong> Kernels are compiled straight to a CUBIN
+(native SASS) for the device’s architecture and cached on disk
+(<code>$XDG_CACHE_HOME</code> / <code>~/.cache/tropical-gemm/</code>), keyed on a stable hash of source +
+compile flags + GPU arch + NVRTC version. A warm <code>CudaContext::new()</code> drops from ~10.7 s
+to ~0.13 s (skips both the NVRTC compile and the driver’s PTX→SASS JIT). The cache is
+load-validated and self-healing.</li>
+</ul>
+<h3 id="changed"><a class="header" href="#changed">Changed</a></h3>
+<ul>
+<li><strong>CUDA: interior/boundary-split tile loads (issue #40).</strong> The global→shared tile copies
+now give fully-interior blocks a bounds-check-free fast path; only edge blocks (last
+block-row/col, final K-tile) run the per-element <code>row &lt; M &amp;&amp; col &lt; K</code> predicate. The old
+code ran that predicate on every element of every block — the entire throughput gap vs the
+C reference. On A40/CUDA 12.8 the kernels go from ~3-6% slower to <strong>~3% faster</strong> than
+<a href="https://github.com/ArrogantGao/TropicalGemm_Cuda">TropicalGemm_Cuda</a>, with identical
+results (full CUDA suite passes). The shared <code>LOAD_A_TILE</code> / <code>LOAD_B_TILE</code> /
+<code>STORE_C*_TILE</code> macros apply it across all f32/f64/i32/i64, argmax, and batched kernels.</li>
+<li><strong>CUDA: migrated to cudarc 0.19.7.</strong> <code>CUDARC_CUDA_VERSION</code> selects the CUDA toolkit at
+build time, so <code>cargo check</code> works with no toolkit installed and no <code>nvcc</code> is needed at
+build time.</li>
+<li><strong>CUDA: <code>device_name()</code> now reports the real GPU model</strong> (via <code>cuDeviceGetName</code>).</li>
+</ul>
+<h3 id="notes"><a class="header" href="#notes">Notes</a></h3>
+<ul>
+<li><strong>Arch flags do not affect CUDA throughput (issue #40).</strong> Compiling to an arch-targeted
+CUBIN (<code>-arch=sm_XX</code>) runs identically to driver-JIT’d PTX; the CUBIN build is purely a
+startup-latency win (issue #41). The throughput gap vs the C reference was the per-element
+bounds check above, not the toolchain or the CUDA version.</li>
+</ul>
+<h2 id="020"><a class="header" href="#020">[0.2.0]</a></h2>
+<h3 id="added-1"><a class="header" href="#added-1">Added</a></h3>
+<ul>
+<li><strong>2D output functions</strong>: New <code>*_matmul_2d</code> variants that return properly shaped 2D arrays instead of flattened 1D output. Available for all semirings (maxplus, minplus, maxmul) and data types (f32, f64, i32, i64):
+<ul>
+<li><code>maxplus_matmul_2d</code>, <code>minplus_matmul_2d</code>, <code>maxmul_matmul_2d</code> (f32)</li>
+<li><code>maxplus_matmul_2d_f64</code>, <code>minplus_matmul_2d_f64</code>, <code>maxmul_matmul_2d_f64</code></li>
+<li><code>maxplus_matmul_2d_i32</code>, <code>minplus_matmul_2d_i32</code>, <code>maxmul_matmul_2d_i32</code></li>
+<li><code>maxplus_matmul_2d_i64</code>, <code>minplus_matmul_2d_i64</code>, <code>maxmul_matmul_2d_i64</code></li>
+</ul>
+</li>
 <li>mdBook documentation</li>
 <li>Comprehensive architecture documentation</li>
 <li>Performance tuning guide</li>
 <li>Troubleshooting guide</li>
+</ul>
+<h3 id="changed-1"><a class="header" href="#changed-1">Changed</a></h3>
+<ul>
+<li><strong>GIL release during compute</strong>: All CPU functions now release Python’s GIL during heavy computation, allowing other Python threads to run concurrently. This improves performance in multi-threaded Python applications.</li>
+</ul>
+<h3 id="fixed"><a class="header" href="#fixed">Fixed</a></h3>
+<ul>
+<li><strong>Batched CPU path copies</strong>: Fixed unnecessary memory copies in batched PyTorch operations by using <code>np.asarray()</code> instead of <code>np.array()</code> for zero-copy array creation when possible.</li>
 </ul>
 <h2 id="010---initial-release"><a class="header" href="#010---initial-release">[0.1.0] - Initial Release</a></h2>
 <h3 id="features"><a class="header" href="#features">Features</a></h3>

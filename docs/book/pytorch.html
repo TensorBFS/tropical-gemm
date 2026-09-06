@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-4715aa1c.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -384,8 +384,8 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
 
         # Forward pass with argmax tracking
         c_flat, argmax_flat = tropical_gemm.maxplus_matmul_with_argmax(a_np, b_np)
-        c_np = np.array(c_flat).reshape(m, n)
-        argmax_np = np.array(argmax_flat).reshape(m, n)
+        c_np = np.asarray(c_flat).reshape(m, n)  # zero-copy when possible
+        argmax_np = np.asarray(argmax_flat).reshape(m, n)
 
         # Save for backward
         ctx.save_for_backward(torch.from_numpy(argmax_np))
@@ -408,8 +408,8 @@ class TropicalMaxPlusMatmul(torch.autograd.Function):
         grad_a_flat = tropical_gemm.backward_a(grad_c_np, argmax_np, k)
         grad_b_flat = tropical_gemm.backward_b(grad_c_np, argmax_np, k)
 
-        grad_a = torch.from_numpy(np.array(grad_a_flat).reshape(m, k)).to(grad_c.device)
-        grad_b = torch.from_numpy(np.array(grad_b_flat).reshape(k, n)).to(grad_c.device)
+        grad_a = torch.from_numpy(np.asarray(grad_a_flat).reshape(m, k)).to(grad_c.device)
+        grad_b = torch.from_numpy(np.asarray(grad_b_flat).reshape(k, n)).to(grad_c.device)
 
         return grad_a, grad_b
 </code></pre>

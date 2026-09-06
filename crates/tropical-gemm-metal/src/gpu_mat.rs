@@ -5,6 +5,19 @@ use crate::error::{MetalError, Result};
 use metal::{Buffer, MTLResourceOptions};
 use std::mem;
 
+/// Validate extents before calculating byte sizes or narrowing kernel arguments.
+fn buffer_len<T>(rows: usize, cols: usize) -> Result<usize> {
+    if rows > i32::MAX as usize || cols > i32::MAX as usize {
+        return Err(MetalError::DimensionMismatch(
+            "matrix dimension exceeds i32::MAX".into(),
+        ));
+    }
+    rows.checked_mul(cols)
+        .and_then(|n| n.checked_mul(mem::size_of::<T>()))
+        .filter(|&n| n <= isize::MAX as usize)
+        .ok_or_else(|| MetalError::DimensionMismatch("matrix byte size overflows".into()))
+}
+
 /// Type alias for argmax indices (k-index that produced each C[i,j]).
 pub type ArgmaxIndex = i32;
 
@@ -12,14 +25,14 @@ pub type ArgmaxIndex = i32;
 ///
 /// Data is stored in column-major order (Fortran order) for compatibility
 /// with BLAS conventions.
-pub struct GpuMatrix<T: Copy + Default> {
+pub struct GpuMatrix<T: bytemuck::Pod + Default> {
     buffer: Buffer,
     rows: usize,
     cols: usize,
     _marker: std::marker::PhantomData<T>,
 }
 
-impl<T: Copy + Default> GpuMatrix<T> {
+impl<T: bytemuck::Pod + Default> GpuMatrix<T> {
     /// Create a GPU matrix from host data.
     ///
     /// The input data should be in row-major order. It will be transposed
@@ -30,6 +43,7 @@ impl<T: Copy + Default> GpuMatrix<T> {
         rows: usize,
         cols: usize,
     ) -> Result<Self> {
+        let byte_len = buffer_len::<T>(rows, cols)?;
         if data.len() != rows * cols {
             return Err(MetalError::DimensionMismatch(format!(
                 "Expected {} elements, got {}",
@@ -46,7 +60,6 @@ impl<T: Copy + Default> GpuMatrix<T> {
             }
         }
 
-        let byte_len = col_major.len() * mem::size_of::<T>();
         let buffer = ctx.device().new_buffer_with_data(
             col_major.as_ptr() as *const _,
             byte_len as u64,
@@ -68,6 +81,7 @@ impl<T: Copy + Default> GpuMatrix<T> {
         rows: usize,
         cols: usize,
     ) -> Result<Self> {
+        let byte_len = buffer_len::<T>(rows, cols)?;
         if data.len() != rows * cols {
             return Err(MetalError::DimensionMismatch(format!(
                 "Expected {} elements, got {}",
@@ -76,7 +90,6 @@ impl<T: Copy + Default> GpuMatrix<T> {
             )));
         }
 
-        let byte_len = data.len() * mem::size_of::<T>();
         let buffer = ctx.device().new_buffer_with_data(
             data.as_ptr() as *const _,
             byte_len as u64,
@@ -93,11 +106,10 @@ impl<T: Copy + Default> GpuMatrix<T> {
 
     /// Allocate a zeroed GPU matrix.
     pub fn alloc(ctx: &MetalContext, rows: usize, cols: usize) -> Result<Self> {
-        let byte_len = (rows * cols * mem::size_of::<T>()) as u64;
-        let buffer = ctx.device().new_buffer(
-            byte_len,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let byte_len = buffer_len::<T>(rows, cols)? as u64;
+        let buffer = ctx
+            .device()
+            .new_buffer(byte_len, MTLResourceOptions::StorageModeShared);
 
         // Zero the buffer
         unsafe {
@@ -177,14 +189,14 @@ impl<T: Copy + Default> GpuMatrix<T> {
 ///
 /// This stores both the result of a tropical GEMM and the k-indices
 /// that produced each optimal value in C[i,j]. Used for gradient computation.
-pub struct GpuMatrixWithArgmax<T: Copy + Default> {
+pub struct GpuMatrixWithArgmax<T: bytemuck::Pod + Default> {
     /// The result matrix C.
     pub matrix: GpuMatrix<T>,
     /// The argmax indices: argmax[i,j] = k such that C[i,j] = A[i,k] ⊗ B[k,j].
     pub argmax: GpuMatrix<ArgmaxIndex>,
 }
 
-impl<T: Copy + Default> GpuMatrixWithArgmax<T> {
+impl<T: bytemuck::Pod + Default> GpuMatrixWithArgmax<T> {
     /// Allocate a zeroed GPU matrix with argmax indices.
     pub fn alloc(ctx: &MetalContext, rows: usize, cols: usize) -> Result<Self> {
         let matrix = GpuMatrix::alloc(ctx, rows, cols)?;

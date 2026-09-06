@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "tropical-gemm"
-version = "0.1.0"
+version = "0.3.0"
 description = "Fast tropical matrix multiplication with automatic differentiation support"
 readme = "README.md"
 license = { text = "MIT" }

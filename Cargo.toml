@@ -1,14 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tropical-gemm-cuda",
     "crates/tropical-gemm-metal",
+    "crates/tropical-gemm-cuda",
     "crates/tropical-gemm",
     "crates/tropical-gemm-python",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 authors = ["Leo"]
@@ -16,17 +16,26 @@ repository = "https://github.com/TensorBFS/tropical-gemm"
 
 [workspace.dependencies]
 # Internal crates
-tropical-gemm-cuda = { version = "0.1.0", path = "crates/tropical-gemm-cuda" }
-tropical-gemm-metal = { version = "0.1.0", path = "crates/tropical-gemm-metal" }
-tropical-gemm = { version = "0.1.0", path = "crates/tropical-gemm" }
+tropical-gemm-cuda = { version = "0.3.0", path = "crates/tropical-gemm-cuda" }
+tropical-gemm = { version = "0.3.0", path = "crates/tropical-gemm" }
 
 # External dependencies
 num-traits = "0.2"
-wide = "0.7"
+wide = "1"
 rayon = "1.10"
-cudarc = { version = "0.12", features = ["driver", "nvrtc", "cuda-12020"] }
-thiserror = "1.0"
+# CUDA version is a deliberate VARIABLE — never hardcode a `cuda-XXXXX` feature here.
+# cudarc's build.rs selects the version as: (1) `CUDARC_CUDA_VERSION` env (e.g.
+# `12080`), else (2) a `cuda-XXXXX` feature, else (3) `nvcc --version`. A hardcoded
+# `cuda-XXXXX` is NOT overridden by a mismatched env — both cfgs activate and cudarc
+# compiles two binding sets (~171 dup-definition errors). So instead of pinning a
+# version we use `cuda-version-from-build-system` + `fallback-latest`:
+#   • HPC: set `CUDARC_CUDA_VERSION=<NNNNN>` to match `module load cuda/X.Y` (env wins);
+#     leave it unset and nvcc auto-detects the loaded toolkit.
+#   • macOS dev (no nvcc): `fallback-latest` picks cudarc's newest supported version,
+#     purely so `cargo check` compiles (dynamic-loading → never actually runs CUDA).
+cudarc = { version = "0.19.7", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-version-from-build-system", "fallback-latest"] }
+thiserror = "2.0"
 
 # Testing
-criterion = "0.5"
+criterion = "0.8"
 proptest = "1.0"

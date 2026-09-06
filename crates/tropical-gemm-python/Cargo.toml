@@ -14,10 +14,11 @@ doc = false  # Docs conflict with tropical-gemm crate; use Python docstrings ins
 
 [features]
 default = []
-cuda = ["tropical-gemm-cuda"]
+cuda = ["tropical-gemm-cuda", "pyo3-dlpack"]
 
 [dependencies]
 tropical-gemm.workspace = true
 tropical-gemm-cuda = { workspace = true, optional = true }
-pyo3 = { version = "0.23", features = ["extension-module"] }
-numpy = "0.23"
+pyo3 = { version = "0.28", features = ["extension-module"] }
+numpy = "0.28"
+pyo3-dlpack = { git = "https://github.com/isPANN/pyo3-dlpack", tag = "v0.2.0", optional = true }

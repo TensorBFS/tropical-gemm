@@ -2,6 +2,28 @@
 //!
 //! This crate provides GPU-accelerated tropical GEMM operations using CUDA.
 //!
+//! # Storage layouts
+//!
+//! Two matrix types coexist in the public API and they use *different* memory
+//! orders by design:
+//!
+//! - [`GpuMatrix`] (owned, BLAS-style) is **column-major**. This matches the
+//!   CPU `tropical_gemm::Mat` type and the kernels' internal layout, so it is
+//!   the preferred type for native Rust callers.
+//! - [`ExternalGpuMatrix`] (non-owning, for DLPack / PyTorch interop) is
+//!   **row-major** (C-contiguous). The external kernel launchers
+//!   (`launch_gemm_external_*`) compensate for this by swapping operands and
+//!   M↔N internally, so callers never have to transpose externally-owned data.
+//!
+//! The two paths produce correct kernel output **when each is fed data in its
+//! native order** — there is no runtime check, so picking the wrong constructor
+//! silently transposes. If you are unsure, prefer [`GpuMatrix`] and supply data
+//! in column-major order.
+//!
+//! Every other owned type in this crate — [`GpuTensor3`],
+//! [`GpuTensor3WithArgmax`], the `&[T]` slices accepted by top-level helpers
+//! like [`tropical_matmul_gpu`] — also follows the column-major convention.
+//!
 //! # Quick Start
 //!
 //! ```ignore
@@ -9,6 +31,7 @@
 //! use tropical_gemm::types::TropicalMaxPlus;
 //!
 //! // Simple one-shot API (uses cached global context for performance)
+//! // Data should be in column-major order
 //! let a = vec![1.0f32; 1024 * 1024];
 //! let b = vec![1.0f32; 1024 * 1024];
 //! let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 1024, 1024, &b, 1024)?;
@@ -24,114 +47,183 @@
 //!
 //! let ctx = CudaContext::new()?;
 //!
-//! let a_gpu = GpuMatrix::from_host_row_major(&ctx, &a, m, k)?;
-//! let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n)?;
+//! // Data in column-major order (zero-copy upload)
+//! let a_gpu = GpuMatrix::from_host(&ctx, &a, m, k)?;
+//! let b_gpu = GpuMatrix::from_host(&ctx, &b, k, n)?;
 //! let mut c_gpu = GpuMatrix::alloc(&ctx, m, n)?;
 //!
 //! tropical_gemm_gpu::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 //!
-//! let c = c_gpu.to_host_row_major(&ctx)?;
+//! let c = c_gpu.to_host(&ctx)?;  // Column-major result
 //! ```
 //!
 //! # Performance
 //!
 //! The convenience functions (`tropical_matmul_gpu`, etc.) use a lazily-initialized
-//! global context that persists across calls. This avoids the ~7 second NVRTC
-//! compilation overhead on each call.
+//! global context that persists across calls, so kernel compilation happens at most once
+//! per process. Across processes the compiled kernels are cached on disk as a CUBIN (see
+//! [`CudaContext`]), so a warm `CudaContext::new()` is ~0.13s instead of the ~10s cold
+//! NVRTC compile.
+//!
+//! # Integer scalar types and data range
+//!
+//! For integer scalars (`i32`, `i64`) the tropical zero (`-inf` / `+inf`) is
+//! represented by a large in-band sentinel ([`SENTINEL_I32`] = 1e9,
+//! [`SENTINEL_I64`] = 2^60): MaxPlus uses `-SENTINEL`, MinPlus uses `+SENTINEL`.
+//! Tropical multiply is a plain integer add with no per-element guard, so input
+//! data must stay well clear of the sentinel:
+//!
+//! - **Fully reliable while `|data| < |S|/4`** ([`MAX_RELIABLE_DATA_I32`] ≈ 2.5e8,
+//!   [`MAX_RELIABLE_DATA_I64`] ≈ 2.9e17 — both one below `|S|/4`, which is excluded).
+//!   Results are correct and tropical-zero outputs are detectable with a threshold test.
+//! - For `|S|/4 ≤ |data| < |S|/3` results are still correct, but a genuine finite
+//!   result may dip past the `|S|/2` threshold and be misread as a tropical zero.
+//! - For `|data| ≥ |S|/3` a real contribution can be masked by a `sentinel + data`
+//!   term and the result is silently **wrong** — switch to `i64`, or scale data down.
+//!
+//! Detect a tropical-zero output entry with a threshold (e.g. `v <= -SENTINEL_I32/2`
+//! for MaxPlus), not `v == -SENTINEL_I32`: the value drifts to `sentinel + data`
+//! rather than landing exactly on the sentinel. The boundaries above are measured
+//! in `examples/int_range_limits.rs`. (`f32`/`f64` use real IEEE infinities and
+//! have none of these limits.)
 
+mod compile;
 mod context;
 mod error;
 mod gpu_mat;
 mod kernels;
 mod memory;
 
-use once_cell::sync::OnceCell;
-use std::sync::Mutex;
+use cudarc::driver::CudaContext as CudaCtx;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
-/// Global CUDA context for convenience functions.
-/// Lazily initialized on first use, persists for process lifetime.
-static GLOBAL_CONTEXT: OnceCell<CudaContext> = OnceCell::new();
+/// Per-device CUDA context cache, dynamically sized based on available devices.
+static DEVICE_CONTEXTS: OnceLock<Mutex<HashMap<usize, &'static CudaContext>>> = OnceLock::new();
 
-/// Mutex to ensure only one thread initializes the context.
+/// Mutex to ensure thread-safe initialization.
 static INIT_MUTEX: Mutex<()> = Mutex::new(());
 
-/// Get or initialize the global CUDA context.
+/// Get the number of available CUDA devices.
+pub fn cuda_device_count() -> Result<usize> {
+    Ok(CudaCtx::device_count()? as usize)
+}
+
+/// Get or initialize the CUDA context for a specific device.
 ///
-/// This function is thread-safe and will only initialize the context once.
-/// Subsequent calls return the cached context.
+/// This function is thread-safe and will only initialize the context once per device.
+/// Subsequent calls return the cached context for that device.
+///
+/// # Arguments
+///
+/// * `device_id` - The CUDA device ordinal
 ///
 /// # Errors
 ///
-/// Returns an error if CUDA initialization fails (no device, driver issues, etc.)
-pub fn get_global_context() -> Result<&'static CudaContext> {
-    // Fast path: already initialized
-    if let Some(ctx) = GLOBAL_CONTEXT.get() {
-        return Ok(ctx);
+/// Returns an error if CUDA initialization fails or device_id is invalid.
+pub fn get_context_for_device(device_id: usize) -> Result<&'static CudaContext> {
+    // Check device count
+    let device_count = cuda_device_count()?;
+    if device_id >= device_count {
+        return Err(CudaError::DimensionMismatch(format!(
+            "Device {} not available (only {} CUDA device(s) found)",
+            device_id, device_count
+        )));
+    }
+
+    // Initialize the map if needed
+    let contexts = DEVICE_CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+    // Fast path: check if context exists
+    {
+        let map = contexts.lock().unwrap();
+        if let Some(&ctx) = map.get(&device_id) {
+            return Ok(ctx);
+        }
     }
 
     // Slow path: need to initialize
     let _lock = INIT_MUTEX.lock().unwrap();
 
     // Double-check after acquiring lock
-    if let Some(ctx) = GLOBAL_CONTEXT.get() {
-        return Ok(ctx);
+    {
+        let map = contexts.lock().unwrap();
+        if let Some(&ctx) = map.get(&device_id) {
+            return Ok(ctx);
+        }
     }
 
-    // Initialize and store
-    let ctx = CudaContext::new()?;
-    let _ = GLOBAL_CONTEXT.set(ctx);
+    // Create context and leak it for 'static lifetime
+    let ctx = CudaContext::new_on_device(device_id)?;
+    let ctx_static: &'static CudaContext = Box::leak(Box::new(ctx));
 
-    Ok(GLOBAL_CONTEXT.get().unwrap())
+    // Store in map
+    {
+        let mut map = contexts.lock().unwrap();
+        map.insert(device_id, ctx_static);
+    }
+
+    Ok(ctx_static)
+}
+
+/// Get or initialize the global CUDA context (device 0).
+///
+/// This is a convenience function equivalent to `get_context_for_device(0)`.
+///
+/// # Errors
+///
+/// Returns an error if CUDA initialization fails (no device, driver issues, etc.)
+pub fn get_global_context() -> Result<&'static CudaContext> {
+    get_context_for_device(0)
 }
 
 pub use context::CudaContext;
 pub use error::{CudaError, Result};
 pub use gpu_mat::{GpuMat, GpuMatWithArgmax};
-pub use kernels::{CudaKernel, CudaKernelWithArgmax};
-pub use memory::{ArgmaxIndex, GpuMatrix, GpuMatrixWithArgmax};
+pub use kernels::{
+    launch_gemm_external_batched_with_argmax_f32, launch_gemm_external_f32,
+    launch_gemm_external_with_argmax_f32, CudaKernel, CudaKernelWithArgmax,
+};
+pub use memory::{
+    ArgmaxIndex, ExternalGpuMatrix, ExternalGpuMemory, ExternalGpuTensor3, GpuMatrix,
+    GpuMatrixWithArgmax, GpuTensor3, GpuTensor3WithArgmax,
+};
+
+// ============================================================================
+// Integer data-range constants
+// ============================================================================
+// See the crate-level "Integer scalar types and data range" docs for the full
+// story. These mirror NEG_INF_I32/INF_I32/NEG_INF_I64 in the kernel source
+// (kernels/tropical_gemm.cu) — keep the two in sync.
+
+/// Magnitude of the `i32` tropical-zero sentinel. The MaxPlus zero (`-inf`) is
+/// `-SENTINEL_I32` and the MinPlus zero (`+inf`) is `+SENTINEL_I32`.
+pub const SENTINEL_I32: i32 = 1_000_000_000;
+
+/// Magnitude of the `i64` tropical-zero sentinel (`2^60`). See [`SENTINEL_I32`].
+pub const SENTINEL_I64: i64 = 1 << 60;
+
+/// Largest input-data magnitude for which `i32` integer GEMM is fully reliable
+/// (`SENTINEL_I32 / 4 - 1` = 249_999_999, ≈ 2.5e8). The bound is *strict*
+/// (`|data| < |S|/4`): at exactly `|data| = |S|/4` a genuine finite result equals
+/// `-|S|/2`, which lands on the inclusive `|v| >= |S|/2` detection threshold and
+/// would be misread as a tropical zero — so `|S|/4` itself is excluded. Above this
+/// a result can be silently wrong; see the crate-level "Integer scalar types and
+/// data range" docs.
+pub const MAX_RELIABLE_DATA_I32: i32 = SENTINEL_I32 / 4 - 1;
+
+/// Largest input-data magnitude for which `i64` integer GEMM is fully reliable
+/// (`SENTINEL_I64 / 4 - 1` ≈ 2.9e17). See [`MAX_RELIABLE_DATA_I32`] for why the
+/// bound excludes `|S|/4` itself.
+pub const MAX_RELIABLE_DATA_I64: i64 = SENTINEL_I64 / 4 - 1;
 
 use cudarc::driver::{DeviceRepr, ValidAsZeroBits};
 
-/// One-shot tropical matrix multiplication on GPU.
-///
-/// This function handles all GPU memory management automatically.
-/// For repeated operations, use `tropical_gemm_gpu` with a persistent context.
-///
-/// # Arguments
-///
-/// * `a` - Matrix A in row-major order, dimensions m×k
-/// * `m` - Number of rows in A
-/// * `k` - Number of columns in A / rows in B
-/// * `b` - Matrix B in row-major order, dimensions k×n
-/// * `n` - Number of columns in B
-///
-/// # Returns
-///
-/// Result matrix C in row-major order, dimensions m×n
-///
-/// # Example
-///
-/// ```ignore
-/// use tropical_gemm_cuda::tropical_matmul_gpu;
-/// use tropical_gemm::types::TropicalMaxPlus;
-///
-/// let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
-/// let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
-///
-/// let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2)?;
-/// // c is 2x2, row-major
-/// ```
-pub fn tropical_matmul_gpu<T>(
-    a: &[T::Scalar],
-    m: usize,
-    k: usize,
-    b: &[T::Scalar],
-    n: usize,
-) -> Result<Vec<T::Scalar>>
-where
-    T: CudaKernel,
-    T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
-{
+// ============================================================================
+// Helper: validate GEMM dimensions
+// ============================================================================
+
+fn validate_gemm_input<T>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Result<()> {
     if a.len() != m * k {
         return Err(CudaError::DimensionMismatch(format!(
             "A: expected {} elements, got {}",
@@ -146,17 +238,81 @@ where
             b.len()
         )));
     }
+    Ok(())
+}
 
-    // Use global cached context to avoid NVRTC recompilation
+/// One-shot tropical matrix multiplication on GPU.
+///
+/// This function handles all GPU memory management automatically.
+///
+/// # Performance Note
+///
+/// This function performs host-to-device (H2D) transfers for inputs and
+/// device-to-host (D2H) transfer for output on every call. For repeated
+/// operations, use [`GpuMatrix`] with [`tropical_gemm_gpu`] instead to
+/// keep data on GPU between operations:
+///
+/// ```ignore
+/// let ctx = get_global_context()?;
+/// let a_gpu = GpuMatrix::from_host(ctx, &a, m, k)?;
+/// let b_gpu = GpuMatrix::from_host(ctx, &b, k, n)?;
+/// let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
+///
+/// // Repeated operations without H2D/D2H transfers
+/// for _ in 0..iterations {
+///     tropical_gemm_gpu::<TropicalMaxPlus<f32>>(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
+/// }
+///
+/// let c = c_gpu.to_host(ctx)?; // Single D2H at the end
+/// ```
+///
+/// # Arguments
+///
+/// * `a` - Matrix A in **column-major** order, dimensions m×k
+/// * `m` - Number of rows in A
+/// * `k` - Number of columns in A / rows in B
+/// * `b` - Matrix B in **column-major** order, dimensions k×n
+/// * `n` - Number of columns in B
+///
+/// # Returns
+///
+/// Result matrix C in **column-major** order, dimensions m×n
+///
+/// # Example
+///
+/// ```ignore
+/// use tropical_gemm_cuda::tropical_matmul_gpu;
+/// use tropical_gemm::types::TropicalMaxPlus;
+///
+/// // Column-major data
+/// let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0]; // 2x3 col-major
+/// let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0]; // 3x2 col-major
+///
+/// let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2)?;
+/// // c is 2x2, column-major
+/// ```
+pub fn tropical_matmul_gpu<T>(
+    a: &[T::Scalar],
+    m: usize,
+    k: usize,
+    b: &[T::Scalar],
+    n: usize,
+) -> Result<Vec<T::Scalar>>
+where
+    T: CudaKernel,
+    T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
+{
+    validate_gemm_input(a, b, m, k, n)?;
+
     let ctx = get_global_context()?;
 
-    let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-    let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+    let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+    let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
     let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
     T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-    c_gpu.to_host_row_major(ctx)
+    c_gpu.to_host(ctx)
 }
 
 /// Tropical matrix multiplication with persistent context.
@@ -235,18 +391,24 @@ where
 /// which k-index produced each C[i,j]. This is essential for backward
 /// propagation in tropical neural networks.
 ///
+/// # Performance Note
+///
+/// This function performs H2D transfers for inputs and D2H transfers for outputs
+/// on every call. For repeated operations, use [`GpuMatrixWithArgmax`] with
+/// [`tropical_gemm_gpu_with_argmax`] to keep data on GPU between operations.
+///
 /// # Arguments
 ///
-/// * `a` - Matrix A in row-major order, dimensions m×k
+/// * `a` - Matrix A in **column-major** order, dimensions m×k
 /// * `m` - Number of rows in A
 /// * `k` - Number of columns in A / rows in B
-/// * `b` - Matrix B in row-major order, dimensions k×n
+/// * `b` - Matrix B in **column-major** order, dimensions k×n
 /// * `n` - Number of columns in B
 ///
 /// # Returns
 ///
 /// A tuple of (C, argmax) where:
-/// - C is the result matrix in row-major order, dimensions m×n
+/// - C is the result matrix in **column-major** order, dimensions m×n
 /// - argmax[i,j] is the k-index such that C[i,j] = A[i,k] ⊗ B[k,j]
 ///
 /// # Example
@@ -255,11 +417,12 @@ where
 /// use tropical_gemm_cuda::tropical_matmul_gpu_with_argmax;
 /// use tropical_gemm::types::TropicalMaxPlus;
 ///
-/// let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
-/// let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
+/// // Column-major data
+/// let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0]; // 2x3 col-major
+/// let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0]; // 3x2 col-major
 ///
 /// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2)?;
-/// // c is 2x2, argmax is 2x2 with k-indices
+/// // c is 2x2 column-major, argmax is 2x2 column-major with k-indices
 /// ```
 pub fn tropical_matmul_gpu_with_argmax<T>(
     a: &[T::Scalar],
@@ -272,32 +435,18 @@ where
     T: CudaKernelWithArgmax,
     T::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
 {
-    if a.len() != m * k {
-        return Err(CudaError::DimensionMismatch(format!(
-            "A: expected {} elements, got {}",
-            m * k,
-            a.len()
-        )));
-    }
-    if b.len() != k * n {
-        return Err(CudaError::DimensionMismatch(format!(
-            "B: expected {} elements, got {}",
-            k * n,
-            b.len()
-        )));
-    }
+    validate_gemm_input(a, b, m, k, n)?;
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
 
-    let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-    let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+    let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+    let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
     let mut c_gpu = GpuMatrixWithArgmax::alloc(ctx, m, n)?;
 
     T::launch_gemm_with_argmax(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-    let c = c_gpu.matrix_to_host_row_major(ctx)?;
-    let argmax = c_gpu.argmax_to_host_row_major(ctx)?;
+    let c = c_gpu.matrix_to_host(ctx)?;
+    let argmax = c_gpu.argmax_to_host(ctx)?;
 
     Ok((c, argmax))
 }
@@ -451,18 +600,17 @@ where
         }
     }
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
     let mut results = Vec::with_capacity(batch_size);
 
     for (a, b) in a_batch.iter().zip(b_batch.iter()) {
-        let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+        let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
         let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
         T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        results.push(c_gpu.to_host_row_major(ctx)?);
+        results.push(c_gpu.to_host(ctx)?);
     }
 
     Ok(results)
@@ -520,7 +668,6 @@ where
         return Ok(Vec::new());
     }
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
     let mut c = vec![T::Scalar::default(); batch_size * c_stride];
 
@@ -528,13 +675,13 @@ where
         let a_slice = &a[i * a_stride..(i + 1) * a_stride];
         let b_slice = &b[i * b_stride..(i + 1) * b_stride];
 
-        let a_gpu = GpuMatrix::from_host_row_major(ctx, a_slice, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(ctx, b_slice, k, n)?;
+        let a_gpu = GpuMatrix::from_host(ctx, a_slice, m, k)?;
+        let b_gpu = GpuMatrix::from_host(ctx, b_slice, k, n)?;
         let mut c_gpu = GpuMatrix::alloc(ctx, m, n)?;
 
         T::launch_gemm(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        let c_result = c_gpu.to_host_row_major(ctx)?;
+        let c_result = c_gpu.to_host(ctx)?;
         c[i * c_stride..(i + 1) * c_stride].copy_from_slice(&c_result);
     }
 
@@ -551,17 +698,19 @@ where
 /// a forward pass with `tropical_matmul_gpu_with_argmax`) and computes the gradient
 /// for backpropagation.
 ///
+/// All matrices are in **column-major** order.
+///
 /// # Arguments
 ///
-/// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
-/// * `argmax` - Argmax indices from forward pass (k-index that produced each C[i,j])
+/// * `grad_c` - Gradient of the loss with respect to C (column-major), dimensions m×n
+/// * `argmax` - Argmax indices from forward pass (column-major), k-index that produced each C[i,j]
 /// * `m` - Number of rows in A and C
 /// * `k` - Number of columns in A / rows in B
 /// * `n` - Number of columns in B and C
 ///
 /// # Returns
 ///
-/// Gradient of the loss with respect to A, dimensions m×k
+/// Gradient of the loss with respect to A (column-major), dimensions m×k
 ///
 /// # Example
 ///
@@ -569,10 +718,10 @@ where
 /// use tropical_gemm_cuda::{tropical_matmul_gpu_with_argmax, tropical_backward_a_gpu};
 /// use tropical_gemm::TropicalMaxPlus;
 ///
-/// // Forward pass
+/// // Forward pass (column-major data)
 /// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
 ///
-/// // Backward pass (given grad_c from upstream)
+/// // Backward pass (given grad_c from upstream, column-major)
 /// let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
 /// ```
 pub fn tropical_backward_a_gpu<T>(
@@ -590,11 +739,14 @@ where
 
     let mut grad_a = vec![T::default(); m * k];
 
-    for i in 0..m {
-        for j in 0..n {
-            let idx = argmax[i * n + j] as usize;
-            if idx < k {
-                grad_a[i * k + idx] += grad_c[i * n + j];
+    // Column-major indexing: element (i,j) is at index i + j*m
+    for j in 0..n {
+        for i in 0..m {
+            let col_idx = i + j * m;
+            let kk = argmax[col_idx] as usize;
+            if kk < k {
+                // grad_a[i, kk] += grad_c[i, j]
+                grad_a[i + kk * m] += grad_c[col_idx];
             }
         }
     }
@@ -604,17 +756,19 @@ where
 
 /// Compute gradient with respect to matrix B from GPU argmax indices.
 ///
+/// All matrices are in **column-major** order.
+///
 /// # Arguments
 ///
-/// * `grad_c` - Gradient of the loss with respect to C, dimensions m×n
-/// * `argmax` - Argmax indices from forward pass (k-index that produced each C[i,j])
+/// * `grad_c` - Gradient of the loss with respect to C (column-major), dimensions m×n
+/// * `argmax` - Argmax indices from forward pass (column-major), k-index that produced each C[i,j]
 /// * `m` - Number of rows in A and C
 /// * `k` - Number of columns in A / rows in B
 /// * `n` - Number of columns in B and C
 ///
 /// # Returns
 ///
-/// Gradient of the loss with respect to B, dimensions k×n
+/// Gradient of the loss with respect to B (column-major), dimensions k×n
 ///
 /// # Example
 ///
@@ -622,10 +776,10 @@ where
 /// use tropical_gemm_cuda::{tropical_matmul_gpu_with_argmax, tropical_backward_b_gpu};
 /// use tropical_gemm::TropicalMaxPlus;
 ///
-/// // Forward pass
+/// // Forward pass (column-major data)
 /// let (c, argmax) = tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n)?;
 ///
-/// // Backward pass (given grad_c from upstream)
+/// // Backward pass (given grad_c from upstream, column-major)
 /// let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
 /// ```
 pub fn tropical_backward_b_gpu<T>(
@@ -643,11 +797,14 @@ where
 
     let mut grad_b = vec![T::default(); k * n];
 
-    for i in 0..m {
-        for j in 0..n {
-            let idx = argmax[i * n + j] as usize;
-            if idx < k {
-                grad_b[idx * n + j] += grad_c[i * n + j];
+    // Column-major indexing: element (i,j) is at index i + j*m
+    for j in 0..n {
+        for i in 0..m {
+            let col_idx = i + j * m;
+            let kk = argmax[col_idx] as usize;
+            if kk < k {
+                // grad_b[kk, j] += grad_c[i, j]
+                grad_b[kk + j * k] += grad_c[col_idx];
             }
         }
     }
@@ -757,12 +914,12 @@ where
 pub fn tropical_backward_a_gpu_kernel(
     ctx: &CudaContext,
     grad_c: &GpuMatrix<f32>,
-    argmax: &cudarc::driver::CudaSlice<i32>,
+    argmax: &cudarc::driver::CudaSlice<ArgmaxIndex>,
     m: usize,
     k: usize,
     n: usize,
 ) -> Result<GpuMatrix<f32>> {
-    use cudarc::driver::LaunchAsync;
+    use cudarc::driver::PushKernelArg;
 
     // Allocate output gradient (initialized to zero)
     let mut grad_a = GpuMatrix::alloc(ctx, m, k)?;
@@ -771,7 +928,11 @@ pub fn tropical_backward_a_gpu_kernel(
 
     let total = m * n;
     let block_size = 256u32;
-    let grid_size = ((total as u32) + block_size - 1) / block_size;
+    // Compute the block count in 64-bit: `total as u32` would truncate when
+    // m*n >= 2^32 and launch far too few blocks (issue #63). The kernel covers
+    // every output element with a 64-bit linear index, so one block per 256
+    // elements is correct; the count itself stays well within gridDim.x.
+    let grid_size = (total as u64).div_ceil(block_size as u64) as u32;
 
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (grid_size, 1, 1),
@@ -779,21 +940,26 @@ pub fn tropical_backward_a_gpu_kernel(
         shared_mem_bytes: 0,
     };
 
+    // Bind scalar kernel args to locals so they outlive the launch builder.
+    let m_i32 = m as i32;
+    let n_i32 = n as i32;
+    let k_i32 = k as i32;
+
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(grad_c.as_slice())
+        .arg(argmax)
+        .arg(grad_a.as_slice_mut())
+        .arg(&m_i32)
+        .arg(&n_i32)
+        .arg(&k_i32);
     unsafe {
-        kernel.launch(
-            cfg,
-            (
-                grad_c.as_slice(),
-                argmax,
-                grad_a.as_slice_mut(),
-                m as i32,
-                n as i32,
-                k as i32,
-            ),
-        )?;
+        builder.launch(cfg)?;
     }
 
-    ctx.device().synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See `kernels::` module docs on the launch contract.
     Ok(grad_a)
 }
 
@@ -817,12 +983,12 @@ pub fn tropical_backward_a_gpu_kernel(
 pub fn tropical_backward_b_gpu_kernel(
     ctx: &CudaContext,
     grad_c: &GpuMatrix<f32>,
-    argmax: &cudarc::driver::CudaSlice<i32>,
+    argmax: &cudarc::driver::CudaSlice<ArgmaxIndex>,
     m: usize,
     k: usize,
     n: usize,
 ) -> Result<GpuMatrix<f32>> {
-    use cudarc::driver::LaunchAsync;
+    use cudarc::driver::PushKernelArg;
 
     // Allocate output gradient (initialized to zero)
     let mut grad_b = GpuMatrix::alloc(ctx, k, n)?;
@@ -831,7 +997,11 @@ pub fn tropical_backward_b_gpu_kernel(
 
     let total = m * n;
     let block_size = 256u32;
-    let grid_size = ((total as u32) + block_size - 1) / block_size;
+    // Compute the block count in 64-bit: `total as u32` would truncate when
+    // m*n >= 2^32 and launch far too few blocks (issue #63). The kernel covers
+    // every output element with a 64-bit linear index, so one block per 256
+    // elements is correct; the count itself stays well within gridDim.x.
+    let grid_size = (total as u64).div_ceil(block_size as u64) as u32;
 
     let cfg = cudarc::driver::LaunchConfig {
         grid_dim: (grid_size, 1, 1),
@@ -839,21 +1009,26 @@ pub fn tropical_backward_b_gpu_kernel(
         shared_mem_bytes: 0,
     };
 
+    // Bind scalar kernel args to locals so they outlive the launch builder.
+    let m_i32 = m as i32;
+    let n_i32 = n as i32;
+    let k_i32 = k as i32;
+
+    let stream = ctx.stream();
+    let mut builder = stream.launch_builder(&kernel);
+    builder
+        .arg(grad_c.as_slice())
+        .arg(argmax)
+        .arg(grad_b.as_slice_mut())
+        .arg(&m_i32)
+        .arg(&n_i32)
+        .arg(&k_i32);
     unsafe {
-        kernel.launch(
-            cfg,
-            (
-                grad_c.as_slice(),
-                argmax,
-                grad_b.as_slice_mut(),
-                m as i32,
-                n as i32,
-                k as i32,
-            ),
-        )?;
+        builder.launch(cfg)?;
     }
 
-    ctx.device().synchronize()?;
+    // Async: no per-launch device sync (stream-ordered; host reads sync in
+    // `to_host`). See `kernels::` module docs on the launch contract.
     Ok(grad_b)
 }
 
@@ -861,6 +1036,8 @@ pub fn tropical_backward_b_gpu_kernel(
 ///
 /// Uploads grad_c and argmax to GPU, computes gradient, downloads result.
 /// For best performance, use `tropical_backward_a_gpu_kernel` with data already on GPU.
+///
+/// All matrices are in **column-major** order.
 pub fn tropical_backward_a_gpu_cuda(
     ctx: &CudaContext,
     grad_c: &[f32],
@@ -872,31 +1049,25 @@ pub fn tropical_backward_a_gpu_cuda(
     assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
     assert_eq!(argmax.len(), m * n, "argmax size mismatch");
 
-    // Upload to GPU (column-major conversion)
-    let grad_c_gpu = GpuMatrix::from_host_row_major(ctx, grad_c, m, n)?;
+    // Upload to GPU (already column-major)
+    let grad_c_gpu = GpuMatrix::from_host(ctx, grad_c, m, n)?;
 
-    // Convert argmax to i32 and upload
-    let argmax_i32: Vec<i32> = argmax.iter().map(|&x| x as i32).collect();
-    // Convert to column-major for GPU
-    let mut argmax_col_major = vec![0i32; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            argmax_col_major[i + j * m] = argmax_i32[i * n + j];
-        }
-    }
-    let argmax_gpu = ctx.device().htod_sync_copy(&argmax_col_major)?;
+    // Upload argmax directly (already column-major)
+    let argmax_gpu = ctx.stream().clone_htod(argmax)?;
 
     // Run kernel
     let grad_a_gpu = tropical_backward_a_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
 
-    // Download result
-    grad_a_gpu.to_host_row_major(ctx)
+    // Download result (column-major)
+    grad_a_gpu.to_host(ctx)
 }
 
 /// High-level GPU backward pass for gradient w.r.t. B.
 ///
 /// Uploads grad_c and argmax to GPU, computes gradient, downloads result.
 /// For best performance, use `tropical_backward_b_gpu_kernel` with data already on GPU.
+///
+/// All matrices are in **column-major** order.
 pub fn tropical_backward_b_gpu_cuda(
     ctx: &CudaContext,
     grad_c: &[f32],
@@ -908,25 +1079,17 @@ pub fn tropical_backward_b_gpu_cuda(
     assert_eq!(grad_c.len(), m * n, "grad_c size mismatch");
     assert_eq!(argmax.len(), m * n, "argmax size mismatch");
 
-    // Upload to GPU (column-major conversion)
-    let grad_c_gpu = GpuMatrix::from_host_row_major(ctx, grad_c, m, n)?;
+    // Upload to GPU (already column-major)
+    let grad_c_gpu = GpuMatrix::from_host(ctx, grad_c, m, n)?;
 
-    // Convert argmax to i32 and upload
-    let argmax_i32: Vec<i32> = argmax.iter().map(|&x| x as i32).collect();
-    // Convert to column-major for GPU
-    let mut argmax_col_major = vec![0i32; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            argmax_col_major[i + j * m] = argmax_i32[i * n + j];
-        }
-    }
-    let argmax_gpu = ctx.device().htod_sync_copy(&argmax_col_major)?;
+    // Upload argmax directly (already column-major)
+    let argmax_gpu = ctx.stream().clone_htod(argmax)?;
 
     // Run kernel
     let grad_b_gpu = tropical_backward_b_gpu_kernel(ctx, &grad_c_gpu, &argmax_gpu, m, k, n)?;
 
-    // Download result
-    grad_b_gpu.to_host_row_major(ctx)
+    // Download result (column-major)
+    grad_b_gpu.to_host(ctx)
 }
 
 /// Batched tropical matrix multiplication with argmax tracking on GPU.
@@ -976,19 +1139,18 @@ where
         }
     }
 
-    // Use global cached context to avoid NVRTC recompilation
     let ctx = get_global_context()?;
     let mut results = Vec::with_capacity(batch_size);
 
     for (a, b) in a_batch.iter().zip(b_batch.iter()) {
-        let a_gpu = GpuMatrix::from_host_row_major(ctx, a, m, k)?;
-        let b_gpu = GpuMatrix::from_host_row_major(ctx, b, k, n)?;
+        let a_gpu = GpuMatrix::from_host(ctx, a, m, k)?;
+        let b_gpu = GpuMatrix::from_host(ctx, b, k, n)?;
         let mut c_gpu = GpuMatrixWithArgmax::alloc(ctx, m, n)?;
 
         T::launch_gemm_with_argmax(ctx, &a_gpu, &b_gpu, &mut c_gpu)?;
 
-        let c_values = c_gpu.matrix_to_host_row_major(ctx)?;
-        let c_argmax = c_gpu.argmax_to_host_row_major(ctx)?;
+        let c_values = c_gpu.matrix_to_host(ctx)?;
+        let c_argmax = c_gpu.argmax_to_host(ctx)?;
         results.push((c_values, c_argmax));
     }
 
@@ -1001,8 +1163,11 @@ mod tests {
     use tropical_gemm::types::{TropicalMaxPlus, TropicalMinPlus};
 
     /// Helper to check if CUDA is available
-    fn cuda_context_or_skip() -> Option<CudaContext> {
-        let result = std::panic::catch_unwind(|| CudaContext::new());
+    fn cuda_context_or_skip() -> Option<&'static CudaContext> {
+        // One context shared across the whole test binary: kernels compile once (then
+        // load from the on-disk cubin cache) instead of per-test. catch_unwind because
+        // cudarc panics rather than returning Err when libcuda is absent.
+        let result = std::panic::catch_unwind(crate::get_global_context);
         match result {
             Ok(Ok(ctx)) => Some(ctx),
             Ok(Err(e)) => {
@@ -1022,21 +1187,297 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // 2x3 matrix A (column-major)
+        // A = [[1, 2, 3],
+        //      [4, 5, 6]]
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
+        // B = [[1, 2],
+        //      [3, 4],
+        //      [5, 6]]
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let c = tropical_matmul_gpu::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(1+1, 2+3, 3+5) = 8
         assert!((c[0] - 8.0).abs() < 1e-5, "C[0,0] = {}, expected 8", c[0]);
-        // C[0,1] = max(1+2, 2+4, 3+6) = 9
-        assert!((c[1] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[1]);
         // C[1,0] = max(4+1, 5+3, 6+5) = 11
-        assert!((c[2] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[2]);
+        assert!((c[1] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[1]);
+        // C[0,1] = max(1+2, 2+4, 3+6) = 9
+        assert!((c[2] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[2]);
         // C[1,1] = max(4+2, 5+4, 6+6) = 12
         assert!((c[3] - 12.0).abs() < 1e-5, "C[1,1] = {}, expected 12", c[3]);
+    }
+
+    /// CPU column-major max-plus reference: C[i,j] = max_k(A[i,k] + B[k,j]).
+    fn cpu_maxplus(a: &[f32], m: usize, k: usize, b: &[f32], n: usize) -> Vec<f32> {
+        let mut c = vec![f32::NEG_INFINITY; m * n];
+        for j in 0..n {
+            for i in 0..m {
+                let mut acc = f32::NEG_INFINITY;
+                for p in 0..k {
+                    acc = acc.max(a[p * m + i] + b[j * k + p]);
+                }
+                c[j * m + i] = acc;
+            }
+        }
+        c
+    }
+
+    /// The forward batched kernel must match the trusted single-matrix path for
+    /// every batch element, including non-block-aligned sizes (edge tiles). This
+    /// is the correctness gate for `launch_gemm_batched`.
+    #[test]
+    fn test_tropical_gemm_batched_matches_single() {
+        use cudarc::driver::CudaSlice;
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+        let stream = ctx.stream();
+
+        // Cases chosen to exercise: a tiny hand-checkable shape, a single full
+        // tile, and a multi-block shape whose M/N are NOT multiples of the
+        // 64-wide block (so the guarded edge-tile load/store path runs).
+        for &(batch, m, k, n) in &[(2usize, 2usize, 3usize, 2usize), (3, 70, 33, 50)] {
+            // Build `batch` distinct operands, contiguous column-major per slice.
+            let mut a_all = vec![0f32; batch * m * k];
+            let mut b_all = vec![0f32; batch * k * n];
+            for bi in 0..batch {
+                for idx in 0..m * k {
+                    a_all[bi * m * k + idx] = (((bi * 7 + idx * 3) % 13) as f32) - 6.0;
+                }
+                for idx in 0..k * n {
+                    b_all[bi * k * n + idx] = (((bi * 5 + idx * 2) % 11) as f32) - 5.0;
+                }
+            }
+
+            // Reference: trusted single-matrix GPU path + CPU, per slice.
+            let mut expected = vec![0f32; batch * m * n];
+            for bi in 0..batch {
+                let a_i = &a_all[bi * m * k..(bi + 1) * m * k];
+                let b_i = &b_all[bi * k * n..(bi + 1) * k * n];
+                let ref_gpu =
+                    tropical_matmul_gpu::<TropicalMaxPlus<f32>>(a_i, m, k, b_i, n).unwrap();
+                let ref_cpu = cpu_maxplus(a_i, m, k, b_i, n);
+                for idx in 0..m * n {
+                    assert!(
+                        (ref_gpu[idx] - ref_cpu[idx]).abs() < 1e-4,
+                        "single-kernel disagrees with CPU ref at batch {bi} idx {idx}: {} vs {}",
+                        ref_gpu[idx],
+                        ref_cpu[idx]
+                    );
+                }
+                expected[bi * m * n..(bi + 1) * m * n].copy_from_slice(&ref_gpu);
+            }
+
+            // Batched: one launch over the whole contiguous buffer, uninit output.
+            let a_dev: CudaSlice<f32> = stream.clone_htod(&a_all).unwrap();
+            let b_dev: CudaSlice<f32> = stream.clone_htod(&b_all).unwrap();
+            let mut c_dev = unsafe { stream.alloc::<f32>(batch * m * n) }.unwrap();
+            <TropicalMaxPlus<f32> as CudaKernel>::launch_gemm_batched(
+                ctx, &a_dev, &b_dev, &mut c_dev, batch, m, k, n,
+            )
+            .unwrap();
+            let got = stream.clone_dtoh(&c_dev).unwrap();
+            stream.synchronize().unwrap();
+
+            for idx in 0..batch * m * n {
+                assert!(
+                    (got[idx] - expected[idx]).abs() < 1e-4,
+                    "batched != single at (batch,m,k,n)=({batch},{m},{k},{n}) idx {idx}: {} vs {}",
+                    got[idx],
+                    expected[idx]
+                );
+            }
+        }
+    }
+
+    // ========================================================================
+    // Issue #63 regression: 64-bit global addressing past the i32 ceiling.
+    // ========================================================================
+    // These cross the 2^31-element boundary, so they need a large-VRAM GPU and
+    // are #[ignore]d (CI skips CUDA entirely; the user validates on HPC A800s).
+    // Run with, e.g.:
+    //   cargo test -p tropical-gemm-cuda --features cuda -- --ignored --nocapture
+    //
+    // 46341^2 = 2_147_488_281 > 2^31 (2_147_483_648), so the corner cell's
+    // column-major offset (m*n - 1) overflows i32. K is kept tiny so the A/B
+    // operands and the GEMM work stay small -- only the m*n output is large.
+    // Host memory stays minimal: operands are O(m*k + k*n), and the huge output
+    // is never copied back wholesale -- individual cells are sampled device-side.
+
+    const BIG_DIM: usize = 46341; // sqrt of just over 2^31; m*n crosses i32::MAX
+
+    // Compile-time guarantee that the shared shape crosses i32::MAX, so the
+    // corner cell's column-major offset (m*n - 1) exercises 64-bit addressing.
+    const _: () = assert!(BIG_DIM * BIG_DIM > i32::MAX as usize + 1);
+
+    // Shared column-major operand patterns for the forward regressions: simple
+    // per-index values so any sampled cell's max-plus result is host-recomputable.
+    fn big_a_val(i: usize, p: usize) -> f32 {
+        ((i % 97) as f32) + (p as f32) * 0.5 - 40.0
+    }
+    fn big_b_val(p: usize, j: usize) -> f32 {
+        ((j % 89) as f32) - (p as f32) * 0.25 - 40.0
+    }
+
+    /// Build column-major A (m×k) and B (k×n) from [`big_a_val`]/[`big_b_val`].
+    fn build_big_operands(m: usize, k: usize, n: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut a = vec![0f32; m * k];
+        for p in 0..k {
+            for i in 0..m {
+                a[p * m + i] = big_a_val(i, p);
+            }
+        }
+        let mut b = vec![0f32; k * n];
+        for j in 0..n {
+            for p in 0..k {
+                b[j * k + p] = big_b_val(p, j);
+            }
+        }
+        (a, b)
+    }
+
+    /// Sample each `(i, j)` from column-major device output `c` and assert it
+    /// equals the max-plus reference. Reads one element per cell (never the full
+    /// m*n output), so host memory stays tiny even when `c` is multiple GB.
+    fn assert_big_maxplus_cells(
+        ctx: &CudaContext,
+        c: &cudarc::driver::CudaSlice<f32>,
+        m: usize,
+        k: usize,
+        cells: &[(usize, usize)],
+    ) {
+        let stream = ctx.stream();
+        for &(i, j) in cells {
+            let off = j * m + i; // column-major linear offset
+            let host = stream.clone_dtoh(&c.slice(off..off + 1)).unwrap();
+            stream.synchronize().unwrap();
+            let mut exp = f32::NEG_INFINITY;
+            for p in 0..k {
+                exp = exp.max(big_a_val(i, p) + big_b_val(p, j));
+            }
+            assert!(
+                (host[0] - exp).abs() < 1e-3,
+                "cell ({i},{j}) off {off}: got {}, want {}",
+                host[0],
+                exp
+            );
+        }
+    }
+
+    /// Forward strided-batched (batch=1): the exact issue-#63 repro. The output
+    /// C stride (= m*n) exceeds i32::MAX, and the corner cell's within-matrix
+    /// offset overflows i32 -- both must address correctly under 64-bit indexing.
+    #[test]
+    #[ignore = "allocates ~8.6 GB of VRAM; run manually on a large-memory GPU"]
+    fn test_batched_forward_offset_over_i32_max() {
+        use cudarc::driver::CudaSlice;
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+        let stream = ctx.stream();
+
+        let (m, n, k) = (BIG_DIM, BIG_DIM, 2usize);
+
+        let (a_host, b_host) = build_big_operands(m, k, n);
+        let a_dev: CudaSlice<f32> = stream.clone_htod(&a_host).unwrap();
+        let b_dev: CudaSlice<f32> = stream.clone_htod(&b_host).unwrap();
+        // Uninitialized output: the kernel fully writes every cell.
+        let mut c_dev = unsafe { stream.alloc::<f32>(m * n) }.unwrap();
+
+        <TropicalMaxPlus<f32> as CudaKernel>::launch_gemm_batched(
+            ctx, &a_dev, &b_dev, &mut c_dev, 1, m, k, n,
+        )
+        .unwrap();
+
+        // Sample cells, including the corner whose offset = m*n - 1 > i32::MAX.
+        let cells = [
+            (0usize, 0usize),
+            (m - 1, n - 1),
+            (m / 2, n / 2),
+            (m - 1, 0),
+            (0, n - 1),
+            (12345, 40000),
+        ];
+        assert_big_maxplus_cells(ctx, &c_dev, m, k, &cells);
+    }
+
+    /// Single-matrix forward (`launch_gemm`): the issue note that a *non*-batched
+    /// matrix of >= 2^31 elements also overflows the within-matrix offset. Shares
+    /// the STORE_C_TILE / OFFSET_COL64 path with the batched kernel.
+    #[test]
+    #[ignore = "allocates ~8.6 GB of VRAM; run manually on a large-memory GPU"]
+    fn test_single_matrix_offset_over_i32_max() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+
+        let (m, n, k) = (BIG_DIM, BIG_DIM, 2usize);
+
+        let (a_host, b_host) = build_big_operands(m, k, n);
+        let a = GpuMatrix::from_host(ctx, &a_host, m, k).unwrap();
+        let b = GpuMatrix::from_host(ctx, &b_host, k, n).unwrap();
+        let mut c = GpuMatrix::<f32>::alloc(ctx, m, n).unwrap();
+        <TropicalMaxPlus<f32> as CudaKernel>::launch_gemm(ctx, &a, &b, &mut c).unwrap();
+
+        let cells = [(0usize, 0usize), (m - 1, n - 1), (m - 1, 0), (0, n - 1)];
+        assert_big_maxplus_cells(ctx, c.as_slice(), m, k, &cells);
+    }
+
+    /// Backward scatter past i32::MAX: with m*n >= 2^31 the kernel's `total`/`idx`
+    /// and the host grid_size must all be 64-bit. Bulk grad_c/argmax are zeroed
+    /// on-device (no 8 GB host buffers); only the corner cell (idx = m*n - 1) is
+    /// written, and its contribution must land at the right grad_a/grad_b index.
+    #[test]
+    #[ignore = "allocates ~16 GB of VRAM; run manually on a large-memory GPU"]
+    fn test_backward_index_over_i32_max() {
+        let Some(ctx) = cuda_context_or_skip() else {
+            return;
+        };
+        let stream = ctx.stream();
+
+        let (m, n, k) = (BIG_DIM, BIG_DIM, 4usize);
+
+        // Device-zeroed inputs (no host-side 8 GB allocations).
+        let mut grad_c = GpuMatrix::<f32>::alloc(ctx, m, n).unwrap();
+        let mut argmax = stream.alloc_zeros::<ArgmaxIndex>(m * n).unwrap();
+
+        // Route the corner cell's gradient to k-index `kk`. off = m*n - 1.
+        let (i, j) = (m - 1, n - 1);
+        let off = j * m + i;
+        let kk: ArgmaxIndex = 3; // < k
+        let grad_val = 2.5f32;
+        stream
+            .memcpy_htod(
+                &[grad_val],
+                &mut grad_c.as_slice_mut().slice_mut(off..off + 1),
+            )
+            .unwrap();
+        stream
+            .memcpy_htod(&[kk], &mut argmax.slice_mut(off..off + 1))
+            .unwrap();
+
+        let grad_a = tropical_backward_a_gpu_kernel(ctx, &grad_c, &argmax, m, k, n).unwrap();
+        let grad_b = tropical_backward_b_gpu_kernel(ctx, &grad_c, &argmax, m, k, n).unwrap();
+
+        // grad_a[i + kk*m] and grad_b[kk + j*k] must each receive exactly grad_val
+        // (all other cells contributed 0). Outputs are small (m×k, k×n).
+        let ga = grad_a.to_host(ctx).unwrap();
+        let gb = grad_b.to_host(ctx).unwrap();
+        let ga_idx = i + (kk as usize) * m;
+        let gb_idx = (kk as usize) + j * k;
+        assert!(
+            (ga[ga_idx] - grad_val).abs() < 1e-4,
+            "grad_a[{ga_idx}] = {}, want {grad_val}",
+            ga[ga_idx]
+        );
+        assert!(
+            (gb[gb_idx] - grad_val).abs() < 1e-4,
+            "grad_b[{gb_idx}] = {}, want {grad_val}",
+            gb[gb_idx]
+        );
     }
 
     #[test]
@@ -1045,30 +1486,31 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A (row-major)
+        // 2x3 matrix A (column-major)
         // A = [[1, 2, 3],
         //      [4, 5, 6]]
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B (row-major)
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
         // B = [[1, 2],
         //      [3, 4],
         //      [5, 6]]
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(1+1=2, 2+3=5, 3+5=8) = 8, argmax=2
         assert!((c[0] - 8.0).abs() < 1e-5, "C[0,0] = {}, expected 8", c[0]);
         assert_eq!(argmax[0], 2, "argmax[0,0] = {}, expected 2", argmax[0]);
 
-        // C[0,1] = max(1+2=3, 2+4=6, 3+6=9) = 9, argmax=2
-        assert!((c[1] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[1]);
-        assert_eq!(argmax[1], 2, "argmax[0,1] = {}, expected 2", argmax[1]);
-
         // C[1,0] = max(4+1=5, 5+3=8, 6+5=11) = 11, argmax=2
-        assert!((c[2] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[2]);
-        assert_eq!(argmax[2], 2, "argmax[1,0] = {}, expected 2", argmax[2]);
+        assert!((c[1] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[1]);
+        assert_eq!(argmax[1], 2, "argmax[1,0] = {}, expected 2", argmax[1]);
+
+        // C[0,1] = max(1+2=3, 2+4=6, 3+6=9) = 9, argmax=2
+        assert!((c[2] - 9.0).abs() < 1e-5, "C[0,1] = {}, expected 9", c[2]);
+        assert_eq!(argmax[2], 2, "argmax[0,1] = {}, expected 2", argmax[2]);
 
         // C[1,1] = max(4+2=6, 5+4=9, 6+6=12) = 12, argmax=2
         assert!((c[3] - 12.0).abs() < 1e-5, "C[1,1] = {}, expected 12", c[3]);
@@ -1081,30 +1523,31 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A (row-major)
+        // 2x3 matrix A (column-major)
         // A = [[1, 2, 3],
         //      [4, 5, 6]]
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B (row-major)
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
         // B = [[1, 2],
         //      [3, 4],
         //      [5, 6]]
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMinPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = min(1+1=2, 2+3=5, 3+5=8) = 2, argmax=0
         assert!((c[0] - 2.0).abs() < 1e-5, "C[0,0] = {}, expected 2", c[0]);
         assert_eq!(argmax[0], 0, "argmax[0,0] = {}, expected 0", argmax[0]);
 
-        // C[0,1] = min(1+2=3, 2+4=6, 3+6=9) = 3, argmax=0
-        assert!((c[1] - 3.0).abs() < 1e-5, "C[0,1] = {}, expected 3", c[1]);
-        assert_eq!(argmax[1], 0, "argmax[0,1] = {}, expected 0", argmax[1]);
-
         // C[1,0] = min(4+1=5, 5+3=8, 6+5=11) = 5, argmax=0
-        assert!((c[2] - 5.0).abs() < 1e-5, "C[1,0] = {}, expected 5", c[2]);
-        assert_eq!(argmax[2], 0, "argmax[1,0] = {}, expected 0", argmax[2]);
+        assert!((c[1] - 5.0).abs() < 1e-5, "C[1,0] = {}, expected 5", c[1]);
+        assert_eq!(argmax[1], 0, "argmax[1,0] = {}, expected 0", argmax[1]);
+
+        // C[0,1] = min(1+2=3, 2+4=6, 3+6=9) = 3, argmax=0
+        assert!((c[2] - 3.0).abs() < 1e-5, "C[0,1] = {}, expected 3", c[2]);
+        assert_eq!(argmax[2], 0, "argmax[0,1] = {}, expected 0", argmax[2]);
 
         // C[1,1] = min(4+2=6, 5+4=9, 6+6=12) = 6, argmax=0
         assert!((c[3] - 6.0).abs() < 1e-5, "C[1,1] = {}, expected 6", c[3]);
@@ -1120,27 +1563,30 @@ mod tests {
         // Design a matrix where different k-indices win for different output elements
         // A = [[10, 1, 1],
         //      [1, 10, 1]]
-        let a = vec![10.0f32, 1.0, 1.0, 1.0, 10.0, 1.0];
+        // Column-major: [10, 1, 1, 10, 1, 1]
+        let a = vec![10.0f32, 1.0, 1.0, 10.0, 1.0, 1.0];
         // B = [[1, 1],
         //      [1, 1],
         //      [10, 10]]
-        let b = vec![1.0f32, 1.0, 1.0, 1.0, 10.0, 10.0];
+        // Column-major: [1, 1, 10, 1, 1, 10]
+        let b = vec![1.0f32, 1.0, 10.0, 1.0, 1.0, 10.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(10+1=11, 1+1=2, 1+10=11) = 11
         // First occurrence wins (k=0), as we use > not >=
         assert!((c[0] - 11.0).abs() < 1e-5, "C[0,0] = {}, expected 11", c[0]);
         assert_eq!(argmax[0], 0, "argmax[0,0] = {}, expected 0", argmax[0]);
 
-        // C[0,1] = max(10+1=11, 1+1=2, 1+10=11) = 11, first k=0 wins
-        assert!((c[1] - 11.0).abs() < 1e-5, "C[0,1] = {}, expected 11", c[1]);
-        assert_eq!(argmax[1], 0, "argmax[0,1] = {}, expected 0", argmax[1]);
-
         // C[1,0] = max(1+1=2, 10+1=11, 1+10=11) = 11, first k=1 wins
-        assert!((c[2] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[2]);
-        assert_eq!(argmax[2], 1, "argmax[1,0] = {}, expected 1", argmax[2]);
+        assert!((c[1] - 11.0).abs() < 1e-5, "C[1,0] = {}, expected 11", c[1]);
+        assert_eq!(argmax[1], 1, "argmax[1,0] = {}, expected 1", argmax[1]);
+
+        // C[0,1] = max(10+1=11, 1+1=2, 1+10=11) = 11, first k=0 wins
+        assert!((c[2] - 11.0).abs() < 1e-5, "C[0,1] = {}, expected 11", c[2]);
+        assert_eq!(argmax[2], 0, "argmax[0,1] = {}, expected 0", argmax[2]);
 
         // C[1,1] = max(1+1=2, 10+1=11, 1+10=11) = 11, first k=1 wins
         assert!((c[3] - 11.0).abs() < 1e-5, "C[1,1] = {}, expected 11", c[3]);
@@ -1153,14 +1599,20 @@ mod tests {
             return;
         }
 
-        // 2x3 matrix A (row-major)
-        let a = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
-        // 3x2 matrix B (row-major)
-        let b = vec![1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0];
+        // 2x3 matrix A (column-major)
+        // A = [[1, 2, 3],
+        //      [4, 5, 6]]
+        let a = vec![1.0f64, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // 3x2 matrix B (column-major)
+        // B = [[1, 2],
+        //      [3, 4],
+        //      [5, 6]]
+        let b = vec![1.0f64, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f64>>(&a, 2, 3, &b, 2).unwrap();
 
+        // Result is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]]
         // C[0,0] = max(1+1=2, 2+3=5, 3+5=8) = 8, argmax=2
         assert!((c[0] - 8.0).abs() < 1e-10, "C[0,0] = {}, expected 8", c[0]);
         assert_eq!(argmax[0], 2, "argmax[0,0] = {}, expected 2", argmax[0]);
@@ -1183,11 +1635,24 @@ mod tests {
         let m = 4;
         let k = 5;
         let n = 3;
-        let epsilon = 1e-3f32; // Larger epsilon for better numerical stability
+        let epsilon = 1e-3f32;
 
-        // Random-ish matrices with distinct values to avoid ties
-        let mut a: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.7 - 3.0).collect();
-        let b: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.5 - 2.0).collect();
+        // Generate column-major matrices with distinct values to avoid ties
+        // A is m x k, B is k x n
+        let mut a: Vec<f32> = (0..m * k)
+            .map(|idx| {
+                let i = idx % m;
+                let kk = idx / m;
+                ((i * k + kk) as f32) * 0.7 - 3.0
+            })
+            .collect();
+        let b: Vec<f32> = (0..k * n)
+            .map(|idx| {
+                let kk = idx % k;
+                let j = idx / k;
+                ((kk * n + j) as f32) * 0.5 - 2.0
+            })
+            .collect();
 
         // Compute C and argmax
         let (c, argmax) =
@@ -1196,8 +1661,8 @@ mod tests {
         // Test finite difference for each element of A
         for i in 0..m {
             for kk in 0..k {
-                // Perturb A[i, kk]
-                let a_idx = i * k + kk;
+                // Perturb A[i, kk] (column-major: index = i + kk * m)
+                let a_idx = i + kk * m;
                 a[a_idx] += epsilon;
 
                 // Recompute C with perturbed A
@@ -1208,11 +1673,11 @@ mod tests {
                 // Restore A
                 a[a_idx] -= epsilon;
 
-                // Check gradient for each C[i, j]
+                // Check gradient for each C[i, j] (column-major: index = i + j * m)
                 for j in 0..n {
-                    let c_idx = i * n + j;
+                    let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1244,11 +1709,23 @@ mod tests {
         let m = 4;
         let k = 5;
         let n = 3;
-        let epsilon = 1e-3f32; // Larger epsilon for better numerical stability
+        let epsilon = 1e-3f32;
 
-        // Random-ish matrices with distinct values to avoid ties
-        let mut a: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.7 - 3.0).collect();
-        let b: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.5 - 2.0).collect();
+        // Generate column-major matrices with distinct values to avoid ties
+        let mut a: Vec<f32> = (0..m * k)
+            .map(|idx| {
+                let i = idx % m;
+                let kk = idx / m;
+                ((i * k + kk) as f32) * 0.7 - 3.0
+            })
+            .collect();
+        let b: Vec<f32> = (0..k * n)
+            .map(|idx| {
+                let kk = idx % k;
+                let j = idx / k;
+                ((kk * n + j) as f32) * 0.5 - 2.0
+            })
+            .collect();
 
         // Compute C and argmax (argmin for MinPlus)
         let (c, argmax) =
@@ -1257,8 +1734,8 @@ mod tests {
         // Test finite difference for each element of A
         for i in 0..m {
             for kk in 0..k {
-                // Perturb A[i, kk]
-                let a_idx = i * k + kk;
+                // Perturb A[i, kk] (column-major: index = i + kk * m)
+                let a_idx = i + kk * m;
                 a[a_idx] += epsilon;
 
                 // Recompute C with perturbed A
@@ -1269,11 +1746,11 @@ mod tests {
                 // Restore A
                 a[a_idx] -= epsilon;
 
-                // Check gradient for each C[i, j]
+                // Check gradient for each C[i, j] (column-major: index = i + j * m)
                 for j in 0..n {
-                    let c_idx = i * n + j;
+                    let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1305,11 +1782,23 @@ mod tests {
         let m = 3;
         let k = 4;
         let n = 5;
-        let epsilon = 1e-3f32; // Larger epsilon for better numerical stability
+        let epsilon = 1e-3f32;
 
-        // Random-ish matrices with distinct values
-        let a: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.6 - 2.0).collect();
-        let mut b: Vec<f32> = (0..k * n).map(|i| (i as f32) * 0.4 - 1.5).collect();
+        // Generate column-major matrices with distinct values
+        let a: Vec<f32> = (0..m * k)
+            .map(|idx| {
+                let i = idx % m;
+                let kk = idx / m;
+                ((i * k + kk) as f32) * 0.6 - 2.0
+            })
+            .collect();
+        let mut b: Vec<f32> = (0..k * n)
+            .map(|idx| {
+                let kk = idx % k;
+                let j = idx / k;
+                ((kk * n + j) as f32) * 0.4 - 1.5
+            })
+            .collect();
 
         // Compute C and argmax
         let (c, argmax) =
@@ -1318,8 +1807,8 @@ mod tests {
         // Test finite difference for each element of B
         for kk in 0..k {
             for j in 0..n {
-                // Perturb B[kk, j]
-                let b_idx = kk * n + j;
+                // Perturb B[kk, j] (column-major: index = kk + j * k)
+                let b_idx = kk + j * k;
                 b[b_idx] += epsilon;
 
                 // Recompute C with perturbed B
@@ -1330,11 +1819,11 @@ mod tests {
                 // Restore B
                 b[b_idx] -= epsilon;
 
-                // Check gradient for each C[i, j]
+                // Check gradient for each C[i, j] (column-major: index = i + j * m)
                 for i in 0..m {
-                    let c_idx = i * n + j;
+                    let c_idx = i + j * m;
                     let numerical_grad = (c_perturbed[c_idx] - c[c_idx]) / epsilon;
-                    let expected_grad = if argmax[c_idx] == kk as i32 { 1.0 } else { 0.0 };
+                    let expected_grad = if argmax[c_idx] == kk as u32 { 1.0 } else { 0.0 };
 
                     assert!(
                         (numerical_grad - expected_grad).abs() < 0.05,
@@ -1367,14 +1856,14 @@ mod tests {
             return;
         }
 
-        // Batch of 2 matrices, each 2x2
+        // Batch of 2 matrices, each 2x2 (column-major)
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0], // A[0]: [[1,2],[3,4]]
-            vec![5.0f32, 6.0, 7.0, 8.0], // A[1]: [[5,6],[7,8]]
+            vec![1.0f32, 3.0, 2.0, 4.0], // A[0]: [[1,2],[3,4]] col-major
+            vec![5.0f32, 7.0, 6.0, 8.0], // A[1]: [[5,6],[7,8]] col-major
         ];
         let b_batch = vec![
-            vec![1.0f32, 0.0, 0.0, 1.0], // B[0]: [[1,0],[0,1]] (identity-ish)
-            vec![1.0f32, 2.0, 3.0, 4.0], // B[1]: [[1,2],[3,4]]
+            vec![1.0f32, 0.0, 0.0, 1.0], // B[0]: [[1,0],[0,1]] col-major (symmetric)
+            vec![1.0f32, 3.0, 2.0, 4.0], // B[1]: [[1,2],[3,4]] col-major
         ];
 
         let c_batch =
@@ -1385,22 +1874,24 @@ mod tests {
 
         // C[0] = A[0] * B[0] (MaxPlus)
         // C[0,0] = max(1+1, 2+0) = 2
-        // C[0,1] = max(1+0, 2+1) = 3
         // C[1,0] = max(3+1, 4+0) = 4
+        // C[0,1] = max(1+0, 2+1) = 3
         // C[1,1] = max(3+0, 4+1) = 5
+        // Column-major result: [C[0,0], C[1,0], C[0,1], C[1,1]] = [2, 4, 3, 5]
         assert!((c_batch[0][0] - 2.0).abs() < 1e-5);
-        assert!((c_batch[0][1] - 3.0).abs() < 1e-5);
-        assert!((c_batch[0][2] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][1] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][2] - 3.0).abs() < 1e-5);
         assert!((c_batch[0][3] - 5.0).abs() < 1e-5);
 
         // C[1] = A[1] * B[1] (MaxPlus)
         // C[0,0] = max(5+1, 6+3) = 9
-        // C[0,1] = max(5+2, 6+4) = 10
         // C[1,0] = max(7+1, 8+3) = 11
+        // C[0,1] = max(5+2, 6+4) = 10
         // C[1,1] = max(7+2, 8+4) = 12
+        // Column-major result: [C[0,0], C[1,0], C[0,1], C[1,1]] = [9, 11, 10, 12]
         assert!((c_batch[1][0] - 9.0).abs() < 1e-5);
-        assert!((c_batch[1][1] - 10.0).abs() < 1e-5);
-        assert!((c_batch[1][2] - 11.0).abs() < 1e-5);
+        assert!((c_batch[1][1] - 11.0).abs() < 1e-5);
+        assert!((c_batch[1][2] - 10.0).abs() < 1e-5);
         assert!((c_batch[1][3] - 12.0).abs() < 1e-5);
     }
 
@@ -1443,16 +1934,16 @@ mod tests {
             return;
         }
 
-        // 2 batches of 2x2 matrices, stored contiguously
+        // 2 batches of 2x2 matrices, stored contiguously (column-major)
         let a = vec![
-            // Batch 0: [[1,2],[3,4]]
-            1.0f32, 2.0, 3.0, 4.0, // Batch 1: [[5,6],[7,8]]
-            5.0, 6.0, 7.0, 8.0,
+            // Batch 0: [[1,2],[3,4]] col-major: [1,3,2,4]
+            1.0f32, 3.0, 2.0, 4.0, // Batch 1: [[5,6],[7,8]] col-major: [5,7,6,8]
+            5.0, 7.0, 6.0, 8.0,
         ];
         let b = vec![
-            // Batch 0: [[1,0],[0,1]]
-            1.0f32, 0.0, 0.0, 1.0, // Batch 1: [[1,2],[3,4]]
-            1.0, 2.0, 3.0, 4.0,
+            // Batch 0: [[1,0],[0,1]] col-major: [1,0,0,1]
+            1.0f32, 0.0, 0.0, 1.0, // Batch 1: [[1,2],[3,4]] col-major: [1,3,2,4]
+            1.0, 3.0, 2.0, 4.0,
         ];
 
         let c = tropical_matmul_gpu_strided_batched::<TropicalMaxPlus<f32>>(&a, &b, 2, 2, 2, 2)
@@ -1461,16 +1952,16 @@ mod tests {
         // Should have 2 * 2 * 2 = 8 elements
         assert_eq!(c.len(), 8);
 
-        // Batch 0 results (same as above test)
+        // Batch 0 results (column-major: [C[0,0], C[1,0], C[0,1], C[1,1]] = [2, 4, 3, 5])
         assert!((c[0] - 2.0).abs() < 1e-5);
-        assert!((c[1] - 3.0).abs() < 1e-5);
-        assert!((c[2] - 4.0).abs() < 1e-5);
+        assert!((c[1] - 4.0).abs() < 1e-5);
+        assert!((c[2] - 3.0).abs() < 1e-5);
         assert!((c[3] - 5.0).abs() < 1e-5);
 
-        // Batch 1 results
+        // Batch 1 results (column-major: [C[0,0], C[1,0], C[0,1], C[1,1]] = [9, 11, 10, 12])
         assert!((c[4] - 9.0).abs() < 1e-5);
-        assert!((c[5] - 10.0).abs() < 1e-5);
-        assert!((c[6] - 11.0).abs() < 1e-5);
+        assert!((c[5] - 11.0).abs() < 1e-5);
+        assert!((c[6] - 10.0).abs() < 1e-5);
         assert!((c[7] - 12.0).abs() < 1e-5);
     }
 
@@ -1495,14 +1986,17 @@ mod tests {
             return;
         }
 
-        // Batch of 2 matrices
+        // Batch of 2 matrices (column-major)
+        // A[0]: 2x3 = [[1, 2, 3], [4, 5, 6]] col-major: [1, 4, 2, 5, 3, 6]
+        // A[1]: 2x3 = [[6, 5, 4], [3, 2, 1]] col-major: [6, 3, 5, 2, 4, 1]
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // A[0]: 2x3
-            vec![6.0f32, 5.0, 4.0, 3.0, 2.0, 1.0], // A[1]: 2x3 (reversed)
+            vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0], // A[0]: 2x3 col-major
+            vec![6.0f32, 3.0, 5.0, 2.0, 4.0, 1.0], // A[1]: 2x3 col-major (reversed)
         ];
+        // B: 3x2 = [[1, 2], [3, 4], [5, 6]] col-major: [1, 3, 5, 2, 4, 6]
         let b_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[0]: 3x2
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[1]: 3x2
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[0]: 3x2 col-major
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[1]: 3x2 col-major
         ];
 
         let results = tropical_matmul_gpu_batched_with_argmax::<TropicalMaxPlus<f32>>(
@@ -1512,9 +2006,10 @@ mod tests {
 
         assert_eq!(results.len(), 2);
 
-        // Batch 0: same as single matrix test
+        // Batch 0: C is column-major [C[0,0], C[1,0], C[0,1], C[1,1]]
+        // C[0,0] = max(1+1, 2+3, 3+5) = 8, argmax=2
         let (c0, argmax0) = &results[0];
-        assert!((c0[0] - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5) = 8
+        assert!((c0[0] - 8.0).abs() < 1e-5);
         assert_eq!(argmax0[0], 2);
 
         // Batch 1: A[1] has reversed values
@@ -1530,11 +2025,13 @@ mod tests {
             return;
         }
 
+        // A: 2x2 = [[1, 2], [3, 4]] col-major: [1, 3, 2, 4]
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0], // 2x2
+            vec![1.0f32, 3.0, 2.0, 4.0], // 2x2 col-major
         ];
+        // B: 2x2 = [[1, 2], [3, 4]] col-major: [1, 3, 2, 4]
         let b_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0], // 2x2
+            vec![1.0f32, 3.0, 2.0, 4.0], // 2x2 col-major
         ];
 
         let c_batch =
@@ -1543,12 +2040,13 @@ mod tests {
 
         // MinPlus: C[i,j] = min_k(A[i,k] + B[k,j])
         // C[0,0] = min(1+1, 2+3) = min(2, 5) = 2
-        // C[0,1] = min(1+2, 2+4) = min(3, 6) = 3
         // C[1,0] = min(3+1, 4+3) = min(4, 7) = 4
+        // C[0,1] = min(1+2, 2+4) = min(3, 6) = 3
         // C[1,1] = min(3+2, 4+4) = min(5, 8) = 5
+        // Column-major result: [2, 4, 3, 5]
         assert!((c_batch[0][0] - 2.0).abs() < 1e-5);
-        assert!((c_batch[0][1] - 3.0).abs() < 1e-5);
-        assert!((c_batch[0][2] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][1] - 4.0).abs() < 1e-5);
+        assert!((c_batch[0][2] - 3.0).abs() < 1e-5);
         assert!((c_batch[0][3] - 5.0).abs() < 1e-5);
     }
 
@@ -1558,7 +2056,7 @@ mod tests {
 
     #[test]
     fn test_tropical_backward_a_gpu() {
-        // Test backward pass for A
+        // Test backward pass for A (column-major)
         // C[i,j] = A[i,argmax[i,j]] + B[argmax[i,j],j]
         // dL/dA[i,k] = sum_j { dL/dC[i,j] if argmax[i,j] == k }
 
@@ -1566,61 +2064,65 @@ mod tests {
         let k = 3;
         let n = 2;
 
-        // Gradient from upstream (all ones for simplicity)
+        // Gradient from upstream (all ones for simplicity), column-major
         let grad_c = vec![1.0f32; m * n];
 
-        // Argmax: row-major, for each C[i,j] which k produced it
-        // Let's say argmax = [[0, 2], [1, 2]]
-        let argmax: Vec<ArgmaxIndex> = vec![0, 2, 1, 2];
+        // Argmax: column-major, for each C[i,j] which k produced it
+        // Logical matrix = [[0, 2], [1, 2]] in row notation
+        // Column-major storage: [argmax[0,0], argmax[1,0], argmax[0,1], argmax[1,1]] = [0, 1, 2, 2]
+        let argmax: Vec<ArgmaxIndex> = vec![0, 1, 2, 2];
 
         let grad_a = tropical_backward_a_gpu(&grad_c, &argmax, m, k, n);
 
-        // Expected grad_a (2x3):
+        // Expected grad_a (2x3) column-major:
         // grad_a[0,0] = grad_c[0,0] because argmax[0,0]=0 -> 1.0
-        // grad_a[0,1] = 0 (no argmax points here)
-        // grad_a[0,2] = grad_c[0,1] because argmax[0,1]=2 -> 1.0
         // grad_a[1,0] = 0
+        // grad_a[0,1] = 0
         // grad_a[1,1] = grad_c[1,0] because argmax[1,0]=1 -> 1.0
+        // grad_a[0,2] = grad_c[0,1] because argmax[0,1]=2 -> 1.0
         // grad_a[1,2] = grad_c[1,1] because argmax[1,1]=2 -> 1.0
+        // Column-major grad_a: [[1,0,1],[0,1,1]] -> [1, 0, 0, 1, 1, 1]
         assert_eq!(grad_a.len(), m * k);
         assert!((grad_a[0] - 1.0).abs() < 1e-5); // [0,0]
-        assert!((grad_a[1] - 0.0).abs() < 1e-5); // [0,1]
-        assert!((grad_a[2] - 1.0).abs() < 1e-5); // [0,2]
-        assert!((grad_a[3] - 0.0).abs() < 1e-5); // [1,0]
-        assert!((grad_a[4] - 1.0).abs() < 1e-5); // [1,1]
+        assert!((grad_a[1] - 0.0).abs() < 1e-5); // [1,0]
+        assert!((grad_a[2] - 0.0).abs() < 1e-5); // [0,1]
+        assert!((grad_a[3] - 1.0).abs() < 1e-5); // [1,1]
+        assert!((grad_a[4] - 1.0).abs() < 1e-5); // [0,2]
         assert!((grad_a[5] - 1.0).abs() < 1e-5); // [1,2]
     }
 
     #[test]
     fn test_tropical_backward_b_gpu() {
-        // Test backward pass for B
+        // Test backward pass for B (column-major)
         // dL/dB[k,j] = sum_i { dL/dC[i,j] if argmax[i,j] == k }
 
         let m = 2;
         let k = 3;
         let n = 2;
 
-        // Gradient from upstream (all ones)
+        // Gradient from upstream (all ones), column-major
         let grad_c = vec![1.0f32; m * n];
 
-        // Argmax: [[0, 2], [1, 2]]
-        let argmax: Vec<ArgmaxIndex> = vec![0, 2, 1, 2];
+        // Argmax: column-major [argmax[0,0], argmax[1,0], argmax[0,1], argmax[1,1]] = [0, 1, 2, 2]
+        // Logical: [[0, 2], [1, 2]]
+        let argmax: Vec<ArgmaxIndex> = vec![0, 1, 2, 2];
 
         let grad_b = tropical_backward_b_gpu(&grad_c, &argmax, m, k, n);
 
-        // Expected grad_b (3x2):
+        // Expected grad_b (3x2) column-major:
         // grad_b[0,0] = grad_c[0,0] because argmax[0,0]=0 -> 1.0
-        // grad_b[0,1] = 0
         // grad_b[1,0] = grad_c[1,0] because argmax[1,0]=1 -> 1.0
-        // grad_b[1,1] = 0
         // grad_b[2,0] = 0
+        // grad_b[0,1] = 0
+        // grad_b[1,1] = 0
         // grad_b[2,1] = grad_c[0,1] + grad_c[1,1] because argmax[0,1]=2 and argmax[1,1]=2 -> 2.0
+        // Column-major grad_b: [[1,0],[1,0],[0,2]] -> [1, 1, 0, 0, 0, 2]
         assert_eq!(grad_b.len(), k * n);
         assert!((grad_b[0] - 1.0).abs() < 1e-5); // [0,0]
-        assert!((grad_b[1] - 0.0).abs() < 1e-5); // [0,1]
-        assert!((grad_b[2] - 1.0).abs() < 1e-5); // [1,0]
-        assert!((grad_b[3] - 0.0).abs() < 1e-5); // [1,1]
-        assert!((grad_b[4] - 0.0).abs() < 1e-5); // [2,0]
+        assert!((grad_b[1] - 1.0).abs() < 1e-5); // [1,0]
+        assert!((grad_b[2] - 0.0).abs() < 1e-5); // [2,0]
+        assert!((grad_b[3] - 0.0).abs() < 1e-5); // [0,1]
+        assert!((grad_b[4] - 0.0).abs() < 1e-5); // [1,1]
         assert!((grad_b[5] - 2.0).abs() < 1e-5); // [2,1]
     }
 
@@ -1630,9 +2132,11 @@ mod tests {
             return;
         }
 
-        // Full integration test: forward pass on GPU, backward pass
-        let a = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3
-        let b = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3x2
+        // Full integration test: forward pass on GPU, backward pass (column-major)
+        // A: 2x3 = [[1, 2, 3], [4, 5, 6]] col-major: [1, 4, 2, 5, 3, 6]
+        let a = vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0];
+        // B: 3x2 = [[1, 2], [3, 4], [5, 6]] col-major: [1, 3, 5, 2, 4, 6]
+        let b = vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0];
 
         let m = 2;
         let k = 3;
@@ -1642,8 +2146,8 @@ mod tests {
         let (c, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(&a, m, k, &b, n).unwrap();
 
-        // Verify forward pass
-        assert!((c[0] - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5)
+        // Verify forward pass (C is column-major: [C[0,0], C[1,0], C[0,1], C[1,1]])
+        assert!((c[0] - 8.0).abs() < 1e-5); // C[0,0] = max(1+1, 2+3, 3+5) = 8
 
         // Backward pass with unit gradients
         let grad_c = vec![1.0f32; m * n];
@@ -1654,13 +2158,15 @@ mod tests {
         // So grad_a[i,2] should be n (sum over j) and others 0
         // grad_a[0,2] = 2 (from C[0,0] and C[0,1])
         // grad_a[1,2] = 2 (from C[1,0] and C[1,1])
+        // Column-major: A[0,2] at index 0+2*2=4, A[1,2] at index 1+2*2=5
         assert_eq!(grad_a.len(), m * k);
-        assert!((grad_a[2] - 2.0).abs() < 1e-5); // A[0,2]
+        assert!((grad_a[4] - 2.0).abs() < 1e-5); // A[0,2]
         assert!((grad_a[5] - 2.0).abs() < 1e-5); // A[1,2]
 
         // grad_b[2,j] = m (sum over i) for each j
+        // Column-major: B[2,0] at index 2+0*3=2, B[2,1] at index 2+1*3=5
         assert_eq!(grad_b.len(), k * n);
-        assert!((grad_b[4] - 2.0).abs() < 1e-5); // B[2,0]
+        assert!((grad_b[2] - 2.0).abs() < 1e-5); // B[2,0]
         assert!((grad_b[5] - 2.0).abs() < 1e-5); // B[2,1]
     }
 
@@ -1674,14 +2180,16 @@ mod tests {
         let k = 3;
         let n = 2;
 
-        // Batch of 2 forward passes
+        // Batch of 2 forward passes (column-major)
+        // A: 2x3 = [[1, 2, 3], [4, 5, 6]] col-major: [1, 4, 2, 5, 3, 6]
         let a_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // A[0]
-            vec![6.0f32, 5.0, 4.0, 3.0, 2.0, 1.0], // A[1] (reversed)
+            vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0], // A[0] col-major
+            vec![6.0f32, 3.0, 5.0, 2.0, 4.0, 1.0], // A[1] col-major (reversed)
         ];
+        // B: 3x2 = [[1, 2], [3, 4], [5, 6]] col-major: [1, 3, 5, 2, 4, 6]
         let b_batch = vec![
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[0]
-            vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], // B[1]
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[0] col-major
+            vec![1.0f32, 3.0, 5.0, 2.0, 4.0, 6.0], // B[1] col-major
         ];
 
         // Forward pass
@@ -1746,7 +2254,10 @@ mod tests {
     fn test_context_device_name() {
         if let Some(ctx) = cuda_context_or_skip() {
             let name = ctx.device_name();
-            assert!(name.starts_with("CUDA Device"));
+            // `device_name()` returns the real GPU model via `cuDeviceGetName`
+            // (e.g. "NVIDIA A40"), falling back to "CUDA Device {ordinal}" only if
+            // the driver query fails. Either way it must be a non-empty string.
+            assert!(!name.trim().is_empty(), "device name was empty: {name:?}");
         }
     }
 
@@ -1812,11 +2323,11 @@ mod tests {
     fn test_tropical_gemm_gpu_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
             // Create matrices with incompatible dimensions
-            let a = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap();
-            let b = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // 2x3, not 3x2
-            let mut c = GpuMatrix::alloc(&ctx, 2, 3).unwrap();
+            let a = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let b = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // 2x3, not 3x2
+            let mut c = GpuMatrix::alloc(ctx, 2, 3).unwrap();
 
-            let result = tropical_gemm_gpu::<TropicalMaxPlus<f32>>(&ctx, &a, &b, &mut c);
+            let result = tropical_gemm_gpu::<TropicalMaxPlus<f32>>(ctx, &a, &b, &mut c);
             assert!(result.is_err());
         }
     }
@@ -1824,19 +2335,22 @@ mod tests {
     #[test]
     fn test_tropical_matmul_gpu_with_ctx_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let a = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap();
-            let b = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // Wrong dimensions
+            let a = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let b = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap(); // Wrong dimensions
 
-            let result = tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(&ctx, &a, &b);
+            let result = tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(ctx, &a, &b);
             assert!(result.is_err());
         }
     }
 
+    // `from_host_row_major` stays public (deprecated); keep one test exercising its
+    // size validation. All other GPU callers use `from_host` (column-major).
     #[test]
+    #[allow(deprecated)]
     fn test_gpu_memory_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
             // Try to create matrix with wrong data size
-            let result = GpuMatrix::<f32>::from_host_row_major(&ctx, &vec![1.0f32; 5], 2, 3);
+            let result = GpuMatrix::<f32>::from_host_row_major(ctx, &vec![1.0f32; 5], 2, 3);
             assert!(result.is_err());
         }
     }
@@ -1844,7 +2358,7 @@ mod tests {
     #[test]
     fn test_gpu_memory_col_major_dimension_mismatch() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let result = GpuMatrix::<f32>::from_host_col_major(&ctx, &vec![1.0f32; 5], 2, 3);
+            let result = GpuMatrix::<f32>::from_host_col_major(ctx, &vec![1.0f32; 5], 2, 3);
             assert!(result.is_err());
         }
     }
@@ -1852,7 +2366,7 @@ mod tests {
     #[test]
     fn test_gpu_matrix_accessors() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let mat = GpuMatrix::from_host_row_major(&ctx, &vec![1.0f32; 6], 2, 3).unwrap();
+            let mat = GpuMatrix::from_host(ctx, &vec![1.0f32; 6], 2, 3).unwrap();
             assert_eq!(mat.rows(), 2);
             assert_eq!(mat.cols(), 3);
             assert_eq!(mat.ld(), 2); // Column-major leading dimension = rows
@@ -1862,7 +2376,7 @@ mod tests {
     #[test]
     fn test_gpu_matrix_with_argmax_accessors() {
         if let Some(ctx) = cuda_context_or_skip() {
-            let mat = GpuMatrixWithArgmax::<f32>::alloc(&ctx, 2, 3).unwrap();
+            let mat = GpuMatrixWithArgmax::<f32>::alloc(ctx, 2, 3).unwrap();
             assert_eq!(mat.rows(), 2);
             assert_eq!(mat.cols(), 3);
         }
@@ -1872,8 +2386,8 @@ mod tests {
     fn test_gpu_matrix_col_major_roundtrip() {
         if let Some(ctx) = cuda_context_or_skip() {
             let data: Vec<f32> = (0..6).map(|i| i as f32).collect();
-            let mat = GpuMatrix::from_host_col_major(&ctx, &data, 2, 3).unwrap();
-            let back = mat.to_host_col_major(&ctx).unwrap();
+            let mat = GpuMatrix::from_host_col_major(ctx, &data, 2, 3).unwrap();
+            let back = mat.to_host_col_major(ctx).unwrap();
             assert_eq!(data, back);
         }
     }

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-4715aa1c.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -261,10 +261,12 @@ tropical-gemm-cuda/
 }
 <span class="boring">}</span></code></pre>
 <h3 id="4-cuda-runtime-compilation"><a class="header" href="#4-cuda-runtime-compilation">4. CUDA Runtime Compilation</a></h3>
-<p>Kernels are compiled from CUDA C source at runtime via NVRTC:</p>
+<p>Kernels are compiled from CUDA C source at runtime via NVRTC — to a CUBIN (native SASS)
+for the device’s architecture — and the cubin is cached on disk:</p>
 <ul>
-<li>No compile-time CUDA dependency</li>
-<li>Portability across CUDA versions</li>
+<li>No compile-time CUDA dependency (cudarc dynamic-loads CUDA at runtime)</li>
+<li>On-disk CUBIN cache keyed on source + flags + arch + NVRTC version, so a warm
+<code>CudaContext::new()</code> is ~0.13 s (vs ~10 s cold) and skips the driver’s PTX→SASS JIT</li>
 <li>Template-like specialization via macros</li>
 </ul>
 

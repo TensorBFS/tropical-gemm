@@ -58,8 +58,12 @@ impl Microkernel<TropicalMaxPlus<f32>> for Avx2MaxPlusF32Kernel {
                 let a_broadcast = f32x8::splat(a_vals[i]);
                 let product = a_broadcast + b_vec;
 
-                // Tropical add: max(acc, product)
-                acc[i] = acc[i].max(product);
+                // Tropical add: max(acc, product).
+                // fast_max == hardware maxps (1 instr). Plain max() adds an
+                // is_nan compare + blend (3 instr) we don't need: tropical
+                // MaxPlus inputs are finite or -inf, so +inf+-inf (the only
+                // NaN source) never occurs.
+                acc[i] = acc[i].fast_max(product);
             }
         }
 
@@ -120,7 +124,8 @@ impl Microkernel<TropicalMaxPlus<f64>> for Avx2MaxPlusF64Kernel {
             for i in 0..mr {
                 let a_broadcast = f64x4::splat(a_vals[i]);
                 let product = a_broadcast + b_vec;
-                acc[i] = acc[i].max(product);
+                // fast_max: no-NaN hardware max (see f32 kernel above).
+                acc[i] = acc[i].fast_max(product);
             }
         }
 
@@ -181,8 +186,10 @@ impl Microkernel<TropicalMinPlus<f32>> for Avx2MinPlusF32Kernel {
             for i in 0..mr {
                 let a_broadcast = f32x8::splat(a_vals[i]);
                 let product = a_broadcast + b_vec;
-                // MinPlus: tropical add = min
-                acc[i] = acc[i].min(product);
+                // MinPlus: tropical add = min.
+                // fast_min == hardware minps (1 instr); MinPlus inputs are
+                // finite or +inf, so the NaN-blend in plain min() is dead work.
+                acc[i] = acc[i].fast_min(product);
             }
         }
 
@@ -244,8 +251,9 @@ impl Microkernel<TropicalMaxMul<f32>> for Avx2MaxMulF32Kernel {
                 let a_broadcast = f32x8::splat(a_vals[i]);
                 // MaxMul: tropical mul = standard mul
                 let product = a_broadcast * b_vec;
-                // tropical add = max
-                acc[i] = acc[i].max(product);
+                // tropical add = max. fast_max: MaxMul inputs are finite (zero
+                // = 0.0), products finite → no NaN, so skip the NaN blend.
+                acc[i] = acc[i].fast_max(product);
             }
         }
 

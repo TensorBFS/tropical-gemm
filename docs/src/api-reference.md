@@ -152,13 +152,40 @@ import numpy as np
 a = np.array([[1, 2], [3, 4]], dtype=np.float32)
 b = np.array([[5, 6], [7, 8]], dtype=np.float32)
 
-# Basic operations
-c = tropical_gemm.maxplus_matmul(a, b)
-c = tropical_gemm.minplus_matmul(a, b)
-c = tropical_gemm.maxmul_matmul(a, b)
+# Basic operations (returns flattened 1D array)
+c_flat = tropical_gemm.maxplus_matmul(a, b)
+c = c_flat.reshape(a.shape[0], b.shape[1])
+
+# 2D output (returns proper 2D array directly)
+c = tropical_gemm.maxplus_matmul_2d(a, b)    # shape: (m, n)
+c = tropical_gemm.minplus_matmul_2d(a, b)
+c = tropical_gemm.maxmul_matmul_2d(a, b)
 
 # With argmax
 values, argmax = tropical_gemm.maxplus_matmul_with_argmax(a, b)
+```
+
+### 2D Output Functions
+
+The `*_matmul_2d` variants return properly shaped 2D NumPy arrays without manual reshaping:
+
+| Type | MaxPlus | MinPlus | MaxMul |
+|------|---------|---------|--------|
+| f32 | `maxplus_matmul_2d` | `minplus_matmul_2d` | `maxmul_matmul_2d` |
+| f64 | `maxplus_matmul_2d_f64` | `minplus_matmul_2d_f64` | `maxmul_matmul_2d_f64` |
+| i32 | `maxplus_matmul_2d_i32` | `minplus_matmul_2d_i32` | `maxmul_matmul_2d_i32` |
+| i64 | `maxplus_matmul_2d_i64` | `minplus_matmul_2d_i64` | `maxmul_matmul_2d_i64` |
+
+```python
+# f64 example
+a = np.array([[1, 2], [3, 4]], dtype=np.float64)
+b = np.array([[5, 6], [7, 8]], dtype=np.float64)
+c = tropical_gemm.maxplus_matmul_2d_f64(a, b)  # shape: (2, 2)
+
+# i32 example
+a = np.array([[1, 2], [3, 4]], dtype=np.int32)
+b = np.array([[5, 6], [7, 8]], dtype=np.int32)
+c = tropical_gemm.maxplus_matmul_2d_i32(a, b)  # shape: (2, 2)
 ```
 
 ### Backward Pass

@@ -9,7 +9,8 @@
 //! GPU only, MaxPlus algebra only.
 //! Uses persistent CudaContext to exclude JIT compilation overhead.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use tropical_gemm::TropicalMaxPlus;
 use tropical_gemm_cuda::{
     tropical_backward_a_gpu, tropical_backward_a_gpu_kernel, tropical_backward_b_gpu,
@@ -46,8 +47,8 @@ fn bench_forward_no_argmax(c: &mut Criterion) {
             .map(|i| (((i + 500) % 1000) as f32) * 0.01)
             .collect();
 
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, &a, m, k).unwrap();
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n).unwrap();
+        let a_gpu = GpuMatrix::from_host(&ctx, &a, m, k).unwrap();
+        let b_gpu = GpuMatrix::from_host(&ctx, &b, k, n).unwrap();
 
         // Warm up - compile kernel
         let _ = tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu).unwrap();
@@ -89,8 +90,8 @@ fn bench_forward_with_argmax(c: &mut Criterion) {
             .map(|i| (((i + 500) % 1000) as f32) * 0.01)
             .collect();
 
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, &a, m, k).unwrap();
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n).unwrap();
+        let a_gpu = GpuMatrix::from_host(&ctx, &a, m, k).unwrap();
+        let b_gpu = GpuMatrix::from_host(&ctx, &b, k, n).unwrap();
 
         // Warm up - compile kernel
         let _ =
@@ -136,14 +137,14 @@ fn bench_backward(c: &mut Criterion) {
             .map(|i| (((i + 500) % 1000) as f32) * 0.01)
             .collect();
 
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, &a, m, k).unwrap();
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n).unwrap();
+        let a_gpu = GpuMatrix::from_host(&ctx, &a, m, k).unwrap();
+        let b_gpu = GpuMatrix::from_host(&ctx, &b, k, n).unwrap();
 
         // Pre-compute forward pass with argmax
         let c_gpu =
             tropical_matmul_gpu_with_ctx_and_argmax::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu)
                 .unwrap();
-        let argmax = c_gpu.argmax_to_host_row_major(&ctx).unwrap();
+        let argmax = c_gpu.argmax_to_host(&ctx).unwrap();
 
         // Upstream gradient (all ones)
         let grad_c: Vec<f32> = vec![1.0; m * n];
@@ -177,8 +178,8 @@ fn bench_backward(c: &mut Criterion) {
             .map(|i| (((i + 500) % 1000) as f32) * 0.01)
             .collect();
 
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, &a, m, k).unwrap();
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n).unwrap();
+        let a_gpu = GpuMatrix::from_host(&ctx, &a, m, k).unwrap();
+        let b_gpu = GpuMatrix::from_host(&ctx, &b, k, n).unwrap();
 
         let c_gpu =
             tropical_matmul_gpu_with_ctx_and_argmax::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu)
@@ -228,15 +229,15 @@ fn bench_comparison(c: &mut Criterion) {
             .map(|i| (((i + 500) % 1000) as f32) * 0.01)
             .collect();
 
-        let a_gpu = GpuMatrix::from_host_row_major(&ctx, &a, m, k).unwrap();
-        let b_gpu = GpuMatrix::from_host_row_major(&ctx, &b, k, n).unwrap();
+        let a_gpu = GpuMatrix::from_host(&ctx, &a, m, k).unwrap();
+        let b_gpu = GpuMatrix::from_host(&ctx, &b, k, n).unwrap();
 
         // Warm up both kernels
         let _ = tropical_matmul_gpu_with_ctx::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu).unwrap();
         let c_argmax =
             tropical_matmul_gpu_with_ctx_and_argmax::<TropicalMaxPlus<f32>>(&ctx, &a_gpu, &b_gpu)
                 .unwrap();
-        let argmax = c_argmax.argmax_to_host_row_major(&ctx).unwrap();
+        let argmax = c_argmax.argmax_to_host(&ctx).unwrap();
 
         // Pre-upload grad_c to GPU for kernel-only benchmark
         let grad_c: Vec<f32> = vec![1.0; m * n];

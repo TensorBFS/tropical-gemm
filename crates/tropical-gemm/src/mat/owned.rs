@@ -10,8 +10,8 @@ use super::{MatRef, MatWithArgmax};
 
 /// Owned matrix storing semiring values.
 ///
-/// The matrix stores values in row-major order. Use factory methods
-/// to create matrices:
+/// The matrix stores values in column-major order (Fortran/BLAS convention).
+/// Use factory methods to create matrices:
 ///
 /// ```
 /// use tropical_gemm::{Mat, MaxPlus, TropicalSemiring};
@@ -49,7 +49,8 @@ impl<S: TropicalSemiring> Mat<S> {
     pub fn identity(n: usize) -> Self {
         let mut mat = Self::zeros(n, n);
         for i in 0..n {
-            mat.data[i * n + i] = S::tropical_one();
+            // Column-major: diagonal element (i, i) at index i + i * n
+            mat.data[i + i * n] = S::tropical_one();
         }
         mat
     }
@@ -57,20 +58,23 @@ impl<S: TropicalSemiring> Mat<S> {
     /// Create a matrix from a function.
     ///
     /// The function is called with (row, col) indices.
+    /// Data is stored in column-major order internally.
     pub fn from_fn<F>(nrows: usize, ncols: usize, mut f: F) -> Self
     where
         F: FnMut(usize, usize) -> S,
     {
+        // Column-major: iterate column by column
         let data = (0..nrows * ncols)
-            .map(|idx| f(idx / ncols, idx % ncols))
+            .map(|idx| f(idx % nrows, idx / nrows))
             .collect();
         Self { data, nrows, ncols }
     }
 
-    /// Create a matrix from row-major scalar data.
+    /// Create a matrix from column-major scalar data.
     ///
     /// Each scalar is wrapped in the semiring type.
-    pub fn from_row_major(data: &[S::Scalar], nrows: usize, ncols: usize) -> Self
+    /// Data should be in column-major order: first column, then second column, etc.
+    pub fn from_col_major(data: &[S::Scalar], nrows: usize, ncols: usize) -> Self
     where
         S::Scalar: Copy,
     {
@@ -84,6 +88,38 @@ impl<S: TropicalSemiring> Mat<S> {
         );
         let data = data.iter().map(|&s| S::from_scalar(s)).collect();
         Self { data, nrows, ncols }
+    }
+
+    /// Create a matrix from row-major scalar data.
+    ///
+    /// This is a convenience method that converts row-major input to column-major storage.
+    ///
+    /// # Performance Warning
+    ///
+    /// This method performs an O(m×n) transpose operation. For performance-critical code,
+    /// provide data in column-major order and use [`from_col_major`] instead.
+    #[deprecated(note = "use from_col_major instead for direct column-major input; this method has O(m×n) transpose overhead")]
+    pub fn from_row_major(data: &[S::Scalar], nrows: usize, ncols: usize) -> Self
+    where
+        S::Scalar: Copy,
+    {
+        assert_eq!(
+            data.len(),
+            nrows * ncols,
+            "data length {} != nrows {} * ncols {}",
+            data.len(),
+            nrows,
+            ncols
+        );
+        // Convert row-major to column-major
+        let col_major: Vec<S> = (0..nrows * ncols)
+            .map(|idx| {
+                let i = idx % nrows;
+                let j = idx / nrows;
+                S::from_scalar(data[i * ncols + j])
+            })
+            .collect();
+        Self { data: col_major, nrows, ncols }
     }
 
     /// Create a matrix from a vector of semiring values.
@@ -133,7 +169,7 @@ impl<S: TropicalSemiring> Mat<S> {
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus};
     ///
-    /// let m = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let m = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
     /// assert_eq!(m.get_value(0, 0), 1.0);
     /// assert_eq!(m.get_value(1, 1), 4.0);
     /// ```
@@ -180,7 +216,8 @@ impl<S: TropicalSemiring> Index<(usize, usize)> for Mat<S> {
             j,
             self.ncols
         );
-        &self.data[i * self.ncols + j]
+        // Column-major indexing
+        &self.data[j * self.nrows + i]
     }
 }
 
@@ -199,7 +236,8 @@ impl<S: TropicalSemiring> IndexMut<(usize, usize)> for Mat<S> {
             j,
             self.ncols
         );
-        &mut self.data[i * self.ncols + j]
+        // Column-major indexing
+        &mut self.data[j * self.nrows + i]
     }
 }
 
@@ -222,8 +260,8 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus, TropicalSemiring};
     ///
-    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    /// let a = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
     ///
     /// let c = a.matmul(&b);
     ///
@@ -240,21 +278,30 @@ where
         let a_ref = self.as_ref();
         let b_ref = b.as_ref();
 
-        let mut c = Mat::<S>::zeros(self.nrows, b.ncols);
+        let m = self.nrows;
+        let n = b.ncols;
+        let k = self.ncols;
 
+        let mut c = Mat::<S>::zeros(m, n);
+
+        // The kernel uses row-major convention. For column-major data,
+        // we use the transpose trick: C = A * B becomes C^T = B^T * A^T.
+        // Column-major A (m×k) viewed as row-major is A^T (k×m) with ld=m.
+        // So we swap A and B, swap m and n, and the result is written
+        // in the correct column-major layout.
         unsafe {
             tropical_gemm_dispatch::<S>(
-                self.nrows,
-                b.ncols,
-                self.ncols,
-                a_ref.as_slice().as_ptr(),
-                self.ncols,
+                n,                           // rows of C^T = cols of C
+                m,                           // cols of C^T = rows of C
+                k,
+                b_ref.as_slice().as_ptr(),   // B becomes first operand (B^T)
+                k,                           // lda = nrows of B in col-major
                 Transpose::NoTrans,
-                b_ref.as_slice().as_ptr(),
-                b.ncols,
+                a_ref.as_slice().as_ptr(),   // A becomes second operand (A^T)
+                m,                           // ldb = nrows of A in col-major
                 Transpose::NoTrans,
                 c.data.as_mut_ptr(),
-                b.ncols,
+                m,                           // ldc = nrows of C in col-major
             );
         }
 
@@ -277,21 +324,26 @@ where
 
         let a_ref = self.as_ref();
 
-        let mut c = Mat::<S>::zeros(self.nrows, b.ncols());
+        let m = self.nrows;
+        let n = b.ncols();
+        let k = self.ncols;
 
+        let mut c = Mat::<S>::zeros(m, n);
+
+        // Transpose trick for column-major: C = A * B becomes C^T = B^T * A^T
         unsafe {
             tropical_gemm_dispatch::<S>(
-                self.nrows,
-                b.ncols(),
-                self.ncols,
-                a_ref.as_slice().as_ptr(),
-                self.ncols,
-                Transpose::NoTrans,
+                n,
+                m,
+                k,
                 b.as_slice().as_ptr(),
-                b.ncols(),
+                k,
+                Transpose::NoTrans,
+                a_ref.as_slice().as_ptr(),
+                m,
                 Transpose::NoTrans,
                 c.data.as_mut_ptr(),
-                b.ncols(),
+                m,
             );
         }
 
@@ -315,8 +367,8 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus, TropicalSemiring};
     ///
-    /// let a = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-    /// let b = Mat::<MaxPlus<f64>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+    /// let a = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+    /// let b = Mat::<MaxPlus<f64>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
     ///
     /// let result = a.matmul_argmax(&b);
     ///
@@ -337,25 +389,34 @@ where
         let n = b.ncols;
         let k = self.ncols;
 
-        let mut result = crate::core::GemmWithArgmax::<S>::new(m, n);
+        // The kernel outputs row-major. We use the transpose trick:
+        // C = A * B becomes C^T = B^T * A^T.
+        // Create result with swapped dimensions (n×m) which the kernel fills
+        // in row-major, then we interpret as (m×n) column-major.
+        let mut result = crate::core::GemmWithArgmax::<S>::new(n, m);
 
         unsafe {
             crate::core::tropical_gemm_with_argmax_portable::<S>(
-                m,
                 n,
+                m,
                 k,
-                a_ref.as_slice().as_ptr(),
-                self.ncols,
-                Transpose::NoTrans,
                 b_ref.as_slice().as_ptr(),
-                b.ncols,
+                k,
+                Transpose::NoTrans,
+                a_ref.as_slice().as_ptr(),
+                m,
                 Transpose::NoTrans,
                 &mut result,
             );
         }
 
+        // The result is stored as (n×m) row-major = (m×n) column-major
         MatWithArgmax {
-            values: Mat::from_vec(result.values, m, n),
+            values: Mat {
+                data: result.values,
+                nrows: m,
+                ncols: n,
+            },
             argmax: result.argmax,
         }
     }
@@ -381,10 +442,10 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus};
     ///
-    /// let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-    /// let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
-    /// let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-    /// let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+    /// let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2);
+    /// let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+    /// let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
     ///
     /// let results = Mat::matmul_batched_with_argmax(&[a1, a2], &[b1, b2]);
     /// assert_eq!(results.len(), 2);
@@ -465,10 +526,10 @@ where
     /// ```
     /// use tropical_gemm::{Mat, MaxPlus};
     ///
-    /// let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-    /// let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
-    /// let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-    /// let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+    /// let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+    /// let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2);
+    /// let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+    /// let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
     ///
     /// let results = Mat::matmul_batched(&[a1, a2], &[b1, b2]);
     /// assert_eq!(results.len(), 2);

@@ -57,8 +57,10 @@ where
     S::Scalar: DeviceRepr + Default + Clone + ValidAsZeroBits,
 {
     /// Create a GPU matrix from a CPU MatRef.
+    ///
+    /// The MatRef data is expected to be in column-major order.
     pub fn from_matref(ctx: &CudaContext, mat: &MatRef<S>) -> Result<Self> {
-        let inner = GpuMatrix::from_host_row_major(ctx, mat.as_slice(), mat.nrows(), mat.ncols())?;
+        let inner = GpuMatrix::from_host(ctx, mat.as_slice(), mat.nrows(), mat.ncols())?;
         Ok(Self {
             inner,
             _phantom: PhantomData,
@@ -66,13 +68,15 @@ where
     }
 
     /// Create a GPU matrix from raw scalar data.
+    ///
+    /// Data should be in column-major order.
     pub fn from_slice(
         ctx: &CudaContext,
         data: &[S::Scalar],
         nrows: usize,
         ncols: usize,
     ) -> Result<Self> {
-        let inner = GpuMatrix::from_host_row_major(ctx, data, nrows, ncols)?;
+        let inner = GpuMatrix::from_host(ctx, data, nrows, ncols)?;
         Ok(Self {
             inner,
             _phantom: PhantomData,
@@ -109,12 +113,14 @@ where
     }
 
     /// Convert to a CPU Mat.
+    ///
+    /// Returns data in column-major order.
     pub fn to_mat(&self, ctx: &CudaContext) -> Result<Mat<S>>
     where
         S::Scalar: Copy,
     {
-        let data = self.inner.to_host_row_major(ctx)?;
-        Ok(Mat::from_row_major(&data, self.nrows(), self.ncols()))
+        let data = self.inner.to_host(ctx)?;
+        Ok(Mat::from_col_major(&data, self.nrows(), self.ncols()))
     }
 }
 
@@ -249,8 +255,8 @@ where
     ///
     /// let ctx = CudaContext::new()?;
     /// let mats = vec![
-    ///     Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2),
-    ///     Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2),
+    ///     Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2),
+    ///     Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2),
     /// ];
     /// let gpu_mats = GpuMat::from_mats(&ctx, &mats)?;
     /// ```
@@ -389,32 +395,38 @@ where
     }
 
     /// Convert to CPU MatWithArgmax.
+    ///
+    /// Returns data in column-major order.
     pub fn to_mat_with_argmax(&self, ctx: &CudaContext) -> Result<MatWithArgmax<S>>
     where
         S: tropical_gemm::TropicalWithArgmax<Index = u32>,
         S::Scalar: Copy,
     {
-        let values_data = self.inner.matrix_to_host_row_major(ctx)?;
-        let argmax_data = self.inner.argmax_to_host_row_major(ctx)?;
+        let values_data = self.inner.matrix_to_host(ctx)?;
+        let argmax_data = self.inner.argmax_to_host(ctx)?;
 
-        let values = Mat::from_row_major(&values_data, self.nrows(), self.ncols());
-        let argmax: Vec<u32> = argmax_data.into_iter().map(|x| x as u32).collect();
+        let values = Mat::from_col_major(&values_data, self.nrows(), self.ncols());
+        // GPU argmax buffers are `u32` (`ArgmaxIndex`), matching the core crate's
+        // `MatWithArgmax::argmax: Vec<u32>` — no conversion needed.
+        let argmax: Vec<u32> = argmax_data;
 
         Ok(MatWithArgmax { values, argmax })
     }
 
     /// Get just the result matrix as CPU Mat.
+    ///
+    /// Returns data in column-major order.
     pub fn to_mat(&self, ctx: &CudaContext) -> Result<Mat<S>>
     where
         S::Scalar: Copy,
     {
-        let data = self.inner.matrix_to_host_row_major(ctx)?;
-        Ok(Mat::from_row_major(&data, self.nrows(), self.ncols()))
+        let data = self.inner.matrix_to_host(ctx)?;
+        Ok(Mat::from_col_major(&data, self.nrows(), self.ncols()))
     }
 
-    /// Get just the argmax indices.
+    /// Get just the argmax indices (column-major order).
     pub fn to_argmax(&self, ctx: &CudaContext) -> Result<Vec<ArgmaxIndex>> {
-        self.inner.argmax_to_host_row_major(ctx)
+        self.inner.argmax_to_host(ctx)
     }
 
     /// Compute gradient with respect to matrix A.
@@ -424,6 +436,8 @@ where
     ///
     /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
     /// dL/dA[i,k] = Σ_j { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// All matrices are in column-major order.
     ///
     /// # Arguments
     ///
@@ -462,21 +476,24 @@ where
         assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
         assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
 
-        // Download argmax to host
-        let argmax = self.inner.argmax_to_host_row_major(ctx)?;
+        // Download argmax to host (column-major)
+        let argmax = self.inner.argmax_to_host(ctx)?;
 
         let mut grad_a_data = vec![G::Scalar::default(); m * k];
 
-        for i in 0..m {
-            for j in 0..n {
-                let idx = argmax[i * n + j] as usize;
-                if idx < k {
-                    grad_a_data[i * k + idx] += grad_c[(i, j)].value();
+        // Column-major indexing: element (i,j) is at index i + j*m
+        for j in 0..n {
+            for i in 0..m {
+                let col_idx = i + j * m;
+                let kk = argmax[col_idx] as usize;
+                if kk < k {
+                    // grad_a[i, kk] += grad_c[i, j]
+                    grad_a_data[i + kk * m] += grad_c[(i, j)].value();
                 }
             }
         }
 
-        Ok(Mat::from_row_major(&grad_a_data, m, k))
+        Ok(Mat::from_col_major(&grad_a_data, m, k))
     }
 
     /// Compute gradient with respect to matrix B.
@@ -486,6 +503,8 @@ where
     ///
     /// For C = A ⊗ B where C[i,j] = ⊕_k (A[i,k] ⊗ B[k,j]):
     /// dL/dB[k,j] = Σ_i { dL/dC[i,j] if argmax[i,j] == k }
+    ///
+    /// All matrices are in column-major order.
     ///
     /// # Arguments
     ///
@@ -524,21 +543,24 @@ where
         assert_eq!(grad_c.nrows(), m, "grad_c rows mismatch");
         assert_eq!(grad_c.ncols(), n, "grad_c cols mismatch");
 
-        // Download argmax to host
-        let argmax = self.inner.argmax_to_host_row_major(ctx)?;
+        // Download argmax to host (column-major)
+        let argmax = self.inner.argmax_to_host(ctx)?;
 
         let mut grad_b_data = vec![G::Scalar::default(); k * n];
 
-        for i in 0..m {
-            for j in 0..n {
-                let idx = argmax[i * n + j] as usize;
-                if idx < k {
-                    grad_b_data[idx * n + j] += grad_c[(i, j)].value();
+        // Column-major indexing: element (i,j) is at index i + j*m
+        for j in 0..n {
+            for i in 0..m {
+                let col_idx = i + j * m;
+                let kk = argmax[col_idx] as usize;
+                if kk < k {
+                    // grad_b[kk, j] += grad_c[i, j]
+                    grad_b_data[kk + j * k] += grad_c[(i, j)].value();
                 }
             }
         }
 
-        Ok(Mat::from_row_major(&grad_b_data, k, n))
+        Ok(Mat::from_col_major(&grad_b_data, k, n))
     }
 }
 
@@ -549,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_gpu_mat_basic() {
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -560,11 +582,11 @@ mod tests {
         let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
         let a = MatRef::<MaxPlus<f32>>::from_slice(&data, 2, 3);
 
-        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
+        let a_gpu = GpuMat::from_matref(ctx, &a).unwrap();
         assert_eq!(a_gpu.nrows(), 2);
         assert_eq!(a_gpu.ncols(), 3);
 
-        let a_back = a_gpu.to_mat(&ctx).unwrap();
+        let a_back = a_gpu.to_mat(ctx).unwrap();
         assert_eq!(a_back.nrows(), 2);
         assert_eq!(a_back.ncols(), 3);
         assert_eq!(a_back[(0, 0)].value(), 1.0);
@@ -573,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_gpu_mat_matmul() {
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -587,11 +609,11 @@ mod tests {
         let a = MatRef::<MaxPlus<f32>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<MaxPlus<f32>>::from_slice(&b_data, 3, 2);
 
-        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
-        let b_gpu = GpuMat::from_matref(&ctx, &b).unwrap();
+        let a_gpu = GpuMat::from_matref(ctx, &a).unwrap();
+        let b_gpu = GpuMat::from_matref(ctx, &b).unwrap();
 
-        let c_gpu = a_gpu.matmul(&ctx, &b_gpu).unwrap();
-        let c = c_gpu.to_mat(&ctx).unwrap();
+        let c_gpu = a_gpu.matmul(ctx, &b_gpu).unwrap();
+        let c = c_gpu.to_mat(ctx).unwrap();
 
         // C[0,0] = max(1+1, 2+3, 3+5) = 8
         assert!((c[(0, 0)].value() - 8.0).abs() < 1e-5);
@@ -601,7 +623,7 @@ mod tests {
 
     #[test]
     fn test_gpu_mat_matmul_argmax() {
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -615,11 +637,11 @@ mod tests {
         let a = MatRef::<MaxPlus<f32>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<MaxPlus<f32>>::from_slice(&b_data, 3, 2);
 
-        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
-        let b_gpu = GpuMat::from_matref(&ctx, &b).unwrap();
+        let a_gpu = GpuMat::from_matref(ctx, &a).unwrap();
+        let b_gpu = GpuMat::from_matref(ctx, &b).unwrap();
 
-        let result_gpu = a_gpu.matmul_argmax(&ctx, &b_gpu).unwrap();
-        let result = result_gpu.to_mat_with_argmax(&ctx).unwrap();
+        let result_gpu = a_gpu.matmul_argmax(ctx, &b_gpu).unwrap();
+        let result = result_gpu.to_mat_with_argmax(ctx).unwrap();
 
         assert!((result.get(0, 0).value() - 8.0).abs() < 1e-5);
         assert_eq!(result.get_argmax(0, 0), 2); // k=2 gave max
@@ -627,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_gpu_mat_minplus() {
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -641,11 +663,11 @@ mod tests {
         let a = MatRef::<MinPlus<f32>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<MinPlus<f32>>::from_slice(&b_data, 3, 2);
 
-        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
-        let b_gpu = GpuMat::from_matref(&ctx, &b).unwrap();
+        let a_gpu = GpuMat::from_matref(ctx, &a).unwrap();
+        let b_gpu = GpuMat::from_matref(ctx, &b).unwrap();
 
-        let c_gpu = a_gpu.matmul(&ctx, &b_gpu).unwrap();
-        let c = c_gpu.to_mat(&ctx).unwrap();
+        let c_gpu = a_gpu.matmul(ctx, &b_gpu).unwrap();
+        let c = c_gpu.to_mat(ctx).unwrap();
 
         // C[0,0] = min(1+1, 2+3, 3+5) = 2
         assert!((c[(0, 0)].value() - 2.0).abs() < 1e-5);
@@ -655,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_gpu_mat_batched() {
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -664,21 +686,21 @@ mod tests {
         };
 
         // Create batch of CPU matrices
-        let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
-        let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[5.0, 6.0, 7.0, 8.0], 2, 2);
-        let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
-        let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0], 2, 2);
+        let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
+        let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[5.0, 7.0, 6.0, 8.0], 2, 2);
+        let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 0.0, 0.0, 1.0], 2, 2);
+        let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 2.0, 4.0], 2, 2);
 
         // Upload batch to GPU
-        let a_gpu = GpuMat::from_mats(&ctx, &[a1, a2]).unwrap();
-        let b_gpu = GpuMat::from_mats(&ctx, &[b1, b2]).unwrap();
+        let a_gpu = GpuMat::from_mats(ctx, &[a1, a2]).unwrap();
+        let b_gpu = GpuMat::from_mats(ctx, &[b1, b2]).unwrap();
 
         // Batched matmul
-        let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(&ctx, &a_gpu, &b_gpu).unwrap();
+        let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(ctx, &a_gpu, &b_gpu).unwrap();
         assert_eq!(c_gpu.len(), 2);
 
         // Download results
-        let c_mats = GpuMat::to_mats(&ctx, &c_gpu).unwrap();
+        let c_mats = GpuMat::to_mats(ctx, &c_gpu).unwrap();
         assert_eq!(c_mats.len(), 2);
 
         // C[0] = A[0] * B[0] (MaxPlus)
@@ -692,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_gpu_mat_batched_with_argmax() {
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -700,29 +722,29 @@ mod tests {
             }
         };
 
-        let a1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, 3);
-        let a2 = Mat::<MaxPlus<f32>>::from_row_major(&[6.0, 5.0, 4.0, 3.0, 2.0, 1.0], 2, 3);
-        let b1 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
-        let b2 = Mat::<MaxPlus<f32>>::from_row_major(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 3, 2);
+        let a1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 4.0, 2.0, 5.0, 3.0, 6.0], 2, 3);
+        let a2 = Mat::<MaxPlus<f32>>::from_col_major(&[6.0, 3.0, 5.0, 2.0, 4.0, 1.0], 2, 3);
+        let b1 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
+        let b2 = Mat::<MaxPlus<f32>>::from_col_major(&[1.0, 3.0, 5.0, 2.0, 4.0, 6.0], 3, 2);
 
         // Upload to GPU
-        let a_gpu = GpuMat::from_mats(&ctx, &[a1, a2]).unwrap();
-        let b_gpu = GpuMat::from_mats(&ctx, &[b1, b2]).unwrap();
+        let a_gpu = GpuMat::from_mats(ctx, &[a1, a2]).unwrap();
+        let b_gpu = GpuMat::from_mats(ctx, &[b1, b2]).unwrap();
 
         // Batched matmul with argmax
         let results =
-            GpuMat::<MaxPlus<f32>>::matmul_batched_with_argmax(&ctx, &a_gpu, &b_gpu).unwrap();
+            GpuMat::<MaxPlus<f32>>::matmul_batched_with_argmax(ctx, &a_gpu, &b_gpu).unwrap();
         assert_eq!(results.len(), 2);
 
         // Download and verify
-        let r0 = results[0].to_mat_with_argmax(&ctx).unwrap();
+        let r0 = results[0].to_mat_with_argmax(ctx).unwrap();
         assert!((r0.get(0, 0).value() - 8.0).abs() < 1e-5); // max(1+1, 2+3, 3+5) = 8
         assert_eq!(r0.get_argmax(0, 0), 2);
     }
 
     #[test]
     fn test_gpu_mat_batched_empty() {
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -733,7 +755,7 @@ mod tests {
         let a_gpu: Vec<GpuMat<MaxPlus<f32>>> = vec![];
         let b_gpu: Vec<GpuMat<MaxPlus<f32>>> = vec![];
 
-        let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(&ctx, &a_gpu, &b_gpu).unwrap();
+        let c_gpu = GpuMat::<MaxPlus<f32>>::matmul_batched(ctx, &a_gpu, &b_gpu).unwrap();
         assert!(c_gpu.is_empty());
     }
 
@@ -741,7 +763,7 @@ mod tests {
     fn test_gpu_mat_backward_a() {
         use tropical_gemm::TropicalMaxPlus;
 
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -755,15 +777,15 @@ mod tests {
         let a = MatRef::<MaxPlus<f32>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<MaxPlus<f32>>::from_slice(&b_data, 3, 2);
 
-        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
-        let b_gpu = GpuMat::from_matref(&ctx, &b).unwrap();
+        let a_gpu = GpuMat::from_matref(ctx, &a).unwrap();
+        let b_gpu = GpuMat::from_matref(ctx, &b).unwrap();
 
         // Forward pass
-        let result = a_gpu.matmul_argmax(&ctx, &b_gpu).unwrap();
+        let result = a_gpu.matmul_argmax(ctx, &b_gpu).unwrap();
 
         // Backward pass with unit gradients
         let grad_c = Mat::<MaxPlus<f32>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
-        let grad_a = result.backward_a(&ctx, &grad_c, 3).unwrap();
+        let grad_a = result.backward_a(ctx, &grad_c, 3).unwrap();
 
         // All argmax should be 2 (k=2 wins for all)
         // So only column 2 should have gradients
@@ -779,7 +801,7 @@ mod tests {
     fn test_gpu_mat_backward_b() {
         use tropical_gemm::TropicalMaxPlus;
 
-        let ctx = match CudaContext::new() {
+        let ctx = match crate::get_global_context() {
             Ok(c) => c,
             Err(_) => {
                 println!("CUDA not available, skipping test");
@@ -793,15 +815,15 @@ mod tests {
         let a = MatRef::<MaxPlus<f32>>::from_slice(&a_data, 2, 3);
         let b = MatRef::<MaxPlus<f32>>::from_slice(&b_data, 3, 2);
 
-        let a_gpu = GpuMat::from_matref(&ctx, &a).unwrap();
-        let b_gpu = GpuMat::from_matref(&ctx, &b).unwrap();
+        let a_gpu = GpuMat::from_matref(ctx, &a).unwrap();
+        let b_gpu = GpuMat::from_matref(ctx, &b).unwrap();
 
         // Forward pass
-        let result = a_gpu.matmul_argmax(&ctx, &b_gpu).unwrap();
+        let result = a_gpu.matmul_argmax(ctx, &b_gpu).unwrap();
 
         // Backward pass with unit gradients
         let grad_c = Mat::<MaxPlus<f32>>::from_fn(2, 2, |_, _| TropicalMaxPlus(1.0));
-        let grad_b = result.backward_b(&ctx, &grad_c, 3).unwrap();
+        let grad_b = result.backward_b(ctx, &grad_c, 3).unwrap();
 
         // All argmax should be 2 (k=2 wins for all)
         // So only row 2 should have gradients

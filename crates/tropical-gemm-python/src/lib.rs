@@ -7,7 +7,8 @@
 //!
 //! - `cuda`: Enable GPU acceleration via CUDA
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+use numpy::ndarray::Array2;
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods, ToPyArray};
 use pyo3::prelude::*;
 
 // Use fully qualified path to avoid naming conflict with the pymodule
@@ -15,7 +16,6 @@ use ::tropical_gemm::{
     tropical_matmul, tropical_matmul_with_argmax, GemmWithArgmax, TropicalMaxMul, TropicalMaxPlus,
     TropicalMinPlus, TropicalSemiring,
 };
-
 
 /// Tropical MaxPlus matrix multiplication: C[i,j] = max_k(A[i,k] + B[k,j])
 ///
@@ -44,17 +44,17 @@ fn maxplus_matmul<'py>(
         )));
     }
 
-    // Get contiguous data
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    // Perform tropical matmul
-    let c_data = tropical_matmul::<TropicalMaxPlus<f32>>(a_data, m, k, b_data, n);
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<f32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
+    });
 
-    // Extract scalar values from semiring wrapper
-    let c_scalars: Vec<f32> = c_data.iter().map(|x| x.value()).collect();
-
-    // Create output array
+    // Create output array (requires GIL)
     Ok(c_scalars.into_pyarray(py))
 }
 
@@ -85,12 +85,15 @@ fn minplus_matmul<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMinPlus<f32>>(a_data, m, k, b_data, n);
-
-    let c_scalars: Vec<f32> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<f32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -124,14 +127,18 @@ fn maxplus_matmul_with_argmax<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
-        tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(a_data, m, k, b_data, n);
-
-    let c_scalars: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+    // Release GIL during heavy compute
+    let (c_scalars, argmax_i32) = py.detach(|| {
+        let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
+            tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(&a_data, m, k, &b_data, n);
+        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+        (c, argmax)
+    });
 
     let c_result = c_scalars.into_pyarray(py);
     let argmax_result = argmax_i32.into_pyarray(py);
@@ -168,14 +175,18 @@ fn minplus_matmul_with_argmax<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let result: GemmWithArgmax<TropicalMinPlus<f32>> =
-        tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(a_data, m, k, b_data, n);
-
-    let c_scalars: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+    // Release GIL during heavy compute
+    let (c_scalars, argmax_i32) = py.detach(|| {
+        let result: GemmWithArgmax<TropicalMinPlus<f32>> =
+            tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(&a_data, m, k, &b_data, n);
+        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+        (c, argmax)
+    });
 
     let c_result = c_scalars.into_pyarray(py);
     let argmax_result = argmax_i32.into_pyarray(py);
@@ -208,21 +219,24 @@ fn backward_a<'py>(
     let m = shape[0];
     let n = shape[1];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
 
-    // Compute gradient w.r.t. A
-    let mut grad_a = vec![0.0f32; m * k];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                grad_a[i * k + k_idx] += grad_c_data[idx];
+    // Release GIL during compute
+    let grad_a = py.detach(|| {
+        let mut grad_a = vec![0.0f32; m * k];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    grad_a[i * k + k_idx] += grad_c_data[idx];
+                }
             }
         }
-    }
+        grad_a
+    });
 
     Ok(grad_a.into_pyarray(py))
 }
@@ -252,21 +266,24 @@ fn backward_b<'py>(
     let m = shape[0];
     let n = shape[1];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
 
-    // Compute gradient w.r.t. B
-    let mut grad_b = vec![0.0f32; k * n];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                grad_b[k_idx * n + j] += grad_c_data[idx];
+    // Release GIL during compute
+    let grad_b = py.detach(|| {
+        let mut grad_b = vec![0.0f32; k * n];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    grad_b[k_idx * n + j] += grad_c_data[idx];
+                }
             }
         }
-    }
+        grad_b
+    });
 
     Ok(grad_b.into_pyarray(py))
 }
@@ -274,6 +291,125 @@ fn backward_b<'py>(
 // ============================================================================
 // MaxMul operations (f32)
 // ============================================================================
+
+// ============================================================================
+// 2D output variants (f32)
+// ============================================================================
+
+/// Tropical MaxPlus matrix multiplication returning 2D array: C[i,j] = max_k(A[i,k] + B[k,j])
+///
+/// Args:
+///     a: Input matrix A of shape (M, K)
+///     b: Input matrix B of shape (K, N)
+///
+/// Returns:
+///     Result matrix C of shape (M, N) as a 2D array
+#[pyfunction]
+fn maxplus_matmul_2d<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f32>,
+    b: PyReadonlyArray2<'py, f32>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<f32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
+    });
+
+    // Create 2D output array
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MinPlus matrix multiplication returning 2D array: C[i,j] = min_k(A[i,k] + B[k,j])
+#[pyfunction]
+fn minplus_matmul_2d<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f32>,
+    b: PyReadonlyArray2<'py, f32>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<f32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
+    });
+
+    // Create 2D output array
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MaxMul matrix multiplication returning 2D array: C[i,j] = max_k(A[i,k] * B[k,j])
+#[pyfunction]
+fn maxmul_matmul_2d<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f32>,
+    b: PyReadonlyArray2<'py, f32>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<f32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
+    });
+
+    // Create 2D output array
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
 
 /// Tropical MaxMul matrix multiplication: C[i,j] = max_k(A[i,k] * B[k,j])
 #[pyfunction]
@@ -295,11 +431,15 @@ fn maxmul_matmul<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMaxMul<f32>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<f32> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<f32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f32>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -324,14 +464,18 @@ fn maxmul_matmul_with_argmax<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let result: GemmWithArgmax<TropicalMaxMul<f32>> =
-        tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(a_data, m, k, b_data, n);
-
-    let c_scalars: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
-    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+    // Release GIL during heavy compute
+    let (c_scalars, argmax_i32) = py.detach(|| {
+        let result: GemmWithArgmax<TropicalMaxMul<f32>> =
+            tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(&a_data, m, k, &b_data, n);
+        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+        (c, argmax)
+    });
 
     Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
 }
@@ -360,11 +504,15 @@ fn maxplus_matmul_f64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMaxPlus<f64>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<f64> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<f64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -389,11 +537,15 @@ fn minplus_matmul_f64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMinPlus<f64>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<f64> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<f64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -418,13 +570,120 @@ fn maxmul_matmul_f64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMaxMul<f64>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<f64> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<f64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
+}
+
+// ============================================================================
+// 2D output variants (f64)
+// ============================================================================
+
+/// Tropical MaxPlus matrix multiplication returning 2D array (f64): C[i,j] = max_k(A[i,k] + B[k,j])
+#[pyfunction]
+fn maxplus_matmul_2d_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    b: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<f64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MinPlus matrix multiplication returning 2D array (f64): C[i,j] = min_k(A[i,k] + B[k,j])
+#[pyfunction]
+fn minplus_matmul_2d_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    b: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<f64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MaxMul matrix multiplication returning 2D array (f64): C[i,j] = max_k(A[i,k] * B[k,j])
+#[pyfunction]
+fn maxmul_matmul_2d_f64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    b: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<f64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<f64>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
 }
 
 /// Tropical MaxPlus matrix multiplication with argmax tracking (f64).
@@ -447,14 +706,18 @@ fn maxplus_matmul_with_argmax_f64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let result: GemmWithArgmax<TropicalMaxPlus<f64>> =
-        tropical_matmul_with_argmax::<TropicalMaxPlus<f64>>(a_data, m, k, b_data, n);
-
-    let c_scalars: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
-    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+    // Release GIL during heavy compute
+    let (c_scalars, argmax_i32) = py.detach(|| {
+        let result: GemmWithArgmax<TropicalMaxPlus<f64>> =
+            tropical_matmul_with_argmax::<TropicalMaxPlus<f64>>(&a_data, m, k, &b_data, n);
+        let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+        (c, argmax)
+    });
 
     Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
 }
@@ -479,14 +742,18 @@ fn minplus_matmul_with_argmax_f64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let result: GemmWithArgmax<TropicalMinPlus<f64>> =
-        tropical_matmul_with_argmax::<TropicalMinPlus<f64>>(a_data, m, k, b_data, n);
-
-    let c_scalars: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
-    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+    // Release GIL during heavy compute
+    let (c_scalars, argmax_i32) = py.detach(|| {
+        let result: GemmWithArgmax<TropicalMinPlus<f64>> =
+            tropical_matmul_with_argmax::<TropicalMinPlus<f64>>(&a_data, m, k, &b_data, n);
+        let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+        (c, argmax)
+    });
 
     Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
 }
@@ -511,14 +778,18 @@ fn maxmul_matmul_with_argmax_f64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let result: GemmWithArgmax<TropicalMaxMul<f64>> =
-        tropical_matmul_with_argmax::<TropicalMaxMul<f64>>(a_data, m, k, b_data, n);
-
-    let c_scalars: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
-    let argmax_i32: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+    // Release GIL during heavy compute
+    let (c_scalars, argmax_i32) = py.detach(|| {
+        let result: GemmWithArgmax<TropicalMaxMul<f64>> =
+            tropical_matmul_with_argmax::<TropicalMaxMul<f64>>(&a_data, m, k, &b_data, n);
+        let c: Vec<f64> = result.values.iter().map(|x| x.value()).collect();
+        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+        (c, argmax)
+    });
 
     Ok((c_scalars.into_pyarray(py), argmax_i32.into_pyarray(py)))
 }
@@ -535,20 +806,24 @@ fn backward_a_f64<'py>(
     let m = shape[0];
     let n = shape[1];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
 
-    let mut grad_a = vec![0.0f64; m * k];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                grad_a[i * k + k_idx] += grad_c_data[idx];
+    // Release GIL during compute
+    let grad_a = py.detach(|| {
+        let mut grad_a = vec![0.0f64; m * k];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    grad_a[i * k + k_idx] += grad_c_data[idx];
+                }
             }
         }
-    }
+        grad_a
+    });
 
     Ok(grad_a.into_pyarray(py))
 }
@@ -565,20 +840,24 @@ fn backward_b_f64<'py>(
     let m = shape[0];
     let n = shape[1];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
 
-    let mut grad_b = vec![0.0f64; k * n];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                grad_b[k_idx * n + j] += grad_c_data[idx];
+    // Release GIL during compute
+    let grad_b = py.detach(|| {
+        let mut grad_b = vec![0.0f64; k * n];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    grad_b[k_idx * n + j] += grad_c_data[idx];
+                }
             }
         }
-    }
+        grad_b
+    });
 
     Ok(grad_b.into_pyarray(py))
 }
@@ -606,22 +885,26 @@ fn maxmul_backward_a<'py>(
     let n = shape[1];
     let k = b.shape()[0];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let mut grad_a = vec![0.0f32; m * k];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                // grad_A[i,k] += grad_C[i,j] * B[k,j]
-                grad_a[i * k + k_idx] += grad_c_data[idx] * b_data[k_idx * n + j];
+    // Release GIL during compute
+    let grad_a = py.detach(|| {
+        let mut grad_a = vec![0.0f32; m * k];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    // grad_A[i,k] += grad_C[i,j] * B[k,j]
+                    grad_a[i * k + k_idx] += grad_c_data[idx] * b_data[k_idx * n + j];
+                }
             }
         }
-    }
+        grad_a
+    });
 
     Ok(grad_a.into_pyarray(py))
 }
@@ -642,22 +925,26 @@ fn maxmul_backward_b<'py>(
     let n = shape[1];
     let k = a.shape()[1];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
-    let a_data = a.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
+    let a_data = a.as_slice()?.to_vec();
 
-    let mut grad_b = vec![0.0f32; k * n];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                // grad_B[k,j] += grad_C[i,j] * A[i,k]
-                grad_b[k_idx * n + j] += grad_c_data[idx] * a_data[i * k + k_idx];
+    // Release GIL during compute
+    let grad_b = py.detach(|| {
+        let mut grad_b = vec![0.0f32; k * n];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    // grad_B[k,j] += grad_C[i,j] * A[i,k]
+                    grad_b[k_idx * n + j] += grad_c_data[idx] * a_data[i * k + k_idx];
+                }
             }
         }
-    }
+        grad_b
+    });
 
     Ok(grad_b.into_pyarray(py))
 }
@@ -675,21 +962,25 @@ fn maxmul_backward_a_f64<'py>(
     let n = shape[1];
     let k = b.shape()[0];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let mut grad_a = vec![0.0f64; m * k];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                grad_a[i * k + k_idx] += grad_c_data[idx] * b_data[k_idx * n + j];
+    // Release GIL during compute
+    let grad_a = py.detach(|| {
+        let mut grad_a = vec![0.0f64; m * k];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    grad_a[i * k + k_idx] += grad_c_data[idx] * b_data[k_idx * n + j];
+                }
             }
         }
-    }
+        grad_a
+    });
 
     Ok(grad_a.into_pyarray(py))
 }
@@ -707,21 +998,25 @@ fn maxmul_backward_b_f64<'py>(
     let n = shape[1];
     let k = a.shape()[1];
 
-    let grad_c_data = grad_c.as_slice()?;
-    let argmax_data = argmax.as_slice()?;
-    let a_data = a.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let grad_c_data = grad_c.as_slice()?.to_vec();
+    let argmax_data = argmax.as_slice()?.to_vec();
+    let a_data = a.as_slice()?.to_vec();
 
-    let mut grad_b = vec![0.0f64; k * n];
-
-    for i in 0..m {
-        for j in 0..n {
-            let idx = i * n + j;
-            let k_idx = argmax_data[idx] as usize;
-            if k_idx < k {
-                grad_b[k_idx * n + j] += grad_c_data[idx] * a_data[i * k + k_idx];
+    // Release GIL during compute
+    let grad_b = py.detach(|| {
+        let mut grad_b = vec![0.0f64; k * n];
+        for i in 0..m {
+            for j in 0..n {
+                let idx = i * n + j;
+                let k_idx = argmax_data[idx] as usize;
+                if k_idx < k {
+                    grad_b[k_idx * n + j] += grad_c_data[idx] * a_data[i * k + k_idx];
+                }
             }
         }
-    }
+        grad_b
+    });
 
     Ok(grad_b.into_pyarray(py))
 }
@@ -750,11 +1045,15 @@ fn maxplus_matmul_i32<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMaxPlus<i32>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<i32> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<i32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -779,11 +1078,15 @@ fn minplus_matmul_i32<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMinPlus<i32>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<i32> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<i32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -808,13 +1111,120 @@ fn maxmul_matmul_i32<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMaxMul<i32>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<i32> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<i32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
+}
+
+// ============================================================================
+// 2D output variants (i32)
+// ============================================================================
+
+/// Tropical MaxPlus matrix multiplication returning 2D array (i32): C[i,j] = max_k(A[i,k] + B[k,j])
+#[pyfunction]
+fn maxplus_matmul_2d_i32<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, i32>,
+    b: PyReadonlyArray2<'py, i32>,
+) -> PyResult<Bound<'py, PyArray2<i32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<i32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MinPlus matrix multiplication returning 2D array (i32): C[i,j] = min_k(A[i,k] + B[k,j])
+#[pyfunction]
+fn minplus_matmul_2d_i32<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, i32>,
+    b: PyReadonlyArray2<'py, i32>,
+) -> PyResult<Bound<'py, PyArray2<i32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<i32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MaxMul matrix multiplication returning 2D array (i32): C[i,j] = max_k(A[i,k] * B[k,j])
+#[pyfunction]
+fn maxmul_matmul_2d_i32<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, i32>,
+    b: PyReadonlyArray2<'py, i32>,
+) -> PyResult<Bound<'py, PyArray2<i32>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<i32>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i32>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
 }
 
 // ============================================================================
@@ -841,11 +1251,15 @@ fn maxplus_matmul_i64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMaxPlus<i64>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<i64> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<i64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -870,11 +1284,15 @@ fn minplus_matmul_i64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMinPlus<i64>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<i64> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<i64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
 }
@@ -899,13 +1317,337 @@ fn maxmul_matmul_i64<'py>(
         )));
     }
 
-    let a_data = a.as_slice()?;
-    let b_data = b.as_slice()?;
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
 
-    let c_data = tropical_matmul::<TropicalMaxMul<i64>>(a_data, m, k, b_data, n);
-    let c_scalars: Vec<i64> = c_data.iter().map(|x| x.value()).collect();
+    // Release GIL during heavy compute
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<i64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
+    });
 
     Ok(c_scalars.into_pyarray(py))
+}
+
+// ============================================================================
+// 2D output variants (i64)
+// ============================================================================
+
+/// Tropical MaxPlus matrix multiplication returning 2D array (i64): C[i,j] = max_k(A[i,k] + B[k,j])
+#[pyfunction]
+fn maxplus_matmul_2d_i64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, i64>,
+    b: PyReadonlyArray2<'py, i64>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxPlus<i64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MinPlus matrix multiplication returning 2D array (i64): C[i,j] = min_k(A[i,k] + B[k,j])
+#[pyfunction]
+fn minplus_matmul_2d_i64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, i64>,
+    b: PyReadonlyArray2<'py, i64>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMinPlus<i64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+/// Tropical MaxMul matrix multiplication returning 2D array (i64): C[i,j] = max_k(A[i,k] * B[k,j])
+#[pyfunction]
+fn maxmul_matmul_2d_i64<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, i64>,
+    b: PyReadonlyArray2<'py, i64>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let m = a_shape[0];
+    let k = a_shape[1];
+    let n = b_shape[1];
+
+    if k != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is {}x{}, B is {}x{}",
+            m, k, b_shape[0], n
+        )));
+    }
+
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    let c_scalars = py.detach(|| {
+        let c_data = tropical_matmul::<TropicalMaxMul<i64>>(&a_data, m, k, &b_data, n);
+        c_data.iter().map(|x| x.value()).collect::<Vec<i64>>()
+    });
+
+    let arr = Array2::from_shape_vec((m, n), c_scalars)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Shape error: {}", e)))?;
+    Ok(arr.to_pyarray(py).to_owned())
+}
+
+// ============================================================================
+// Batched operations (3D arrays: batch × rows × cols)
+// ============================================================================
+
+/// Batched MaxPlus tropical matrix multiplication with argmax tracking.
+///
+/// Args:
+///     a: Input tensor of shape (batch, M, K)
+///     b: Input tensor of shape (batch, K, N)
+///
+/// Returns:
+///     Tuple of (C, argmax) where:
+///     - C: Result tensor of shape (batch × M × N) as flattened array
+///     - argmax: Indices of shape (batch × M × N) as flattened array
+#[pyfunction]
+fn maxplus_matmul_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let batch = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    // Release GIL during heavy compute
+    let (c_result, argmax_result) = py.detach(|| {
+        let stride_a = m * k;
+        let stride_b = k * n;
+        let stride_c = m * n;
+
+        let mut c_result = vec![0.0f32; batch * stride_c];
+        let mut argmax_result = vec![0i32; batch * stride_c];
+
+        for i in 0..batch {
+            let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
+            let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
+
+            let result: GemmWithArgmax<TropicalMaxPlus<f32>> =
+                tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(a_slice, m, k, b_slice, n);
+
+            for (j, val) in result.values.iter().enumerate() {
+                c_result[i * stride_c + j] = val.value();
+            }
+            for (j, &idx) in result.argmax.iter().enumerate() {
+                argmax_result[i * stride_c + j] = idx as i32;
+            }
+        }
+
+        (c_result, argmax_result)
+    });
+
+    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+}
+
+/// Batched MinPlus tropical matrix multiplication with argmax tracking.
+///
+/// Args:
+///     a: Input tensor of shape (batch, M, K)
+///     b: Input tensor of shape (batch, K, N)
+///
+/// Returns:
+///     Tuple of (C, argmax) where:
+///     - C: Result tensor of shape (batch × M × N) as flattened array
+///     - argmax: Indices of shape (batch × M × N) as flattened array
+#[pyfunction]
+fn minplus_matmul_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let batch = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    // Release GIL during heavy compute
+    let (c_result, argmax_result) = py.detach(|| {
+        let stride_a = m * k;
+        let stride_b = k * n;
+        let stride_c = m * n;
+
+        let mut c_result = vec![0.0f32; batch * stride_c];
+        let mut argmax_result = vec![0i32; batch * stride_c];
+
+        for i in 0..batch {
+            let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
+            let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
+
+            let result: GemmWithArgmax<TropicalMinPlus<f32>> =
+                tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(a_slice, m, k, b_slice, n);
+
+            for (j, val) in result.values.iter().enumerate() {
+                c_result[i * stride_c + j] = val.value();
+            }
+            for (j, &idx) in result.argmax.iter().enumerate() {
+                argmax_result[i * stride_c + j] = idx as i32;
+            }
+        }
+
+        (c_result, argmax_result)
+    });
+
+    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
+}
+
+/// Batched MaxMul tropical matrix multiplication with argmax tracking.
+///
+/// Args:
+///     a: Input tensor of shape (batch, M, K)
+///     b: Input tensor of shape (batch, K, N)
+///
+/// Returns:
+///     Tuple of (C, argmax) where:
+///     - C: Result tensor of shape (batch × M × N) as flattened array
+///     - argmax: Indices of shape (batch × M × N) as flattened array
+#[pyfunction]
+fn maxmul_matmul_batched_with_argmax<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray3<'py, f32>,
+    b: PyReadonlyArray3<'py, f32>,
+) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    let batch = a_shape[0];
+    let m = a_shape[1];
+    let k = a_shape[2];
+    let n = b_shape[2];
+
+    if batch != b_shape[0] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Batch size mismatch: A has batch {}, B has batch {}",
+            batch, b_shape[0]
+        )));
+    }
+
+    if k != b_shape[1] {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+            m, k, b_shape[1], n
+        )));
+    }
+
+    // Clone to owned data before releasing GIL
+    let a_data = a.as_slice()?.to_vec();
+    let b_data = b.as_slice()?.to_vec();
+
+    // Release GIL during heavy compute
+    let (c_result, argmax_result) = py.detach(|| {
+        let stride_a = m * k;
+        let stride_b = k * n;
+        let stride_c = m * n;
+
+        let mut c_result = vec![0.0f32; batch * stride_c];
+        let mut argmax_result = vec![0i32; batch * stride_c];
+
+        for i in 0..batch {
+            let a_slice = &a_data[i * stride_a..(i + 1) * stride_a];
+            let b_slice = &b_data[i * stride_b..(i + 1) * stride_b];
+
+            let result: GemmWithArgmax<TropicalMaxMul<f32>> =
+                tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(a_slice, m, k, b_slice, n);
+
+            for (j, val) in result.values.iter().enumerate() {
+                c_result[i * stride_c + j] = val.value();
+            }
+            for (j, &idx) in result.argmax.iter().enumerate() {
+                argmax_result[i * stride_c + j] = idx as i32;
+            }
+        }
+
+        (c_result, argmax_result)
+    });
+
+    Ok((c_result.into_pyarray(py), argmax_result.into_pyarray(py)))
 }
 
 // ============================================================================
@@ -915,7 +1657,151 @@ fn maxmul_matmul_i64<'py>(
 #[cfg(feature = "cuda")]
 mod gpu {
     use super::*;
-    use tropical_gemm_cuda::{tropical_matmul_gpu, tropical_matmul_gpu_with_argmax};
+    use pyo3_dlpack::{
+        cuda_device, dtype_f32, dtype_u32, DLDeviceType, IntoDLPack, PyTensor, TensorInfo,
+    };
+    use std::ffi::c_void;
+    use tropical_gemm_cuda::{
+        get_context_for_device, launch_gemm_external_batched_with_argmax_f32,
+        launch_gemm_external_with_argmax_f32, tropical_matmul_gpu,
+        tropical_matmul_gpu_with_argmax, ExternalGpuMatrix, ExternalGpuTensor3,
+        GpuMatrix, GpuTensor3,
+    };
+
+    // ========================================================================
+    // DLPack wrapper types for GPU tensor export
+    // ========================================================================
+
+    /// Wrapper for GpuTensor3<f32> that implements IntoDLPack for DLPack export.
+    ///
+    /// This wrapper owns the GPU tensor and provides the necessary metadata
+    /// for DLPack tensor exchange. The tensor data remains on GPU.
+    struct DLPackGpuTensor3F32 {
+        tensor: GpuTensor3<f32>,
+        shape: [i64; 3],
+        device_id: i32,
+    }
+
+    impl DLPackGpuTensor3F32 {
+        fn new(tensor: GpuTensor3<f32>, device_id: i32) -> Self {
+            let shape = [
+                tensor.batch() as i64,
+                tensor.rows() as i64,
+                tensor.cols() as i64,
+            ];
+            Self { tensor, shape, device_id }
+        }
+    }
+
+    impl IntoDLPack for DLPackGpuTensor3F32 {
+        fn tensor_info(&self) -> TensorInfo {
+            // Row-major (C-contiguous) 3D tensor on CUDA.
+            TensorInfo::contiguous(
+                self.tensor.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_f32(),
+                self.shape.to_vec(),
+            )
+        }
+    }
+
+    /// Wrapper for GpuTensor3<u32> (argmax indices) that implements IntoDLPack.
+    struct DLPackGpuTensor3U32 {
+        tensor: GpuTensor3<u32>,
+        shape: [i64; 3],
+        device_id: i32,
+    }
+
+    impl DLPackGpuTensor3U32 {
+        fn new(tensor: GpuTensor3<u32>, device_id: i32) -> Self {
+            let shape = [
+                tensor.batch() as i64,
+                tensor.rows() as i64,
+                tensor.cols() as i64,
+            ];
+            Self { tensor, shape, device_id }
+        }
+    }
+
+    impl IntoDLPack for DLPackGpuTensor3U32 {
+        fn tensor_info(&self) -> TensorInfo {
+            TensorInfo::contiguous(
+                self.tensor.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_u32(),
+                self.shape.to_vec(),
+            )
+        }
+    }
+
+    /// Wrapper for GpuMatrix<f32> (2D) that implements IntoDLPack for DLPack export.
+    struct DLPackGpuMatrixF32 {
+        matrix: GpuMatrix<f32>,
+        shape: [i64; 2],
+        device_id: i32,
+    }
+
+    impl DLPackGpuMatrixF32 {
+        fn new(matrix: GpuMatrix<f32>, device_id: i32) -> Self {
+            let shape = [matrix.rows() as i64, matrix.cols() as i64];
+            Self { matrix, shape, device_id }
+        }
+    }
+
+    impl IntoDLPack for DLPackGpuMatrixF32 {
+        fn tensor_info(&self) -> TensorInfo {
+            // Row-major (C-contiguous) 2D matrix on CUDA.
+            TensorInfo::contiguous(
+                self.matrix.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_f32(),
+                self.shape.to_vec(),
+            )
+        }
+    }
+
+    /// Wrapper for GpuMatrix<u32> (2D argmax) that implements IntoDLPack for DLPack export.
+    struct DLPackGpuMatrixU32 {
+        matrix: GpuMatrix<u32>,
+        shape: [i64; 2],
+        device_id: i32,
+    }
+
+    impl DLPackGpuMatrixU32 {
+        fn new(matrix: GpuMatrix<u32>, device_id: i32) -> Self {
+            let shape = [matrix.rows() as i64, matrix.cols() as i64];
+            Self { matrix, shape, device_id }
+        }
+    }
+
+    impl IntoDLPack for DLPackGpuMatrixU32 {
+        fn tensor_info(&self) -> TensorInfo {
+            TensorInfo::contiguous(
+                self.matrix.device_ptr() as *mut c_void,
+                cuda_device(self.device_id),
+                dtype_u32(),
+                self.shape.to_vec(),
+            )
+        }
+    }
+
+    /// Helper function to extract a PyTensor from a Python object.
+    /// Calls __dlpack__() if available, otherwise tries direct extraction.
+    fn extract_dlpack_tensor(py: Python<'_>, obj: &Bound<'_, pyo3::PyAny>) -> PyResult<PyTensor> {
+        // Objects implementing the DLPack protocol expose __dlpack__();
+        // PyTensor::from_pyany calls it and consumes the returned capsule.
+        if obj.hasattr("__dlpack__")? {
+            PyTensor::from_pyany(py, obj)
+        } else {
+            // Fallback: the object is already a DLPack capsule.
+            let capsule = obj.cast::<pyo3::types::PyCapsule>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "Expected a DLPack tensor (with __dlpack__) or a DLPack capsule",
+                )
+            })?;
+            PyTensor::from_capsule(capsule)
+        }
+    }
 
     /// GPU-accelerated MaxPlus matrix multiplication: C[i,j] = max_k(A[i,k] + B[k,j])
     ///
@@ -1019,7 +1905,9 @@ mod gpu {
 
         let (c_data, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxPlus<f32>>(a_data, m, k, b_data, n)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e)))?;
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                })?;
 
         let argmax_i32: Vec<i32> = argmax.into_iter().map(|x| x as i32).collect();
 
@@ -1051,7 +1939,9 @@ mod gpu {
 
         let (c_data, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMinPlus<f32>>(a_data, m, k, b_data, n)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e)))?;
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                })?;
 
         let argmax_i32: Vec<i32> = argmax.into_iter().map(|x| x as i32).collect();
 
@@ -1112,17 +2002,498 @@ mod gpu {
 
         let (c_data, argmax) =
             tropical_matmul_gpu_with_argmax::<TropicalMaxMul<f32>>(a_data, m, k, b_data, n)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e)))?;
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                })?;
 
         let argmax_i32: Vec<i32> = argmax.into_iter().map(|x| x as i32).collect();
 
         Ok((c_data.into_pyarray(py), argmax_i32.into_pyarray(py)))
     }
 
+    // ========================================================================
+    // DLPack zero-copy functions (2D tensors)
+    // ========================================================================
+
+    /// MaxPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// This function accepts PyTorch tensors (or any DLPack-compatible tensor) directly
+    /// and performs the computation without copying data for GPU tensors.
+    ///
+    /// Args:
+    ///     a: Input tensor A of shape (M, K) - must support __dlpack__(), f32
+    ///     b: Input tensor B of shape (K, N) - must support __dlpack__(), f32
+    ///
+    /// Returns:
+    ///     Tuple of (C, argmax) where the type depends on input device:
+    ///
+    ///     For CUDA tensors: Returns DLPack capsules (data stays on GPU)
+    ///     - C: Result of shape (M*N,) as f32 - use `torch.from_dlpack(c).reshape(m, n)`
+    ///     - argmax: Indices of shape (M*N,) as i32 - use `torch.from_dlpack(argmax).reshape(m, n)`
+    ///
+    ///     For CPU tensors: Returns numpy arrays (flattened)
+    ///     - C: Result of shape (M*N,) as f32 - use `torch.from_numpy(c).reshape(m, n)`
+    ///     - argmax: Indices of shape (M*N,) as i32 - use `torch.from_numpy(argmax).reshape(m, n)`
+    #[pyfunction]
+    pub fn maxplus_matmul_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        dlpack_2d_impl(py, a, b, "tropical_maxplus_f32_nn_with_argmax", Algebra::MaxPlus)
+    }
+
+    /// MinPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn minplus_matmul_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        dlpack_2d_impl(py, a, b, "tropical_minplus_f32_nn_with_argmax", Algebra::MinPlus)
+    }
+
+    /// MaxMul matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn maxmul_matmul_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        dlpack_2d_impl(py, a, b, "tropical_maxmul_f32_nn_with_argmax", Algebra::MaxMul)
+    }
+
+    /// Algebra type for CPU dispatch in 2D DLPack functions.
+    enum Algebra {
+        MaxPlus,
+        MinPlus,
+        MaxMul,
+    }
+
+    /// Implementation for 2D DLPack operations.
+    ///
+    /// Returns DLPack capsules that keep data on GPU - use `torch.from_dlpack()`
+    /// to convert to PyTorch tensors.
+    fn dlpack_2d_impl(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+        kernel_name: &'static str,
+        algebra: Algebra,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        // Extract tensor info from DLPack
+        let a_tensor = extract_dlpack_tensor(py, &a)?;
+        let b_tensor = extract_dlpack_tensor(py, &b)?;
+
+        // Get device info
+        let a_device = a_tensor.device();
+        let b_device = b_tensor.device();
+
+        // Validate: both tensors must be on the same device type
+        if a_device.device_type != b_device.device_type {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Tensors must be on the same device type: A is on {:?}, B is on {:?}",
+                a_device.device_type_enum(),
+                b_device.device_type_enum()
+            )));
+        }
+
+        // Validate: both tensors must be on the same device ID (for multi-GPU)
+        if a_device.device_id != b_device.device_id {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Tensors must be on the same device: A is on device {}, B is on device {}",
+                a_device.device_id, b_device.device_id
+            )));
+        }
+
+        let device_id = a_device.device_id;
+
+        // Get dtype and validate
+        let a_dtype = a_tensor.dtype();
+        let b_dtype = b_tensor.dtype();
+        if a_dtype != b_dtype {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Tensors must have the same dtype: A is {:?}, B is {:?}",
+                a_dtype, b_dtype
+            )));
+        }
+
+        // Validate dtype is f32
+        if !a_dtype.is_f32() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Only f32 tensors are supported for DLPack interface",
+            ));
+        }
+
+        // Get shapes
+        let a_shape = a_tensor.shape();
+        let b_shape = b_tensor.shape();
+
+        if a_shape.len() != 2 || b_shape.len() != 2 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Expected 2D tensors, got A with {} dims, B with {} dims",
+                a_shape.len(),
+                b_shape.len()
+            )));
+        }
+
+        let m = a_shape[0] as usize;
+        let k = a_shape[1] as usize;
+        let k2 = b_shape[0] as usize;
+        let n = b_shape[1] as usize;
+
+        if k != k2 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Dimension mismatch: A is {}x{}, B is {}x{}",
+                m, k, k2, n
+            )));
+        }
+
+        // Guard against zero-sized dimensions
+        if m == 0 || k == 0 || n == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Zero-sized dimensions not supported: m={}, k={}, n={}",
+                m, k, n
+            )));
+        }
+
+        // Check strides for contiguity
+        let a_strides = a_tensor.strides();
+        let b_strides = b_tensor.strides();
+
+        // For row-major (C-contiguous): strides should be [cols, 1]
+        let a_contiguous = a_strides.is_none()
+            || a_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == k as i64);
+        let b_contiguous = b_strides.is_none()
+            || b_strides.map_or(false, |s| s.len() == 2 && s[1] == 1 && s[0] == n as i64);
+
+        if !a_contiguous || !b_contiguous {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Tensors must be contiguous (call .contiguous() on PyTorch tensors)",
+            ));
+        }
+
+        match a_device.device_type_enum() {
+            Some(DLDeviceType::Cuda) => {
+                // GPU path: zero-copy using DLPack
+                let a_ptr = a_tensor.data_ptr() as u64;
+                let b_ptr = b_tensor.data_ptr() as u64;
+
+                // Create external matrix views
+                let a_ext = unsafe { ExternalGpuMatrix::from_raw(a_ptr, m, k) };
+                let b_ext = unsafe { ExternalGpuMatrix::from_raw(b_ptr, k, n) };
+
+                // Get CUDA context for the input device
+                let ctx = get_context_for_device(device_id as usize).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+                })?;
+
+                // Launch kernel
+                let result = unsafe {
+                    launch_gemm_external_with_argmax_f32(ctx, kernel_name, &a_ext, &b_ext, m, k, n)
+                }
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
+                })?;
+
+                // Split result into matrix and argmax, then wrap for DLPack export
+                let (c_matrix, argmax_matrix) = result.into_parts();
+
+                // Wrap in DLPack-compatible wrappers with correct device_id
+                let c_dlpack = DLPackGpuMatrixF32::new(c_matrix, device_id);
+                let argmax_dlpack = DLPackGpuMatrixU32::new(argmax_matrix, device_id);
+
+                // Export as DLPack capsules (ownership of the GPU tensors moves
+                // into the capsules; data stays on the device).
+                let c_capsule = c_dlpack.into_dlpack(py)?;
+                let argmax_capsule = argmax_dlpack.into_dlpack(py)?;
+
+                Ok((c_capsule, argmax_capsule))
+            }
+            Some(DLDeviceType::CudaHost) => {
+                // CudaHost (pinned memory) is not supported - the pointer is a host pointer
+                // that cannot be used directly by CUDA kernels without explicit handling
+                Err(pyo3::exceptions::PyValueError::new_err(
+                    "CudaHost (pinned memory) tensors are not supported. Use regular CUDA tensors.",
+                ))
+            }
+            Some(DLDeviceType::Cpu) => {
+                // CPU path: use existing CPU backend, return numpy arrays as PyObject
+                let a_ptr = a_tensor.data_ptr() as *const f32;
+                let b_ptr = b_tensor.data_ptr() as *const f32;
+
+                let a_data = unsafe { std::slice::from_raw_parts(a_ptr, m * k) };
+                let b_data = unsafe { std::slice::from_raw_parts(b_ptr, k * n) };
+
+                let (c_scalars, argmax_i32) = match algebra {
+                    Algebra::MaxPlus => {
+                        let result: ::tropical_gemm::GemmWithArgmax<TropicalMaxPlus<f32>> =
+                            ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMaxPlus<f32>>(
+                                a_data, m, k, b_data, n,
+                            );
+                        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+                        (c, argmax)
+                    }
+                    Algebra::MinPlus => {
+                        let result: ::tropical_gemm::GemmWithArgmax<TropicalMinPlus<f32>> =
+                            ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMinPlus<f32>>(
+                                a_data, m, k, b_data, n,
+                            );
+                        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+                        (c, argmax)
+                    }
+                    Algebra::MaxMul => {
+                        let result: ::tropical_gemm::GemmWithArgmax<TropicalMaxMul<f32>> =
+                            ::tropical_gemm::tropical_matmul_with_argmax::<TropicalMaxMul<f32>>(
+                                a_data, m, k, b_data, n,
+                            );
+                        let c: Vec<f32> = result.values.iter().map(|x| x.value()).collect();
+                        let argmax: Vec<i32> = result.argmax.iter().map(|&x| x as i32).collect();
+                        (c, argmax)
+                    }
+                };
+
+                Ok((
+                    c_scalars.into_pyarray(py).into_any().unbind(),
+                    argmax_i32.into_pyarray(py).into_any().unbind(),
+                ))
+            }
+            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Unsupported device type: {:?}",
+                a_device.device_type_enum()
+            ))),
+        }
+    }
+
     /// Check if CUDA is available.
     #[pyfunction]
     pub fn cuda_available() -> bool {
         true
+    }
+
+    // ========================================================================
+    // Batched DLPack functions (3D tensors)
+    // ========================================================================
+    //
+    // Note: Only f32 with argmax is supported for batched GPU operations.
+    // f64/i32/i64 and non-argmax variants are not implemented.
+    // For other dtypes, use the CPU batched API.
+
+    /// Batched MaxPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Computes C[b,i,j] = max_k(A[b,i,k] + B[b,k,j]) for each batch b.
+    ///
+    /// # Limitations
+    ///
+    /// - Only f32 dtype is supported (GPU batched)
+    /// - Always returns argmax (no non-argmax variant)
+    ///
+    /// Args:
+    ///     a: Input tensor A of shape (batch, M, K) - must support __dlpack__(), f32, CUDA
+    ///     b: Input tensor B of shape (batch, K, N) - must support __dlpack__(), f32, CUDA
+    ///
+    /// Returns:
+    ///     Tuple of (C, argmax) as DLPack capsules where:
+    ///     - C: Result tensor of shape (batch, M, N) as f32 CUDA tensor
+    ///     - argmax: Indices of shape (batch, M, N) as i32 CUDA tensor
+    ///
+    ///     Use `torch.from_dlpack(capsule)` to convert to PyTorch tensors.
+    ///
+    /// Raises:
+    ///     RuntimeError: If tensors are not on CUDA or DLPack extraction fails
+    ///     ValueError: If tensors are not f32 or not 3D
+    #[pyfunction]
+    pub fn maxplus_matmul_batched_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        batched_dlpack_impl(py, a, b, "tropical_maxplus_f32_nn_batched_with_argmax")
+    }
+
+    /// Batched MinPlus matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn minplus_matmul_batched_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        batched_dlpack_impl(py, a, b, "tropical_minplus_f32_nn_batched_with_argmax")
+    }
+
+    /// Batched MaxMul matrix multiplication using DLPack for zero-copy GPU tensor exchange.
+    ///
+    /// Returns DLPack capsules - use `torch.from_dlpack(capsule)` to convert.
+    #[pyfunction]
+    pub fn maxmul_matmul_batched_dlpack(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        batched_dlpack_impl(py, a, b, "tropical_maxmul_f32_nn_batched_with_argmax")
+    }
+
+    /// Implementation for batched DLPack operations.
+    ///
+    /// Returns DLPack capsules that keep data on GPU - use `torch.from_dlpack()`
+    /// to convert to PyTorch tensors.
+    fn batched_dlpack_impl(
+        py: Python<'_>,
+        a: Bound<'_, pyo3::PyAny>,
+        b: Bound<'_, pyo3::PyAny>,
+        kernel_name: &'static str,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        // Extract tensor info from DLPack
+        let a_tensor = extract_dlpack_tensor(py, &a)?;
+        let b_tensor = extract_dlpack_tensor(py, &b)?;
+
+        // Get device info
+        let a_device = a_tensor.device();
+        let b_device = b_tensor.device();
+
+        // Validate: must be on CUDA device (not CudaHost/pinned memory)
+        if !a_device.is_cuda() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Tensor A must be on CUDA device, got {:?}. Use CPU batched functions for CPU tensors.",
+                a_device.device_type_enum()
+            )));
+        }
+
+        if !b_device.is_cuda() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Tensor B must be on CUDA device, got {:?}. Use CPU batched functions for CPU tensors.",
+                b_device.device_type_enum()
+            )));
+        }
+
+        if a_device.device_id != b_device.device_id {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Tensors must be on the same CUDA device: A is on cuda:{}, B is on cuda:{}",
+                a_device.device_id, b_device.device_id
+            )));
+        }
+
+        let device_id = a_device.device_id;
+
+        // Get dtype and validate
+        let a_dtype = a_tensor.dtype();
+        let b_dtype = b_tensor.dtype();
+        if a_dtype != b_dtype {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Tensors must have the same dtype: A is {:?}, B is {:?}",
+                a_dtype, b_dtype
+            )));
+        }
+
+        if !a_dtype.is_f32() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Only f32 tensors are supported for batched DLPack interface",
+            ));
+        }
+
+        // Get shapes - must be 3D
+        let a_shape = a_tensor.shape();
+        let b_shape = b_tensor.shape();
+
+        if a_shape.len() != 3 || b_shape.len() != 3 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Expected 3D tensors, got A with {} dims, B with {} dims",
+                a_shape.len(),
+                b_shape.len()
+            )));
+        }
+
+        let batch = a_shape[0] as usize;
+        let m = a_shape[1] as usize;
+        let k = a_shape[2] as usize;
+        let batch_b = b_shape[0] as usize;
+        let k2 = b_shape[1] as usize;
+        let n = b_shape[2] as usize;
+
+        if batch != batch_b {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Batch size mismatch: A has batch {}, B has batch {}",
+                batch, batch_b
+            )));
+        }
+
+        if k != k2 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Dimension mismatch: A is (batch, {}, {}), B is (batch, {}, {})",
+                m, k, k2, n
+            )));
+        }
+
+        // Guard against zero-sized dimensions (would cause invalid CUDA launch)
+        if batch == 0 || m == 0 || k == 0 || n == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Zero-sized dimensions not supported: batch={}, m={}, k={}, n={}",
+                batch, m, k, n
+            )));
+        }
+
+        // Check strides for contiguity (row-major per batch)
+        let a_strides = a_tensor.strides();
+        let b_strides = b_tensor.strides();
+
+        // For 3D row-major (C-contiguous): strides should be [m*k, k, 1]
+        let a_contiguous = a_strides.is_none()
+            || a_strides.map_or(false, |s| {
+                s.len() == 3 && s[2] == 1 && s[1] == k as i64 && s[0] == (m * k) as i64
+            });
+        let b_contiguous = b_strides.is_none()
+            || b_strides.map_or(false, |s| {
+                s.len() == 3 && s[2] == 1 && s[1] == n as i64 && s[0] == (k * n) as i64
+            });
+
+        if !a_contiguous || !b_contiguous {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Tensors must be contiguous (call .contiguous() on PyTorch tensors)",
+            ));
+        }
+
+        // GPU path: zero-copy using DLPack
+        let a_ptr = a_tensor.data_ptr() as u64;
+        let b_ptr = b_tensor.data_ptr() as u64;
+
+        // Create external 3D tensor views
+        let a_ext = unsafe { ExternalGpuTensor3::from_raw_contiguous(a_ptr, batch, m, k) };
+        let b_ext = unsafe { ExternalGpuTensor3::from_raw_contiguous(b_ptr, batch, k, n) };
+
+        // Get CUDA context for the input device
+        let ctx = get_context_for_device(device_id as usize).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA error: {}", e))
+        })?;
+
+        // Launch batched kernel
+        let result = unsafe {
+            launch_gemm_external_batched_with_argmax_f32(ctx, kernel_name, &a_ext, &b_ext, batch, m, k, n)
+        }
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("CUDA kernel error: {}", e))
+        })?;
+
+        // Split result into tensor and argmax, then wrap for DLPack export
+        let (c_tensor, argmax_tensor) = result.into_parts();
+
+        // Wrap in DLPack-compatible wrappers with correct device_id
+        let c_dlpack = DLPackGpuTensor3F32::new(c_tensor, device_id);
+        let argmax_dlpack = DLPackGpuTensor3U32::new(argmax_tensor, device_id);
+
+        // Export as DLPack capsules (ownership of the GPU tensors moves into the
+        // capsules; data stays on the device).
+        let c_capsule = c_dlpack.into_dlpack(py)?;
+        let argmax_capsule = argmax_dlpack.into_dlpack(py)?;
+
+        Ok((c_capsule, argmax_capsule))
     }
 
     /// Register GPU functions in the module.
@@ -1133,6 +2504,14 @@ mod gpu {
         m.add_function(wrap_pyfunction!(maxplus_matmul_gpu_with_argmax, m)?)?;
         m.add_function(wrap_pyfunction!(minplus_matmul_gpu_with_argmax, m)?)?;
         m.add_function(wrap_pyfunction!(maxmul_matmul_gpu_with_argmax, m)?)?;
+        // DLPack zero-copy functions
+        m.add_function(wrap_pyfunction!(maxplus_matmul_dlpack, m)?)?;
+        m.add_function(wrap_pyfunction!(minplus_matmul_dlpack, m)?)?;
+        m.add_function(wrap_pyfunction!(maxmul_matmul_dlpack, m)?)?;
+        // Batched DLPack functions
+        m.add_function(wrap_pyfunction!(maxplus_matmul_batched_dlpack, m)?)?;
+        m.add_function(wrap_pyfunction!(minplus_matmul_batched_dlpack, m)?)?;
+        m.add_function(wrap_pyfunction!(maxmul_matmul_batched_dlpack, m)?)?;
         m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
         Ok(())
     }
@@ -1182,6 +2561,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(maxmul_backward_a_f64, m)?)?;
     m.add_function(wrap_pyfunction!(maxmul_backward_b_f64, m)?)?;
 
+    // Batched operations (3D arrays)
+    m.add_function(wrap_pyfunction!(maxplus_matmul_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_batched_with_argmax, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_batched_with_argmax, m)?)?;
+
     // i32 operations
     m.add_function(wrap_pyfunction!(maxplus_matmul_i32, m)?)?;
     m.add_function(wrap_pyfunction!(minplus_matmul_i32, m)?)?;
@@ -1191,6 +2575,26 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(maxplus_matmul_i64, m)?)?;
     m.add_function(wrap_pyfunction!(minplus_matmul_i64, m)?)?;
     m.add_function(wrap_pyfunction!(maxmul_matmul_i64, m)?)?;
+
+    // 2D output variants (f32)
+    m.add_function(wrap_pyfunction!(maxplus_matmul_2d, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_2d, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_2d, m)?)?;
+
+    // 2D output variants (f64)
+    m.add_function(wrap_pyfunction!(maxplus_matmul_2d_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_2d_f64, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_2d_f64, m)?)?;
+
+    // 2D output variants (i32)
+    m.add_function(wrap_pyfunction!(maxplus_matmul_2d_i32, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_2d_i32, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_2d_i32, m)?)?;
+
+    // 2D output variants (i64)
+    m.add_function(wrap_pyfunction!(maxplus_matmul_2d_i64, m)?)?;
+    m.add_function(wrap_pyfunction!(minplus_matmul_2d_i64, m)?)?;
+    m.add_function(wrap_pyfunction!(maxmul_matmul_2d_i64, m)?)?;
 
     // GPU operations (if available)
     gpu::register(m)?;

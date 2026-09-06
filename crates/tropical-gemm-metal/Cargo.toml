@@ -6,13 +6,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Metal backend for tropical matrix multiplication on Apple Silicon"
-keywords = ["tropical", "metal", "gpu", "matrix", "gemm", "apple"]
+keywords = ["tropical", "metal", "gpu", "matrix", "gemm"]
 categories = ["algorithms", "mathematics", "science"]
 readme = "../../README.md"
 
-[dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
 tropical-gemm = { workspace = true }
 metal = "0.29"
+bytemuck = "1"
 objc = "0.2"
 thiserror = { workspace = true }
 once_cell = "1.19"

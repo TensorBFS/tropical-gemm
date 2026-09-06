@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-4715aa1c.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -197,22 +197,36 @@
 │       (tropical_gemm.cu, specialized per semiring)          │
 └─────────────────────────────────────────────────────────────┘
 </code></pre>
-<h2 id="runtime-compilation"><a class="header" href="#runtime-compilation">Runtime Compilation</a></h2>
-<p>Kernels are compiled from CUDA C source at runtime using NVRTC:</p>
+<h2 id="runtime-compilation-and-the-cubin-cache"><a class="header" href="#runtime-compilation-and-the-cubin-cache">Runtime Compilation and the CUBIN Cache</a></h2>
+<p>Kernels are compiled from CUDA C source at runtime with NVRTC — straight to a <strong>CUBIN</strong>
+(native SASS) for the device’s compute capability — and the cubin is <strong>cached on disk</strong>.
+Later processes load the cached cubin directly, skipping both the NVRTC compile and the
+driver’s PTX→SASS JIT.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>// On first CudaContext::new()
-let ctx = CudaContext::new()?;  // Compiles kernels (~1-2 seconds)
+</span>// First CudaContext::new() on a machine: full NVRTC compile (~10s), cubin cached.
+// Every later process: loads the cached cubin (~0.13s).
+let ctx = CudaContext::new()?;
 
-// Subsequent operations are fast
-let c = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;  // Just kernel launch
+let c = a_gpu.matmul(&amp;ctx, &amp;b_gpu)?;  // just a kernel launch
 <span class="boring">}</span></code></pre>
+<p>The cache lives at <code>$XDG_CACHE_HOME</code> (or <code>~/.cache</code>)
+<code>/tropical-gemm/&lt;hash&gt;_sm_&lt;cc&gt;_nvrtc&lt;ver&gt;.cubin</code>, keyed on the kernel source, compile flags,
+GPU arch, and NVRTC version — so a different GPU or CUDA toolkit never reuses the wrong
+cubin. A stale / corrupt / arch-incompatible file self-heals (it is deleted and recompiled).</p>
 <p>Benefits:</p>
 <ul>
-<li><strong>No build-time CUDA dependency</strong>: Users don’t need nvcc at build time</li>
-<li><strong>Portability</strong>: Works across CUDA versions</li>
-<li><strong>Specialization</strong>: Kernels optimized for specific semirings</li>
+<li><strong>No build-time CUDA dependency</strong>: cudarc dynamic-loads CUDA at runtime, so users don’t
+need <code>nvcc</code> (or any CUDA toolkit) at build time.</li>
+<li><strong>Fast startup</strong>: the on-disk cubin cache makes a warm <code>CudaContext::new()</code> ~0.13 s.</li>
+<li><strong>Specialization</strong>: kernels are compiled for the exact device architecture.</li>
 </ul>
+<blockquote>
+<p><strong>Selecting the toolkit:</strong> at build time set <code>CUDARC_CUDA_VERSION</code> (e.g. <code>12080</code> for CUDA
+12.8) to match the toolkit available at runtime. NVRTC compiles device code optimized by
+default (<code>-dopt=on</code> is implicit), so no <code>-O3</code> is needed — the <code>-O3</code> in <code>nvcc -O3</code> is a
+host-compiler flag and does not apply to these pure-device kernels.</p>
+</blockquote>
 <h2 id="kernel-design"><a class="header" href="#kernel-design">Kernel Design</a></h2>
 <h3 id="thread-block-organization"><a class="header" href="#thread-block-organization">Thread Block Organization</a></h3>
 <pre><code>Block size: 16×16 threads (256 threads per block)

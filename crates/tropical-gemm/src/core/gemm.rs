@@ -71,7 +71,10 @@ pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T>>(
         return;
     }
 
-    // Allocate packing buffers
+    // TODO(#34): Avoid repeated allocation by accepting caller-provided workspace.
+    // For repeated GEMM calls, consider adding a workspace-based API:
+    //   pub struct GemmWorkspace<T> { packed_a: Vec<T>, packed_b: Vec<T> }
+    //   pub fn tropical_gemm_with_workspace(..., workspace: &mut GemmWorkspace<T>)
     let mut packed_a = vec![T::Scalar::scalar_zero(); packed_a_size(params.mc, params.kc, K::MR)];
     let mut packed_b = vec![T::Scalar::scalar_zero(); packed_b_size(params.kc, params.nc, K::NR)];
 
@@ -185,7 +188,7 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
     let ldc = result.ld;
     let (c, argmax) = result.as_mut_ptrs();
 
-    // Allocate packing buffers
+    // TODO(#34): Avoid repeated allocation by accepting caller-provided workspace.
     let mut packed_a = vec![T::Scalar::scalar_zero(); packed_a_size(params.mc, params.kc, K::MR)];
     let mut packed_b = vec![T::Scalar::scalar_zero(); packed_b_size(params.kc, params.nc, K::NR)];
 
@@ -235,6 +238,21 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // Canonicalize the argmax index of tropical-zero "no contribution" cells.
+    // Integer in-band sentinels drift under the guard-free `+` and let the
+    // accumulator adopt a spurious k; reset those cells to the deterministic
+    // seed (0) so the whole repo agrees on one value. Done as a single O(m*n)
+    // sweep here (kept out of the hot per-block write-back to preserve its
+    // vectorization), and it folds away entirely for float types, whose
+    // `is_no_contribution` is a const `false`.
+    for i in 0..m {
+        for j in 0..n {
+            if result.get(i, j).is_no_contribution() {
+                *result.get_argmax_mut(i, j) = 0;
             }
         }
     }
@@ -815,5 +833,101 @@ mod tests {
 
         assert_eq!(result.get(0, 0).0, 8.0);
         assert_eq!(result.get_argmax(0, 0), 2);
+    }
+
+    #[test]
+    fn test_gemm_with_argmax_int_zero_cell_canonicalized() {
+        use crate::types::TropicalScalar;
+
+        // Row 0 of A is the tropical zero (`-∞` sentinel), so every product for
+        // C[0, *] is a (drifted) tropical zero — no real contribution. Its argmax
+        // must canonicalize to the seed `0`, not drift to a data-dependent k.
+        let m = 2;
+        let n = 2;
+        let k = 3;
+        let neg = <i32 as TropicalScalar>::neg_infinity();
+        let a: [i32; 6] = [
+            neg, neg, neg, // row 0: all tropical zero
+            1, 2, 3, // row 1: finite
+        ];
+        let b: [i32; 6] = [
+            4, 5, // row 0
+            6, 7, // row 1
+            8, 9, // row 2
+        ];
+
+        let mut result: GemmWithArgmax<TropicalMaxPlus<i32>> = GemmWithArgmax::new(m, n);
+        unsafe {
+            tropical_gemm_with_argmax_portable::<TropicalMaxPlus<i32>>(
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                &mut result,
+            );
+        }
+
+        // Row 0: no contribution → value stays in `-∞` territory, argmax = 0.
+        for j in 0..n {
+            assert!(
+                result.get(0, j).0.is_drifted_neg_zero(),
+                "C[0,{j}] should be in tropical-zero territory"
+            );
+            assert_eq!(
+                result.get_argmax(0, j),
+                0,
+                "zero-cell argmax must canonicalize to 0, not drift"
+            );
+        }
+        // Row 1: real contributions → finite value, true argmax_k.
+        // C[1,0] = max(1+4, 2+6, 3+8) = 11 at k=2; C[1,1] = max(1+5,2+7,3+9) = 12 at k=2.
+        assert_eq!(result.get(1, 0).0, 11);
+        assert_eq!(result.get_argmax(1, 0), 2);
+        assert_eq!(result.get(1, 1).0, 12);
+        assert_eq!(result.get_argmax(1, 1), 2);
+    }
+
+    #[test]
+    fn test_gemm_with_argmax_float_zero_cell_keeps_seed() {
+        // Float `-∞` is exact (never drifts); a no-contribution cell already keeps
+        // the seed index 0. The canonicalization hook must not change this.
+        let m = 2;
+        let n = 2;
+        let k = 3;
+        let a: [f64; 6] = [
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            1.0,
+            2.0,
+            3.0,
+        ];
+        let b: [f64; 6] = [4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+
+        let mut result: GemmWithArgmax<TropicalMaxPlus<f64>> = GemmWithArgmax::new(m, n);
+        unsafe {
+            tropical_gemm_with_argmax_portable::<TropicalMaxPlus<f64>>(
+                m,
+                n,
+                k,
+                a.as_ptr(),
+                3,
+                Transpose::NoTrans,
+                b.as_ptr(),
+                2,
+                Transpose::NoTrans,
+                &mut result,
+            );
+        }
+
+        for j in 0..n {
+            assert_eq!(result.get(0, j).0, f64::NEG_INFINITY);
+            assert_eq!(result.get_argmax(0, j), 0);
+        }
     }
 }

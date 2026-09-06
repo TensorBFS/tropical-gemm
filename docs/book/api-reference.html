@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-4715aa1c.js";
+            window.path_to_searchindex_js = "searchindex-97cf48a0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fe721b39.js"></script>
@@ -321,13 +321,42 @@ import numpy as np
 a = np.array([[1, 2], [3, 4]], dtype=np.float32)
 b = np.array([[5, 6], [7, 8]], dtype=np.float32)
 
-# Basic operations
-c = tropical_gemm.maxplus_matmul(a, b)
-c = tropical_gemm.minplus_matmul(a, b)
-c = tropical_gemm.maxmul_matmul(a, b)
+# Basic operations (returns flattened 1D array)
+c_flat = tropical_gemm.maxplus_matmul(a, b)
+c = c_flat.reshape(a.shape[0], b.shape[1])
+
+# 2D output (returns proper 2D array directly)
+c = tropical_gemm.maxplus_matmul_2d(a, b)    # shape: (m, n)
+c = tropical_gemm.minplus_matmul_2d(a, b)
+c = tropical_gemm.maxmul_matmul_2d(a, b)
 
 # With argmax
 values, argmax = tropical_gemm.maxplus_matmul_with_argmax(a, b)
+</code></pre>
+<h3 id="2d-output-functions"><a class="header" href="#2d-output-functions">2D Output Functions</a></h3>
+<p>The <code>*_matmul_2d</code> variants return properly shaped 2D NumPy arrays without manual reshaping:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>MaxPlus</th><th>MinPlus</th><th>MaxMul</th></tr>
+</thead>
+<tbody>
+<tr><td>f32</td><td><code>maxplus_matmul_2d</code></td><td><code>minplus_matmul_2d</code></td><td><code>maxmul_matmul_2d</code></td></tr>
+<tr><td>f64</td><td><code>maxplus_matmul_2d_f64</code></td><td><code>minplus_matmul_2d_f64</code></td><td><code>maxmul_matmul_2d_f64</code></td></tr>
+<tr><td>i32</td><td><code>maxplus_matmul_2d_i32</code></td><td><code>minplus_matmul_2d_i32</code></td><td><code>maxmul_matmul_2d_i32</code></td></tr>
+<tr><td>i64</td><td><code>maxplus_matmul_2d_i64</code></td><td><code>minplus_matmul_2d_i64</code></td><td><code>maxmul_matmul_2d_i64</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre><code class="language-python"># f64 example
+a = np.array([[1, 2], [3, 4]], dtype=np.float64)
+b = np.array([[5, 6], [7, 8]], dtype=np.float64)
+c = tropical_gemm.maxplus_matmul_2d_f64(a, b)  # shape: (2, 2)
+
+# i32 example
+a = np.array([[1, 2], [3, 4]], dtype=np.int32)
+b = np.array([[5, 6], [7, 8]], dtype=np.int32)
+c = tropical_gemm.maxplus_matmul_2d_i32(a, b)  # shape: (2, 2)
 </code></pre>
 <h3 id="backward-pass"><a class="header" href="#backward-pass">Backward Pass</a></h3>
 <pre><code class="language-python"># Gradient computation

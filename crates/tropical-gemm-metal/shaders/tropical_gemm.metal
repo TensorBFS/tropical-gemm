@@ -10,7 +10,7 @@ using namespace metal;
 // ============================================================================
 
 // Memory layout helpers (column-major)
-#define OFFSET_COL(row, col, ld) ((col) * (ld) + (row))
+#define OFFSET_COL(row, col, ld) (ulong(col) * ulong(ld) + ulong(row))
 
 // Integer "infinity" constants (sentinel values for tropical zero)
 constant int INF_I32 = 46340;
