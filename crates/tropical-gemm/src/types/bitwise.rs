@@ -37,6 +37,11 @@ impl BitwiseScalar for u64 {
 /// (bit-slicing): one GEMM computes 32 (`u32`) or 64 (`u64`) boolean matmuls at
 /// once. `⊕ = |`, `⊗ = &`, zero = `0`, one = `!0`.
 ///
+/// CPU dispatch uses AVX2 or NEON where available, with a portable fallback.
+/// There is no single argmax index for a packed word: each bit lane can have a
+/// different winner. Per-lane argmax is not implemented, so this type does not
+/// implement `TropicalWithArgmax`.
+///
 /// This is for **many independent dense boolean problems**. For a single large
 /// (sparse) boolean graph, use a sparse GraphBLAS tool (GraphBLAST / cuBool /
 /// Bit-GraphBLAS) — that is out of scope for this dense library.
@@ -92,9 +97,14 @@ impl<T: BitwiseScalar> TropicalSemiring for TropicalBitwise<T> {
 }
 
 impl<T: BitwiseScalar> SimdTropical for TropicalBitwise<T> {
-    // No hand-written bitwise microkernel yet; the portable path handles |/&.
-    const SIMD_AVAILABLE: bool = false;
-    const SIMD_WIDTH: usize = 0;
+    const SIMD_AVAILABLE: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+    const SIMD_WIDTH: usize = if cfg!(target_arch = "x86_64") {
+        32 / std::mem::size_of::<T>()
+    } else if cfg!(target_arch = "aarch64") {
+        16 / std::mem::size_of::<T>()
+    } else {
+        0
+    };
 }
 
 impl<T: BitwiseScalar> Add for TropicalBitwise<T> {

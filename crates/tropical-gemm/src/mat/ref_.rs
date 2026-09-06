@@ -207,7 +207,7 @@ where
         let mut result = crate::core::GemmWithArgmax::<S>::new(n, m);
 
         unsafe {
-            crate::core::tropical_gemm_with_argmax_portable::<S>(
+            crate::simd::tropical_gemm_with_argmax_dispatch::<S>(
                 n,
                 m,
                 k,

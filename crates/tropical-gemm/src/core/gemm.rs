@@ -2,6 +2,7 @@ use super::argmax::GemmWithArgmax;
 use super::kernel::{Microkernel, MicrokernelWithArgmax, PortableMicrokernel};
 use super::packing::{pack_a, pack_b, packed_a_size, packed_b_size, Layout, Transpose};
 use super::tiling::{BlockIterator, TilingParams};
+use super::workspace::{GemmWorkspace, PackingBuffers};
 use crate::types::{TropicalSemiring, TropicalWithArgmax};
 
 #[cfg(feature = "parallel")]
@@ -74,6 +75,45 @@ pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T> + Sync>
     params: &TilingParams,
     kernel: &K,
 ) {
+    tropical_gemm_inner_with_workspace(
+        m,
+        n,
+        k,
+        a,
+        lda,
+        trans_a,
+        b,
+        ldb,
+        trans_b,
+        c,
+        ldc,
+        params,
+        kernel,
+        &mut GemmWorkspace::new(),
+    );
+}
+
+/// GEMM using reusable packing buffers.
+///
+/// # Safety
+/// Same requirements as [`tropical_gemm_inner`].
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn tropical_gemm_inner_with_workspace<T: TropicalSemiring, K: Microkernel<T> + Sync>(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: *const T::Scalar,
+    lda: usize,
+    trans_a: Transpose,
+    b: *const T::Scalar,
+    ldb: usize,
+    trans_b: Transpose,
+    c: *mut T,
+    ldc: usize,
+    params: &TilingParams,
+    kernel: &K,
+    workspace: &mut GemmWorkspace<T::Scalar>,
+) {
     #[cfg(feature = "parallel")]
     if let Some(tiles) = split_gemm::<T>(
         m,
@@ -91,16 +131,33 @@ pub unsafe fn tropical_gemm_inner<T: TropicalSemiring, K: Microkernel<T> + Sync>
         K::MR,
         K::NR,
     ) {
-        tiles.into_par_iter().for_each(|tile| unsafe {
-            tropical_gemm_serial::<T, K>(
-                tile.m, tile.n, k, tile.a, lda, trans_a, tile.b, ldb, trans_b, tile.c, ldc, params,
-                kernel,
-            );
-        });
+        let buffers = workspace.tasks(tiles.len());
+        tiles
+            .into_par_iter()
+            .zip(buffers.par_iter_mut())
+            .for_each(|(tile, buffers)| unsafe {
+                tropical_gemm_serial::<T, K>(
+                    tile.m, tile.n, k, tile.a, lda, trans_a, tile.b, ldb, trans_b, tile.c, ldc,
+                    params, kernel, buffers,
+                );
+            });
         return;
     }
     tropical_gemm_serial::<T, K>(
-        m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, params, kernel,
+        m,
+        n,
+        k,
+        a,
+        lda,
+        trans_a,
+        b,
+        ldb,
+        trans_b,
+        c,
+        ldc,
+        params,
+        kernel,
+        &mut workspace.tasks(1)[0],
     );
 }
 
@@ -119,6 +176,7 @@ unsafe fn tropical_gemm_serial<T: TropicalSemiring, K: Microkernel<T>>(
     ldc: usize,
     params: &TilingParams,
     kernel: &K,
+    buffers: &mut PackingBuffers<T::Scalar>,
 ) {
     if m == 0 || n == 0 {
         return;
@@ -133,14 +191,11 @@ unsafe fn tropical_gemm_serial<T: TropicalSemiring, K: Microkernel<T>>(
         return;
     }
 
-    // TODO(#34): Avoid repeated allocation by accepting caller-provided workspace.
-    // For repeated GEMM calls, consider adding a workspace-based API:
-    //   pub struct GemmWorkspace<T> { packed_a: Vec<T>, packed_b: Vec<T> }
-    //   pub fn tropical_gemm_with_workspace(..., workspace: &mut GemmWorkspace<T>)
-    let mut packed_a =
-        vec![T::Scalar::scalar_zero(); packed_a_size(m.min(params.mc), k.min(params.kc), K::MR)];
-    let mut packed_b =
-        vec![T::Scalar::scalar_zero(); packed_b_size(k.min(params.kc), n.min(params.nc), K::NR)];
+    buffers.prepare(
+        packed_a_size(m.min(params.mc), k.min(params.kc), K::MR),
+        packed_b_size(k.min(params.kc), n.min(params.nc), K::NR),
+    );
+    let (packed_a, packed_b) = (&mut buffers.a, &mut buffers.b);
 
     // BLIS-style 5-loop blocking
     // Loop 5: blocks of n
@@ -249,6 +304,46 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
     params: &TilingParams,
     kernel: &K,
 ) {
+    tropical_gemm_with_argmax_inner_with_workspace(
+        m,
+        n,
+        k,
+        a,
+        lda,
+        trans_a,
+        b,
+        ldb,
+        trans_b,
+        result,
+        params,
+        kernel,
+        &mut GemmWorkspace::new(),
+    );
+}
+
+/// GEMM using reusable packing buffers.
+///
+/// # Safety
+/// Same requirements as [`tropical_gemm_with_argmax_inner`].
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn tropical_gemm_with_argmax_inner_with_workspace<
+    T: TropicalWithArgmax<Index = u32>,
+    K: MicrokernelWithArgmax<T> + Sync,
+>(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: *const T::Scalar,
+    lda: usize,
+    trans_a: Transpose,
+    b: *const T::Scalar,
+    ldb: usize,
+    trans_b: Transpose,
+    result: &mut GemmWithArgmax<T>,
+    params: &TilingParams,
+    kernel: &K,
+    workspace: &mut GemmWorkspace<T::Scalar>,
+) {
     let ldc = result.ld;
     let (c, argmax) = result.as_mut_ptrs();
     #[cfg(feature = "parallel")]
@@ -268,28 +363,47 @@ pub unsafe fn tropical_gemm_with_argmax_inner<
         K::MR,
         K::NR,
     ) {
-        tiles.into_par_iter().for_each(|tile| unsafe {
-            tropical_gemm_with_argmax_serial::<T, K>(
-                tile.m,
-                tile.n,
-                k,
-                tile.a,
-                lda,
-                trans_a,
-                tile.b,
-                ldb,
-                trans_b,
-                tile.c,
-                tile.argmax,
-                ldc,
-                params,
-                kernel,
-            );
-        });
+        let buffers = workspace.tasks(tiles.len());
+        tiles
+            .into_par_iter()
+            .zip(buffers.par_iter_mut())
+            .for_each(|(tile, buffers)| unsafe {
+                tropical_gemm_with_argmax_serial::<T, K>(
+                    tile.m,
+                    tile.n,
+                    k,
+                    tile.a,
+                    lda,
+                    trans_a,
+                    tile.b,
+                    ldb,
+                    trans_b,
+                    tile.c,
+                    tile.argmax,
+                    ldc,
+                    params,
+                    kernel,
+                    buffers,
+                );
+            });
         return;
     }
     tropical_gemm_with_argmax_serial::<T, K>(
-        m, n, k, a, lda, trans_a, b, ldb, trans_b, c, argmax, ldc, params, kernel,
+        m,
+        n,
+        k,
+        a,
+        lda,
+        trans_a,
+        b,
+        ldb,
+        trans_b,
+        c,
+        argmax,
+        ldc,
+        params,
+        kernel,
+        &mut workspace.tasks(1)[0],
     );
 }
 
@@ -312,6 +426,7 @@ unsafe fn tropical_gemm_with_argmax_serial<
     ldc: usize,
     params: &TilingParams,
     kernel: &K,
+    buffers: &mut PackingBuffers<T::Scalar>,
 ) {
     if m == 0 || n == 0 {
         return;
@@ -326,11 +441,11 @@ unsafe fn tropical_gemm_with_argmax_serial<
         return;
     }
 
-    // TODO(#34): Avoid repeated allocation by accepting caller-provided workspace.
-    let mut packed_a =
-        vec![T::Scalar::scalar_zero(); packed_a_size(m.min(params.mc), k.min(params.kc), K::MR)];
-    let mut packed_b =
-        vec![T::Scalar::scalar_zero(); packed_b_size(k.min(params.kc), n.min(params.nc), K::NR)];
+    buffers.prepare(
+        packed_a_size(m.min(params.mc), k.min(params.kc), K::MR),
+        packed_b_size(k.min(params.kc), n.min(params.nc), K::NR),
+    );
+    let (packed_a, packed_b) = (&mut buffers.a, &mut buffers.b);
 
     // BLIS-style 5-loop blocking
     for (jc, nc) in BlockIterator::new(n, params.nc) {
@@ -505,12 +620,11 @@ unsafe fn b_panel_ptr<T>(
     }
 }
 
-use crate::types::TropicalScalar;
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::TropicalMaxPlus;
+    use crate::types::TropicalScalar;
 
     #[test]
     fn test_simple_gemm() {
@@ -1054,8 +1168,6 @@ mod tests {
 
     #[test]
     fn test_gemm_with_argmax_int_zero_cell_canonicalized() {
-        use crate::types::TropicalScalar;
-
         // Row 0 of A is the tropical zero (`-∞` sentinel), so every product for
         // C[0, *] is a (drifted) tropical zero — no real contribution. Its argmax
         // must canonicalize to the seed `0`, not drift to a data-dependent k.

@@ -4,12 +4,14 @@ This guide helps you get the best performance from tropical-gemm.
 
 ## CPU vs GPU Selection
 
-| Matrix Size | Recommendation | Reason |
-|-------------|----------------|--------|
-| < 128×128 | CPU | GPU transfer overhead dominates |
-| 128-256 | CPU or GPU | Similar performance |
-| > 256×256 | GPU | GPU computation advantage |
-| > 1024×1024 | GPU (strongly) | 100-800x speedup |
+Choose using the actual matrix shape, thread count, need for argmax, and whether
+inputs already live on the GPU. CPU/GPU crossover points vary with hardware and
+transfer overhead. The [CPU SIMD/workspace and PyTorch comparison report](https://github.com/TensorBFS/tropical-gemm/blob/main/benchmarks/results/2026-09-07-cpu-completion.md)
+contains current measurements and reproducible commands for both paths.
+
+For single-matrix PyTorch calls, select `tropical_*_matmul_gpu` explicitly to
+use CUDA. The ordinary `tropical_*_matmul` convenience functions use CPU
+execution even when given CUDA tensors, adding host/device transfers.
 
 ### Historical Benchmark Results (MaxPlus f32)
 
@@ -100,7 +102,8 @@ Nested batched calls reuse the same pool without creating another set of OS
 threads. Compile the core crate with `default-features = false` for serial
 execution. Custom kernels passed to the low-level GEMM functions must be `Sync`,
 as they may be shared across workers. Packing buffers are bounded by each
-submatrix's actual panel dimensions; workspace reuse is still separate work.
+submatrix's actual panel dimensions. Repeated calls can retain those buffers
+with a caller-owned workspace, as shown below.
 
 Measure your workload in release mode:
 
@@ -122,10 +125,57 @@ for baseline comparisons and raw results.
 println!("CPU capabilities: {:?}", tropical_gemm::simd_level());
 ```
 
-An AVX-512-capable CPU currently uses the AVX2 value kernels where implemented;
-there is no dedicated AVX-512 kernel. Dispatch depends on the semiring and scalar
-type, and CPU argmax currently uses the portable microkernel. Threading applies
-to both SIMD and portable kernels.
+AVX2 and NEON implement f32/f64 argmax for MaxPlus, MinPlus, and MaxMul, plus
+u32/u64 Bitwise value kernels. Argmax preserves the portable comparison rules,
+including first-winner ties, signed zeros, and unordered NaN comparisons.
+Unsupported architectures and other scalar types use the portable fallback.
+
+An AVX-512-capable CPU currently uses AVX2 kernels; there is no dedicated AVX-512
+kernel. Value-only floating-point SIMD coverage remains operation-dependent:
+MaxPlus f32/f64 and MinPlus f32 have AVX2/NEON kernels, while MaxMul f32 has AVX2.
+Other value-only combinations use portable kernels. Threading applies to both
+SIMD and portable execution.
+
+### Reusable packing workspace
+
+`GemmWorkspace<Scalar>` retains packing buffers across calls. An exclusive mutable
+borrow prevents concurrent reuse; parallel GEMM tasks borrow disjoint buffer
+pairs internally. It can be reused across shapes, thread pools, and semirings
+with the same scalar type. Storage grows to the largest panels/task count seen;
+`capacity_bytes()` reports retained scalar storage and `clear()` releases it.
+
+```rust
+use tropical_gemm::{GemmWorkspace, TropicalGemm, TropicalMaxPlus};
+
+let mut workspace = GemmWorkspace::<f32>::new();
+let mut c = vec![TropicalMaxPlus(0.0); 4];
+for _ in 0..10 {
+    TropicalGemm::new(2, 2, 2).execute_with_workspace(
+        &[1.0; 4], 2, &[2.0; 4], 2, &mut c, 2, &mut workspace,
+    );
+}
+assert!(c.iter().all(|v| v.0 == 3.0));
+```
+
+For argmax, use `tropical_matmul_with_argmax_with_workspace`; it retains packing
+storage but still allocates the returned values and indices. Low-level custom
+kernel APIs also have workspace variants. Custom `KernelDispatch` implementations
+can override `dispatch_gemm_with_workspace`; the default retains their existing
+dispatch and may allocate.
+
+A warmed serial builder call reuses both its output and packing storage without
+allocating. Parallel calls can still allocate task metadata; this API does not
+cache packed matrix contents, so inputs may change freely between calls.
+
+```bash
+# N threads samples: all float semirings and Bitwise, values and argmax.
+cargo run --release -p tropical-gemm --example bench_cpu -- 512 8 7
+# Compare fresh packing allocations with caller-owned workspace reuse.
+cargo run --release -p tropical-gemm --example bench_workspace -- 128 1 21
+# End-to-end forward interface versus PyTorch broadcast/reduce.
+python benchmarks/bench_pytorch.py --device cpu --sizes 64 256 512 --threads 8
+python benchmarks/bench_pytorch.py --device cuda --sizes 64 256 512 1024
+```
 
 ### Memory Layout
 

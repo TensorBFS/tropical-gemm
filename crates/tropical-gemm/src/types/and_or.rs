@@ -69,7 +69,7 @@ impl TropicalWithArgmax for TropicalAndOr {
 
     #[inline(always)]
     fn tropical_add_argmax(self, self_idx: u32, rhs: Self, rhs_idx: u32) -> (Self, u32) {
-        // For OR, return index of first true (or last if both false)
+        // For OR, retain the first true index, or the original seed if all false.
         if self.0 {
             (self, self_idx)
         } else if rhs.0 {
@@ -81,9 +81,10 @@ impl TropicalWithArgmax for TropicalAndOr {
 }
 
 impl SimdTropical for TropicalAndOr {
-    // Bool operations can be SIMD'd via bitmasks
-    const SIMD_AVAILABLE: bool = true;
-    const SIMD_WIDTH: usize = 256; // 256 bits = 256 bools for AVX2
+    // The public CPU API uses the portable bool kernel. Packed independent
+    // Boolean lanes are accelerated by TropicalBitwise<u32/u64> instead.
+    const SIMD_AVAILABLE: bool = false;
+    const SIMD_WIDTH: usize = 0;
 }
 
 impl Add for TropicalAndOr {
@@ -310,8 +311,8 @@ mod tests {
 
     #[test]
     fn test_simd_tropical() {
-        assert!(TropicalAndOr::SIMD_AVAILABLE);
-        assert_eq!(TropicalAndOr::SIMD_WIDTH, 256);
+        assert!(!TropicalAndOr::SIMD_AVAILABLE);
+        assert_eq!(TropicalAndOr::SIMD_WIDTH, 0);
     }
 
     #[test]

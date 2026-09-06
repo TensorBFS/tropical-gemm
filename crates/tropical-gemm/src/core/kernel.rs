@@ -17,9 +17,9 @@ pub trait Microkernel<T: TropicalSemiring> {
     /// where the result is combined with existing C values using tropical addition.
     ///
     /// # Safety
-    /// - `a` must point to at least `mr * k` elements (packed column-major)
-    /// - `b` must point to at least `k * nr` elements (packed row-major)
-    /// - `c` must point to at least `mr * ldc` elements
+    /// - `a` must point to at least `Self::MR * k` elements (packed column-major, including padding)
+    /// - `b` must point to at least `k * Self::NR` elements (packed row-major, including padding)
+    /// - `c` must point to the `mr` by `nr` output rectangle with row stride `ldc`
     /// - `mr <= Self::MR` and `nr <= Self::NR`
     unsafe fn execute(
         &self,
@@ -42,7 +42,7 @@ pub trait MicrokernelWithArgmax<T: TropicalWithArgmax<Index = u32>>: Microkernel
     ///
     /// # Safety
     /// Same requirements as `execute`, plus:
-    /// - `argmax` must point to at least `mr * ldc` elements
+    /// - `argmax` must point to the `mr` by `nr` output rectangle with row stride `ldc`
     unsafe fn execute_with_argmax(
         &self,
         mr: usize,

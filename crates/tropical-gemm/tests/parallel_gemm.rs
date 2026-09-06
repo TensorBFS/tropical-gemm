@@ -184,13 +184,23 @@ fn a_single_gemm_uses_multiple_workers_in_both_paths() {
         PortableMicrokernel, TilingParams,
     };
 
-    struct ObservedKernel(AtomicUsize);
+    struct ObservedKernel(AtomicUsize, std::sync::Mutex<()>, std::sync::Condvar);
     impl ObservedKernel {
         fn record(&self) {
-            self.0.fetch_or(
-                1 << rayon::current_thread_index().unwrap(),
-                Ordering::Relaxed,
-            );
+            let bit = 1 << rayon::current_thread_index().unwrap();
+            if self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+                // Give another worker a deterministic opportunity to steal a
+                // tile. A timeout reports broken splitting without hanging CI.
+                let guard = self.1.lock().unwrap();
+                let (_guard, _) = self
+                    .2
+                    .wait_timeout_while(guard, std::time::Duration::from_secs(5), |_| {
+                        self.0.load(Ordering::Relaxed).count_ones() < 2
+                    })
+                    .unwrap();
+                self.2.notify_all();
+                assert!(self.0.load(Ordering::Relaxed).count_ones() > 1);
+            }
         }
     }
     impl Microkernel<TropicalMaxPlus<f32>> for ObservedKernel {
@@ -229,7 +239,11 @@ fn a_single_gemm_uses_multiple_workers_in_both_paths() {
     }
     let a = vec![1.; 128 * 512];
     let b = vec![2.; 512 * 128];
-    let kernel = ObservedKernel(AtomicUsize::new(0));
+    let kernel = ObservedKernel(
+        AtomicUsize::new(0),
+        std::sync::Mutex::new(()),
+        std::sync::Condvar::new(),
+    );
     let four = pool(4);
     for argmax in [false, true] {
         kernel.0.store(0, Ordering::Relaxed);

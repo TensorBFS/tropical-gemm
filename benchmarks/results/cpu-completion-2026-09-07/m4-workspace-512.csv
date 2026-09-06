@@ -1,0 +1,5 @@
+n,threads,mode,reuse,median_ms,packing_capacity_bytes
+512,1,values,false,15.169583,0
+512,1,values,true,14.550125,262144
+512,1,argmax,false,11.431667,0
+512,1,argmax,true,11.397250,262144

@@ -1,8 +1,9 @@
 use super::detect::{simd_level, SimdLevel};
 use super::kernels::*;
-use crate::core::{tropical_gemm_inner, TilingParams, Transpose};
+use crate::core::{tropical_gemm_inner_with_workspace, GemmWorkspace, TilingParams, Transpose};
 use crate::types::{
-    TropicalBitwise, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus, TropicalSemiring,
+    TropicalAndOr, TropicalBitwise, TropicalMaxMul, TropicalMaxPlus, TropicalMinPlus,
+    TropicalSemiring,
 };
 
 /// Runtime-dispatched GEMM that selects the best kernel for the current CPU.
@@ -25,6 +26,28 @@ pub unsafe fn tropical_gemm_dispatch<T: TropicalSemiring + KernelDispatch>(
     T::dispatch_gemm(m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc);
 }
 
+/// Runtime-dispatched GEMM with first-winner indices.
+///
+/// # Safety
+/// Same pointer and output storage requirements as `tropical_gemm_with_argmax_portable`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn tropical_gemm_with_argmax_dispatch<
+    T: KernelDispatch + crate::TropicalWithArgmax<Index = u32>,
+>(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: *const T::Scalar,
+    lda: usize,
+    trans_a: Transpose,
+    b: *const T::Scalar,
+    ldb: usize,
+    trans_b: Transpose,
+    result: &mut crate::core::GemmWithArgmax<T>,
+) {
+    T::dispatch_gemm_with_argmax(m, n, k, a, lda, trans_a, b, ldb, trans_b, result);
+}
+
 /// Trait for types that support kernel dispatch.
 pub trait KernelDispatch: TropicalSemiring {
     /// Dispatch to the appropriate kernel based on CPU features.
@@ -41,10 +64,178 @@ pub trait KernelDispatch: TropicalSemiring {
         c: *mut Self,
         ldc: usize,
     );
+    /// Dispatch argmax, defaulting to the portable kernel for custom types.
+    ///
+    /// # Safety
+    /// Inputs and result must be valid for the requested dimensions and strides.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn dispatch_gemm_with_argmax(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const Self::Scalar,
+        lda: usize,
+        trans_a: Transpose,
+        b: *const Self::Scalar,
+        ldb: usize,
+        trans_b: Transpose,
+        result: &mut crate::core::GemmWithArgmax<Self>,
+    ) where
+        Self: crate::TropicalWithArgmax<Index = u32>,
+    {
+        crate::core::tropical_gemm_with_argmax_portable(
+            m, n, k, a, lda, trans_a, b, ldb, trans_b, result,
+        );
+    }
+    /// Dispatch using reusable packing storage. Custom implementations retain
+    /// their existing dispatch unless they override this method to use workspace.
+    ///
+    /// # Safety
+    /// Same requirements as `dispatch_gemm`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn dispatch_gemm_with_workspace(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const Self::Scalar,
+        lda: usize,
+        trans_a: Transpose,
+        b: *const Self::Scalar,
+        ldb: usize,
+        trans_b: Transpose,
+        c: *mut Self,
+        ldc: usize,
+        _workspace: &mut GemmWorkspace<Self::Scalar>,
+    ) {
+        Self::dispatch_gemm(m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc);
+    }
+
+    /// Dispatch argmax using reusable packing storage.
+    ///
+    /// # Safety
+    /// Same requirements as `dispatch_gemm_with_argmax`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn dispatch_gemm_with_argmax_with_workspace(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const Self::Scalar,
+        lda: usize,
+        trans_a: Transpose,
+        b: *const Self::Scalar,
+        ldb: usize,
+        trans_b: Transpose,
+        result: &mut crate::core::GemmWithArgmax<Self>,
+        workspace: &mut GemmWorkspace<Self::Scalar>,
+    ) where
+        Self: crate::TropicalWithArgmax<Index = u32>,
+    {
+        crate::core::tropical_gemm_with_argmax_inner_with_workspace(
+            m,
+            n,
+            k,
+            a,
+            lda,
+            trans_a,
+            b,
+            ldb,
+            trans_b,
+            result,
+            &TilingParams::PORTABLE,
+            &crate::core::PortableMicrokernel,
+            workspace,
+        );
+    }
+}
+
+// Preserve the existing dispatch entry point while allowing callers to opt in
+// to packing reuse through the workspace-aware variant.
+macro_rules! dispatch_with_local_workspace {
+    () => {
+        unsafe fn dispatch_gemm(
+            m: usize,
+            n: usize,
+            k: usize,
+            a: *const Self::Scalar,
+            lda: usize,
+            trans_a: Transpose,
+            b: *const Self::Scalar,
+            ldb: usize,
+            trans_b: Transpose,
+            c: *mut Self,
+            ldc: usize,
+        ) {
+            Self::dispatch_gemm_with_workspace(
+                m,
+                n,
+                k,
+                a,
+                lda,
+                trans_a,
+                b,
+                ldb,
+                trans_b,
+                c,
+                ldc,
+                &mut GemmWorkspace::new(),
+            );
+        }
+    };
+}
+
+// Each float semiring supplies its ordered comparison and product operation.
+macro_rules! argmax_dispatch {
+    ($scalar:ty, $dispatch:ident, $min:expr, $mul:expr) => {
+        unsafe fn dispatch_gemm_with_argmax(
+            m: usize,
+            n: usize,
+            k: usize,
+            a: *const $scalar,
+            lda: usize,
+            trans_a: Transpose,
+            b: *const $scalar,
+            ldb: usize,
+            trans_b: Transpose,
+            result: &mut crate::core::GemmWithArgmax<Self>,
+        ) {
+            Self::dispatch_gemm_with_argmax_with_workspace(
+                m,
+                n,
+                k,
+                a,
+                lda,
+                trans_a,
+                b,
+                ldb,
+                trans_b,
+                result,
+                &mut GemmWorkspace::new(),
+            );
+        }
+        unsafe fn dispatch_gemm_with_argmax_with_workspace(
+            m: usize,
+            n: usize,
+            k: usize,
+            a: *const $scalar,
+            lda: usize,
+            trans_a: Transpose,
+            b: *const $scalar,
+            ldb: usize,
+            trans_b: Transpose,
+            result: &mut crate::core::GemmWithArgmax<Self>,
+            workspace: &mut GemmWorkspace<Self::Scalar>,
+        ) {
+            super::argmax::$dispatch::<Self, $min, $mul>(
+                m, n, k, a, lda, trans_a, b, ldb, trans_b, result, workspace,
+            );
+        }
+    };
 }
 
 impl KernelDispatch for TropicalMaxPlus<f32> {
-    unsafe fn dispatch_gemm(
+    argmax_dispatch!(f32, dispatch_f32, false, false);
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
         m: usize,
         n: usize,
         k: usize,
@@ -56,29 +247,30 @@ impl KernelDispatch for TropicalMaxPlus<f32> {
         trans_b: Transpose,
         c: *mut Self,
         ldc: usize,
+        workspace: &mut GemmWorkspace<Self::Scalar>,
     ) {
         match simd_level() {
             #[cfg(target_arch = "x86_64")]
             SimdLevel::Avx2 | SimdLevel::Avx512 => {
                 let kernel = Avx2MaxPlusF32Kernel;
                 let params = TilingParams::F32_AVX2;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
             #[cfg(target_arch = "aarch64")]
             SimdLevel::Neon => {
                 let kernel = NeonMaxPlusF32Kernel;
                 let params = TilingParams::new(128, 128, 256, 4, 4);
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
             _ => {
                 let kernel = PortableKernel;
                 let params = TilingParams::PORTABLE;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
         }
@@ -86,7 +278,9 @@ impl KernelDispatch for TropicalMaxPlus<f32> {
 }
 
 impl KernelDispatch for TropicalMaxPlus<f64> {
-    unsafe fn dispatch_gemm(
+    argmax_dispatch!(f64, dispatch_f64, false, false);
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
         m: usize,
         n: usize,
         k: usize,
@@ -98,29 +292,30 @@ impl KernelDispatch for TropicalMaxPlus<f64> {
         trans_b: Transpose,
         c: *mut Self,
         ldc: usize,
+        workspace: &mut GemmWorkspace<Self::Scalar>,
     ) {
         match simd_level() {
             #[cfg(target_arch = "x86_64")]
             SimdLevel::Avx2 | SimdLevel::Avx512 => {
                 let kernel = Avx2MaxPlusF64Kernel;
                 let params = TilingParams::F64_AVX2;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
             #[cfg(target_arch = "aarch64")]
             SimdLevel::Neon => {
                 let kernel = NeonMaxPlusF64Kernel;
                 let params = TilingParams::new(64, 64, 128, 2, 2);
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
             _ => {
                 let kernel = PortableKernel;
                 let params = TilingParams::PORTABLE;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
         }
@@ -128,7 +323,9 @@ impl KernelDispatch for TropicalMaxPlus<f64> {
 }
 
 impl KernelDispatch for TropicalMinPlus<f32> {
-    unsafe fn dispatch_gemm(
+    argmax_dispatch!(f32, dispatch_f32, true, false);
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
         m: usize,
         n: usize,
         k: usize,
@@ -140,29 +337,30 @@ impl KernelDispatch for TropicalMinPlus<f32> {
         trans_b: Transpose,
         c: *mut Self,
         ldc: usize,
+        workspace: &mut GemmWorkspace<Self::Scalar>,
     ) {
         match simd_level() {
             #[cfg(target_arch = "x86_64")]
             SimdLevel::Avx2 | SimdLevel::Avx512 => {
                 let kernel = Avx2MinPlusF32Kernel;
                 let params = TilingParams::F32_AVX2;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
             #[cfg(target_arch = "aarch64")]
             SimdLevel::Neon => {
                 let kernel = NeonMinPlusF32Kernel;
                 let params = TilingParams::new(128, 128, 256, 4, 4);
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
             _ => {
                 let kernel = PortableKernel;
                 let params = TilingParams::PORTABLE;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
         }
@@ -170,7 +368,9 @@ impl KernelDispatch for TropicalMinPlus<f32> {
 }
 
 impl KernelDispatch for TropicalMaxMul<f32> {
-    unsafe fn dispatch_gemm(
+    argmax_dispatch!(f32, dispatch_f32, false, true);
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
         m: usize,
         n: usize,
         k: usize,
@@ -182,24 +382,97 @@ impl KernelDispatch for TropicalMaxMul<f32> {
         trans_b: Transpose,
         c: *mut Self,
         ldc: usize,
+        workspace: &mut GemmWorkspace<Self::Scalar>,
     ) {
         match simd_level() {
             #[cfg(target_arch = "x86_64")]
             SimdLevel::Avx2 | SimdLevel::Avx512 => {
                 let kernel = Avx2MaxMulF32Kernel;
                 let params = TilingParams::F32_AVX2;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
             _ => {
                 let kernel = PortableKernel;
                 let params = TilingParams::PORTABLE;
-                tropical_gemm_inner::<Self, _>(
-                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                tropical_gemm_inner_with_workspace::<Self, _>(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                 );
             }
         }
+    }
+}
+
+impl KernelDispatch for TropicalMinPlus<f64> {
+    argmax_dispatch!(f64, dispatch_f64, true, false);
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const f64,
+        lda: usize,
+        trans_a: Transpose,
+        b: *const f64,
+        ldb: usize,
+        trans_b: Transpose,
+        c: *mut Self,
+        ldc: usize,
+        workspace: &mut GemmWorkspace<Self::Scalar>,
+    ) {
+        crate::core::tropical_gemm_inner_with_workspace(
+            m,
+            n,
+            k,
+            a,
+            lda,
+            trans_a,
+            b,
+            ldb,
+            trans_b,
+            c,
+            ldc,
+            &TilingParams::PORTABLE,
+            &crate::core::PortableMicrokernel,
+            workspace,
+        );
+    }
+}
+
+impl KernelDispatch for TropicalMaxMul<f64> {
+    argmax_dispatch!(f64, dispatch_f64, false, true);
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const f64,
+        lda: usize,
+        trans_a: Transpose,
+        b: *const f64,
+        ldb: usize,
+        trans_b: Transpose,
+        c: *mut Self,
+        ldc: usize,
+        workspace: &mut GemmWorkspace<Self::Scalar>,
+    ) {
+        crate::core::tropical_gemm_inner_with_workspace(
+            m,
+            n,
+            k,
+            a,
+            lda,
+            trans_a,
+            b,
+            ldb,
+            trans_b,
+            c,
+            ldc,
+            &TilingParams::PORTABLE,
+            &crate::core::PortableMicrokernel,
+            workspace,
+        );
     }
 }
 
@@ -208,7 +481,8 @@ macro_rules! impl_kernel_dispatch_portable {
     ($($t:ty),*) => {
         $(
             impl KernelDispatch for $t {
-                unsafe fn dispatch_gemm(
+                dispatch_with_local_workspace!();
+                unsafe fn dispatch_gemm_with_workspace(
                     m: usize,
                     n: usize,
                     k: usize,
@@ -220,11 +494,12 @@ macro_rules! impl_kernel_dispatch_portable {
                     trans_b: Transpose,
                     c: *mut Self,
                     ldc: usize,
+                    workspace: &mut GemmWorkspace<Self::Scalar>,
                 ) {
                     let kernel = PortableKernel;
                     let params = TilingParams::PORTABLE;
-                    tropical_gemm_inner::<Self, _>(
-                        m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel,
+                    tropical_gemm_inner_with_workspace::<Self, _>(
+                        m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &kernel, workspace,
                     );
                 }
             }
@@ -233,8 +508,7 @@ macro_rules! impl_kernel_dispatch_portable {
 }
 
 impl_kernel_dispatch_portable!(
-    TropicalMinPlus<f64>,
-    TropicalMaxMul<f64>,
+    TropicalAndOr,
     TropicalMaxPlus<i32>,
     TropicalMaxPlus<i64>,
     TropicalMinPlus<i32>,
@@ -243,7 +517,109 @@ impl_kernel_dispatch_portable!(
     TropicalMaxMul<i64>
 );
 
-impl_kernel_dispatch_portable!(TropicalBitwise<u32>, TropicalBitwise<u64>);
+impl KernelDispatch for TropicalBitwise<u32> {
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const u32,
+        lda: usize,
+        trans_a: Transpose,
+        b: *const u32,
+        ldb: usize,
+        trans_b: Transpose,
+        c: *mut Self,
+        ldc: usize,
+        workspace: &mut GemmWorkspace<u32>,
+    ) {
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        {
+            #[cfg(target_arch = "x86_64")]
+            let supported = is_x86_feature_detected!("avx2");
+            #[cfg(target_arch = "aarch64")]
+            let supported = true;
+            if supported {
+                use super::kernels::bitwise_native::Bitwise32;
+                use crate::core::Microkernel;
+                let params = TilingParams::new(128, 128, 256, 4, Bitwise32::NR);
+                tropical_gemm_inner_with_workspace(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &Bitwise32,
+                    workspace,
+                );
+                return;
+            }
+        }
+        tropical_gemm_inner_with_workspace(
+            m,
+            n,
+            k,
+            a,
+            lda,
+            trans_a,
+            b,
+            ldb,
+            trans_b,
+            c,
+            ldc,
+            &TilingParams::PORTABLE,
+            &PortableKernel,
+            workspace,
+        );
+    }
+}
+
+impl KernelDispatch for TropicalBitwise<u64> {
+    dispatch_with_local_workspace!();
+    unsafe fn dispatch_gemm_with_workspace(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: *const u64,
+        lda: usize,
+        trans_a: Transpose,
+        b: *const u64,
+        ldb: usize,
+        trans_b: Transpose,
+        c: *mut Self,
+        ldc: usize,
+        workspace: &mut GemmWorkspace<u64>,
+    ) {
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        {
+            #[cfg(target_arch = "x86_64")]
+            let supported = is_x86_feature_detected!("avx2");
+            #[cfg(target_arch = "aarch64")]
+            let supported = true;
+            if supported {
+                use super::kernels::bitwise_native::Bitwise64;
+                use crate::core::Microkernel;
+                let params = TilingParams::new(128, 128, 256, 4, Bitwise64::NR);
+                tropical_gemm_inner_with_workspace(
+                    m, n, k, a, lda, trans_a, b, ldb, trans_b, c, ldc, &params, &Bitwise64,
+                    workspace,
+                );
+                return;
+            }
+        }
+        tropical_gemm_inner_with_workspace(
+            m,
+            n,
+            k,
+            a,
+            lda,
+            trans_a,
+            b,
+            ldb,
+            trans_b,
+            c,
+            ldc,
+            &TilingParams::PORTABLE,
+            &PortableKernel,
+            workspace,
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
