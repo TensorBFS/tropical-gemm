@@ -4,6 +4,41 @@ All notable changes to tropical-gemm.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-08
+
+### Added
+- AVX2/NEON argmax kernels for MaxPlus, MinPlus, and MaxMul, with f32/f64
+  values and first-winner indices; native CPU Bitwise u32/u64 kernels.
+- `GemmWorkspace` and workspace-aware APIs for reusing CPU packing buffers.
+- CUDA AndOr and Bitwise support, including batched operations and K-packed
+  Boolean multiplication; public CPU AndOr dispatch.
+- Metal backend for Apple GPUs, with platform gating and buffer validation.
+- Reproducible CPU/CUDA PyTorch comparisons and raw benchmark results.
+
+### Changed
+- Single CPU GEMMs use the existing Rayon pool for independent output tiles.
+  Packing allocations follow actual panel sizes and can be retained across calls.
+- At 512×512/eight threads, MaxPlus f32 argmax improves 2.51× on M4 and 8.43×
+  on Xeon versus the post-threading baseline. See the
+  [benchmark report](https://github.com/TensorBFS/tropical-gemm/blob/main/benchmarks/results/2026-09-07-cpu-completion.md)
+  for hardware, methods, and cases without a speedup.
+
+### Fixed
+- CPU buffer/stride/overflow validation, stale output initialization, and safe
+  scalar views for generic matrices.
+- MaxMul gradients, Python f64 batching, autograd mutation tracking, and runtime
+  package version reporting.
+- CUDA DLPack stream synchronization and signed argmax interoperability;
+  Boolean integration and wide-grid indexing.
+
+### Compatibility
+- Low-level custom CPU kernels must be `Sync` for parallel execution.
+- Invalid shapes, strides, or buffer lengths are rejected at safe API boundaries.
+- PyPI wheels provide the CPU backend. Build from source with the `cuda` feature
+  for Python CUDA support; Metal is a separate Rust crate.
+
+## [0.3.0] - 2026-06-20
+
 ### Added
 - **CUDA: on-disk CUBIN cache (issue #41).** Kernels are compiled straight to a CUBIN
   (native SASS) for the device's architecture and cached on disk
@@ -105,4 +140,6 @@ c = tropical_gemm.maxplus_matmul(a, b)
 
 ### API Changes
 
-No breaking changes yet (this is the first release).
+See each release's compatibility notes above. In v0.4.0, custom low-level CPU
+kernels must be `Sync`; callers supplying invalid buffers now get validation
+errors instead of relying on unchecked access.

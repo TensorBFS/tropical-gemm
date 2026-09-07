@@ -1,0 +1,37 @@
+name: Publish backend crate
+
+# Run manually against a release tag after the core crate reaches crates.io.
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: Backend crate to publish
+        required: true
+        type: choice
+        options:
+          - tropical-gemm-cuda
+          - tropical-gemm-metal
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.crate }}
+    runs-on: ${{ inputs.crate == 'tropical-gemm-metal' && 'macos-latest' || 'ubuntu-latest' }}
+    steps:
+      - name: Require a release tag
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          echo 'Select a release tag when dispatching this workflow.'
+          exit 1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # CUDA source is embedded and compiled at runtime. Packaging/build
+      # verification needs neither a GPU nor a CUDA toolkit on the runner.
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          RELEASE_CRATE: ${{ inputs.crate }}
+        run: cargo publish --locked --package "$RELEASE_CRATE"

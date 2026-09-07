@@ -13,6 +13,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   publish-crates:
     name: Publish to crates.io
@@ -27,9 +30,12 @@ jobs:
 
       - name: Publish tropical-gemm
         if: github.event.inputs.dry_run != 'true'
-        run: cargo publish -p tropical-gemm --token ${{ secrets.CRATES_IO_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish --locked -p tropical-gemm
 
-      # Note: tropical-gemm-cuda requires CUDA and is published separately if needed
+      # Backend crates are published separately with publish-backend.yml,
+      # after the core dependency is available on crates.io.
 
   publish-pypi:
     name: Build and publish Python wheels
@@ -84,6 +90,8 @@ jobs:
     needs: [publish-crates, publish-pypi-upload]
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
